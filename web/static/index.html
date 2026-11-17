@@ -147,7 +147,7 @@
   <h1>Cloudflare 优选 IP · DDNS</h1>
   <div class="sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。<span id="ver"></span></div>
 
-  <!-- 全局告警：配置被自动恢复、密码太弱。放在最顶上，不滚动就看得见 -->
+  <!-- 全局告警：配置被自动恢复。放在最顶上，不滚动就看得见 -->
   <div id="banners"></div>
 
   <!-- 概览 -->
@@ -559,7 +559,7 @@ function escapeHtml(s) {
 }
 
 // renderBanners 渲染顶部的全局告警。
-// 这两条以前只出现在运行日志里（卡片最下面、还要往下滚），等于没提示：
+// 配置被恢复这件事以前只出现在运行日志里（卡片最下面、还要往下滚），等于没提示：
 // 配置被自动恢复时界面看上去「一切正常，只是全空了」，正是上次事故里
 // 最误导人的地方。
 function renderBanners(s) {
@@ -579,9 +579,10 @@ function renderBanners(s) {
       数据目录里的 config.json 消失过（升级、清理脚本或误删），本次是用 config.json.bak 顶上来的。
       请逐项核对下面的 AdGuard 地址、要加速的域名、DDNS 服务商和密钥，确认无误后点一次「保存全部设置」，这条提示才会消失。</div>`;
   }
-  if (s.password_weak) {
-    html += `<div class="banner warn">登录密码${escapeHtml(s.password_reason)}。这个后台对所有 IP 开放，建议在页面下方的「登录密码」里换一个。</div>`;
-  }
+  // 以前这里还有一条「登录密码太短了」的黄条，每次打开页面都挂在那儿。
+  // 2026-11-17 用户明确要求去掉：他从安装向导里设的就是 6 位，用得挺好，
+  // 不想再被反复提醒（原话「密码这个问题就不用管了，不行就把这个砍掉，
+  // 用弱密码也无所谓了」）。密码强弱从此只在「主动改密码」那一刻校验。
   box.innerHTML = html;
 
   if (s.log_file) {

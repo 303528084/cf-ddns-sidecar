@@ -33,13 +33,23 @@ services:
       # 飞牛数据共享目录的稳定绝对路径（安装时自动创建并授予本应用 ACL 权限）
       # 一个目录装下全部：config.json、ddns.env、dashboard-password、测速工作目录
       - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/data:/app/data"
-      # 升级前的自动备份（由宿主机脚本 cmd/upgrade_init 写进来），**只读**挂载。
+      # 备份目录，**双向**挂载（v1.3.2 起从只读改的）。
       #
-      # 为什么路径是 cf-ddns-sidecar-backup 而不是 cf-ddns-sidecar/share/...：
-      # 飞牛覆盖升级时会删掉整个 /var/apps/<app> 目录，放在里面的备份会跟着一起没
-      # （2026-11-17 的两次配置丢失都是这么来的）。这个目录是 <app> 的兄弟，
-      # 不在它里面，整层被删也能活。
+      # 这个路径本身通常是一个**指向存储卷的符号链接**（cmd/main 每次启动时安置，
+      # 链到 /volN/cf-ddns-sidecar-backup）。docker 会顺着软链找到真实目录，所以
+      # 容器里看到的还是 /app/backup，程序不用关心它到底在哪。
       #
-      # 只读是刻意的：容器里的程序只负责「读回来」，不需要写。
+      # 为什么一路往「更外面」搬，三次都是同一个原因——备份不能放在会被删的那一层：
+      #   · v1.0.x：跟数据放一起，整个数据目录被清就没；
+      #   · v1.1.1：挪到 share/<app>-backup-<时间>/，仍在应用目录里面，整层被删跟着没；
+      #   · v1.3.1：挪到 /var/apps/<app>-backup，是应用目录的兄弟，但还在 /var/apps 下；
+      #   · v1.3.2：链到 /volN 上，连 /var/apps 整个被清也活得下来。
+      #
+      # 为什么从只读改可写：v1.3.1 只有宿主机脚本 cmd/upgrade_init 会往里写，
+      # 而真机验证明明升级了、脚本却没跑（备份目录是空的），于是「自动恢复」
+      # 手里没东西可捡、一条提示都没出。v1.3.2 起程序自己每次保存配置后也往
+      # 这里备一份。因此容器用户（uid 1000）必须对这个目录有写权限，
+      # 具体由 cmd/main 在启动前 chown 好。
+      #
       # 目录不存在时 docker 会自动建一个空的，不会导致启动失败。
-      - "/var/apps/cf-ddns-sidecar-backup:/app/backup:ro"
+      - "/var/apps/cf-ddns-sidecar-backup:/app/backup"

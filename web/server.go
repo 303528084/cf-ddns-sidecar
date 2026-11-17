@@ -464,9 +464,13 @@ type statusResp struct {
 	DDNSMissing  []string `json:"ddns_missing"`
 	IntervalMin  int      `json:"interval_minutes"`
 
-	// 下面三个是「必须让用户看见」的状态，不是可选信息：
-	// 配置是从备份恢复的、密码太弱。以前这些都只进运行日志，
-	// 而运行日志在卡片最下面、还要往下滚，等于没提示。
+	// 下面两个是「必须让用户看见」的状态：配置是从备份恢复的。
+	// 以前这只进运行日志，而运行日志在卡片最下面、还要往下滚，等于没提示。
+	//
+	// 注意：这里曾经还有一个 password_weak / password_reason，用来在页面顶上挂
+	// 「登录密码太短了」的黄条。2026-11-17 按用户要求删掉了——他从安装向导里设的
+	// 就是 6 位，不想每次开页面都被提醒一次。弱密码校验现在只在「主动改密码」
+	// 那一刻做（见 handleSetPassword），不再有常驻提示。
 	RestoredConfig bool `json:"restored_config"`
 	// 恢复的两种来路，界面据此决定说哪句话（见 index.html 的 renderBanners）：
 	//   restored_upgrade=false → 只是 config.json 丢了，config.json.bak 顶上；
@@ -474,8 +478,6 @@ type statusResp struct {
 	//                            靠升级前搬到外面的那份救回来，来源在 restored_source。
 	RestoredUpgrade bool   `json:"restored_upgrade"`
 	RestoredSource  string `json:"restored_source"`
-	PasswordWeak    bool   `json:"password_weak"`
-	PasswordReason  string `json:"password_reason"`
 	LogFile         string `json:"log_file"`
 
 	// 定时器状态：下次几点跑、上次成没成、连续失败几次。
@@ -489,9 +491,6 @@ type statusResp struct {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// 读密码文件有 I/O，放在锁外面。
-	weakReason := WeakPasswordReason(s.pass.Current())
-
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	resp := statusResp{
@@ -509,8 +508,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RestoredConfig:  s.restored,
 		RestoredUpgrade: s.restoredUpgrade,
 		RestoredSource:  s.restoredSource,
-		PasswordWeak:    weakReason != "",
-		PasswordReason:  weakReason,
 		NextRunAt:       formatRunTime(s.nextRunAt),
 		LastOK:          s.lastOK,
 		FailCount:       s.failCount,

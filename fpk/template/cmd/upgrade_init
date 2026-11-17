@@ -29,7 +29,15 @@ DATA_DIR="${SHARE_ROOT}/data"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 # 主备份位置：<app> 的兄弟目录。平台删 <app> 时它不受影响。
+#
+# v1.3.2 起这个目录通常是一个**指向存储卷的符号链接**（由 cmd/main 在每次启动时
+# 安置好，链到 /volN/<app>-backup）。所以这里先把它解析成真实路径再动手：
+#   · `find` / `mkdir -p` 对「命令行的软链」都不会跟进去，直接写会在卷上留一堆
+#     空目录、而清理那一步又看不见里面有什么，等于定时炸弹；
+#   · 解析失败（链是坏的、或者还是 v1.3.1 那种真实目录）就退回原路径。
 BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+BACKUP_REAL="$(readlink -f "$BACKUP_ROOT" 2>/dev/null)"
+[ -n "$BACKUP_REAL" ] && BACKUP_ROOT="$BACKUP_REAL"
 # 老位置（v1.1.0～v1.3.0 用的），只作为「兄弟目录建不出来」时的退路，
 # 顺便继续清理里面的历史备份。
 LEGACY_SIBLING_ROOT="/var/apps/${APP_NAME}/share"

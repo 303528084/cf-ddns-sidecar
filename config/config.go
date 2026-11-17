@@ -297,7 +297,19 @@ func (c *Config) Save() error {
 	if old, rerr := os.ReadFile(p); rerr == nil && len(old) > 0 {
 		_ = os.WriteFile(p+backupSuffix, old, 0o600)
 	}
-	return os.Rename(name, p)
+	if err := os.Rename(name, p); err != nil {
+		return err
+	}
+	// 主文件已经落盘了，顺手在备份目录里也留一份（见 backup.go）。
+	//
+	// 放在这里、而不是只交给宿主机的 upgrade_init：那条路 2026-11-17 证明过
+	// 靠不住（脚本没跑，装完配置就空了）。用户只要在后台点过一次保存，
+	// 这里就会有一份最新的，下一次升级才真的能自己捡回来。
+	//
+	// 返回值刻意丢掉：备份写不进去（目录不存在、只读挂着、权限不对）绝不能
+	// 让「保存配置」这个动作失败——那才是真要命的事。
+	writeSnapshot()
+	return nil
 }
 
 // Clone 深拷贝，供并发读快照。

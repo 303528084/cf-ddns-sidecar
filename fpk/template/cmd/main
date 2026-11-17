@@ -44,19 +44,122 @@ cleanup_legacy_container() {
     fi
 }
 
+# 探测「用户存储卷」的根，例如 /vol1。
+#
+# 为什么需要它：应用自己的一切（包括数据目录 /var/apps/<app>/share/<app>）都在
+# 存储卷上，飞牛会把它当成「应用的数据」在卸载/升级时清掉；而卷根下的普通目录
+# 属于用户，不归应用管，不会跟着没。
+#
+# 探测方式不是猜：/var/apps/<app>/share/<share> 在飞牛上是指向 /volN/@appshare/<app>
+# 的软链（官方文档里的稳定路径就是这么来的），顺着它 readlink -f 就能拿到真实卷号。
+# 拿不到再退一步直接看 /vol1../vol9 哪个在。
+detect_volume_root() {
+    local p real tail i
+    for p in "$SHARE_ROOT" "$DATA_ROOT"; do
+        real="$(readlink -f "$p" 2>/dev/null)"
+        case "$real" in
+            /vol[0-9]*/*)
+                tail="${real#/}"          # vol1/@appshare/cf-ddns-sidecar
+                echo "/${tail%%/*}"       # /vol1
+                return 0
+                ;;
+        esac
+    done
+    for i in 1 2 3 4 5 6 7 8 9; do
+        if [ -d "/vol${i}" ]; then
+            echo "/vol${i}"
+            return 0
+        fi
+    done
+    echo ""
+}
+
+# 备份根目录 /var/apps/<app>-backup 的安置。
+#
+# 这个目录经历过两次搬迁，每次都是因为「备份放在会被删的那一层里」：
+#   v1.1.1 放在 share/<app>-backup-<时间>/  —— 在应用目录里面，整层被删就跟着没；
+#   v1.3.1 搬到 /var/apps/<app>-backup      —— 是应用目录的兄弟，但仍在 /var/apps 下；
+#   v1.3.2 起再把它**做成指向存储卷的符号链接** —— /var/apps 整个被清也活得下来。
+#
+# 容器里看到的路径不变（/app/backup 由 compose 挂 /var/apps/<app>-backup），
+# 程序一行都不用改：docker 会顺着符号链接找到卷上的真实目录。
+#
+# 任何一步失败都退回「老老实实用真实目录」——备份少一层保险可以接受，
+# 把备份弄丢、或者让容器因为挂载源异常而起不来，绝不能接受。
+ensure_backup_root() {
+    local target="$1"   # 为空表示没探到存储卷，只能留在原地
+
+    if [ -z "$target" ]; then
+        mkdir -p "$BACKUP_ROOT" 2>/dev/null
+        return 0
+    fi
+
+    # 已经是指向正确位置的符号链接：什么都不做（幂等，每次启动都会跑到这里）
+    if [ -L "$BACKUP_ROOT" ] && [ "$(readlink "$BACKUP_ROOT" 2>/dev/null)" = "$target" ]; then
+        return 0
+    fi
+
+    if ! mkdir -p "$target" 2>/dev/null; then
+        mkdir -p "$BACKUP_ROOT" 2>/dev/null
+        return 0
+    fi
+
+    # 原来是个真实目录（v1.3.1/v1.3.2 早期建的，里面很可能已经有备份了）：
+    # 先把内容整份搬过去，搬成功才换成软链；任何一步不成功就原地不动。
+    if [ -d "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ]; then
+        if ! cp -a "$BACKUP_ROOT"/. "$target"/ 2>/dev/null; then
+            echo "[cf-ddns-sidecar] 备份目录搬迁失败（复制不成功），仍旧留在 ${BACKUP_ROOT}"
+            return 0
+        fi
+        if ! mv "$BACKUP_ROOT" "${BACKUP_ROOT}.migrating" 2>/dev/null; then
+            return 0
+        fi
+        if ! ln -s "$target" "$BACKUP_ROOT" 2>/dev/null; then
+            # 链接建不起来就把原目录搬回去，别留下「什么都没有」的局面
+            mv "${BACKUP_ROOT}.migrating" "$BACKUP_ROOT" 2>/dev/null
+            return 0
+        fi
+        rm -rf "${BACKUP_ROOT}.migrating" 2>/dev/null
+        echo "[cf-ddns-sidecar] 备份目录已搬到存储卷：${BACKUP_ROOT} -> ${target}"
+        return 0
+    fi
+
+    ln -s "$target" "$BACKUP_ROOT" 2>/dev/null
+    return 0
+}
+
 # 首次启动初始化：建目录 + 迁移旧数据 + 生成示例配置（幂等）
 init_on_start() {
     mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
 
-    # 升级前备份目录（v1.3.1 起）。compose 把它**只读**挂进容器的 /app/backup，
-    # 程序启动时从这里捡回被升级删掉的配置。
+    # 备份根目录（v1.3.1 起；v1.3.2 起链到存储卷上）。
     #
-    # 这里顺手建一下有两个原因：
+    # 这里必须由脚本预先建好并改好属主，原因有两个：
     #   ① 挂载源不存在时 docker 会自动建，但建出来是 root:root 0755，
     #      有的平台版本会在「挂载源不存在」这一步直接拒绝建容器，提前建好更稳；
-    #   ② 建完不受容器内 umask 影响，路径固定可预期。
-    # 失败不影响启动：真要没有，升级时备份会自动落回老位置，只是那一份活不过删目录。
-    mkdir -p "/var/apps/${APP_NAME}-backup" 2>/dev/null
+    #   ② v1.3.2 起程序自己也会往这里写备份（不再只靠 upgrade_init，因为真机
+    #      验证明明升级了、那个脚本却没跑）。容器里的程序是 uid 1000，
+    #      root:root 0755 的目录它写不进去，于是「备份目录在、但永远是空的」，
+    #      恢复时又是两手空空。
+    #
+    # 属主对齐失败才退回放开 0777——宁可权限宽一点，也不要让备份悄悄写不进去。
+    # 这一段整体失败也不影响启动。
+    BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+    VOL_ROOT="$(detect_volume_root)"
+    if [ -n "$VOL_ROOT" ]; then
+        ensure_backup_root "${VOL_ROOT}/${APP_NAME}-backup"
+    else
+        ensure_backup_root ""
+    fi
+    # 注意：chown 要作用在真实目录上。符号链接本身 chown 只是改链接的属主，
+    # 容器写的是链接指向的那个目录，权限还是没放开。
+    BACKUP_REAL="$(readlink -f "$BACKUP_ROOT" 2>/dev/null)"
+    [ -n "$BACKUP_REAL" ] || BACKUP_REAL="$BACKUP_ROOT"
+    if mkdir -p "$BACKUP_REAL" 2>/dev/null; then
+        if ! chown 1000:1000 "$BACKUP_REAL" 2>/dev/null; then
+            chmod 0777 "$BACKUP_REAL" 2>/dev/null
+        fi
+    fi
 
     cleanup_legacy_container
     migrate_legacy

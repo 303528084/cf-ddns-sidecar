@@ -109,6 +109,27 @@ func main() {
 		}
 	}
 
+	// 开机交代一句「备份目录现在什么状况」，哪怕一切正常。
+	//
+	// 这次事故最耗时间的地方就是「到底有没有备份」全靠猜：备份目录在宿主机上，
+	// 容器日志里一个字都没有，只能一层层翻文件管理器。以后看日志就知道是
+	// 「目录没建出来」「建了但容器写不进去」还是「里面本来是空的」，三种修法完全不同。
+	//
+	// 位置刻意放在上面那次 Save 之后：首次安装时 Save 会顺带备下第一份，
+	// 若在这一行之前打印，日志会说「目前是空的」而备份其实已经在了，自相矛盾。
+	// 也放在 -v 之后：-v 只是打印版本，不该去备份目录里写探针文件。
+	if bs := config.InspectBackupDir(); !bs.Exists {
+		log.Printf("[信息] 备份目录 %s 不存在：配置没法自己备份，升级或重装后可能找不回来"+
+			"（用飞牛安装包装的话正常不该出现这一条，请把它发我）", bs.Dir)
+	} else if !bs.Writable {
+		log.Printf("[警告] 备份目录 %s 在，但容器里写不进去（权限或只读挂载）："+
+			"升级前的备份只能靠安装脚本，而它不一定跑。请把这一行发我", bs.Dir)
+	} else if bs.Count == 0 {
+		log.Printf("[信息] 备份目录 %s 可用，目前是空的（在后台点一次「保存全部设置」就会备一份）", bs.Dir)
+	} else {
+		log.Printf("[信息] 备份目录 %s 可用：共 %d 份，最新 %s", bs.Dir, bs.Count, bs.Newest)
+	}
+
 	// 配置文件路径：默认与 ddns.env 同目录的 config.json
 	configPath := configFilePath(configDir)
 
@@ -124,16 +145,14 @@ func main() {
 	passFile := filepath.Join(configDir, "dashboard-password")
 	password, passSource := resolvePassword(passFile)
 
-	// 密码太弱就在启动日志里明说。后台对所有 IP 开放，这是唯一一道门，
-	// 而「应用设置」里的密码框没有任何校验，填 123456 也能保存成功。
-	// 这里不拒绝启动（把人锁在外面更糟），只提示，并让界面顶上挂一条黄条。
-	if reason := web.WeakPasswordReason(password); reason != "" {
-		if passSource == "env" {
-			log.Printf("[警告] 后台登录密码%s。这个后台对所有 IP 开放，建议改环境变量 DSA_PASSWORD 换一个 8 位以上、不重复不连续的密码", reason)
-		} else {
-			log.Printf("[警告] 后台登录密码%s。这个后台对所有 IP 开放，请在后台页面的「登录密码」里换一个", reason)
-		}
-	}
+	// 以前这里会对「密码太短」打一条 [警告]，并在后台页面顶上挂一条黄条。
+	// 2026-11-17 用户明确要求砍掉：他从安装向导里设的就是 6 位，用得挺好，
+	// 不想每次开机、每次开页面都被提醒一次（原话「密码这个问题就不用管了，
+	// 不行就把这个砍掉，用弱密码也无所谓了」）。
+	//
+	// 现在密码强弱只在两处还有意义，都和「常驻提示」无关：
+	//   · 主动改密码时校验（web.handleSetPassword）——那是用户正在输入、改一下的事；
+	//   · 密码是自动生成的时候，横幅里直接把明文打出来，方便用户复制。
 
 	srv := web.New(cfg, configPath, enginePath, workDir, web.Auth{
 		Env:      strings.TrimSpace(os.Getenv("DSA_PASSWORD")),
