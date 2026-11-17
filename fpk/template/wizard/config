@@ -4,147 +4,27 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "这两项决定装好之后你怎么进后台。在这里填好，装完直接打开就能用，不用再去「应用设置」里改。"
+        "helpText": "<b>两项都留空直接点保存 = 什么都不改</b>，可以放心点。<br><br>为什么这里只能改端口和密码：飞牛的向导表单是<b>静态</b>的，它不会把已保存的值填回输入框。所以域名、服务商、密钥这些<b>有内容</b>的项如果也做成表单项，你哪怕只想改个密码、其余不动地保存一次，也会把它们覆盖成表单里的默认值。这些请在<b>后台界面</b>里改——那里会显示当前真实的值。"
       },
       {
         "type": "text",
         "field": "wizard_port",
-        "label": "后台端口",
-        "initValue": "8080"
+        "label": "新端口（留空 = 不改）",
+        "initValue": ""
       },
       {
         "type": "tips",
-        "helpText": "装完用浏览器打开 http://飞牛IP:端口 就是后台，飞牛桌面上的应用图标也会指向这个端口。默认 8080；如果和 NAS 上别的服务撞端口，换成 1024-65535 之间任意一个数字即可。"
+        "helpText": "留空就保持当前端口。当前端口是多少？看你现在打开后台用的地址栏：<code>http://飞牛IP:这里的数字</code>。<br>改完保存后，旧端口的页面会打不开，用新端口重新访问即可（桌面图标会自动跟着改）。"
       },
       {
         "type": "password",
         "field": "wizard_dashboard_password",
-        "label": "登录密码",
+        "label": "新密码（留空 = 不改）",
         "initValue": ""
       },
       {
         "type": "tips",
-        "helpText": "自己定一个记得住的（建议 8 位以上）。留空的话，程序会自动生成一个并打印在「应用中心 → 本应用 → 运行日志」里。后台对所有 IP 开放，密码请务必设置。"
-      }
-    ]
-  },
-  {
-    "stepTitle": "域名解析",
-    "items": [
-      {
-        "type": "tips",
-        "helpText": "这里填：把测出来的最快 IP，写到哪个域名的解析记录上。"
-      },
-      {
-        "type": "select",
-        "field": "wizard_provider",
-        "label": "域名服务商",
-        "initValue": "cloudflare",
-        "options": [
-          { "label": "Cloudflare", "value": "cloudflare" },
-          { "label": "阿里云 DNS", "value": "aliyun" },
-          { "label": "腾讯云 DNSPod", "value": "dnspod" },
-          { "label": "华为云 DNS", "value": "huawei" }
-        ]
-      },
-      {
-        "type": "text",
-        "field": "wizard_domain",
-        "label": "优选域名",
-        "initValue": ""
-      },
-      {
-        "type": "tips",
-        "helpText": "优选域名填写示例：cf.example.com（只填域名本身，不要带 http:// 或路径）。留空也没关系，装完可以在后台界面里再填。"
-      },
-      {
-        "type": "text",
-        "field": "wizard_interval_minutes",
-        "label": "自动测速间隔（分钟）",
-        "initValue": "60"
-      },
-      {
-        "type": "tips",
-        "helpText": "多久重新测一次并更新 IP，默认 60 分钟。填 0 表示不自动测，只在后台点「立即测速」时才跑。"
-      }
-    ]
-  },
-  {
-    "stepTitle": "服务商密钥",
-    "items": [
-      {
-        "type": "tips",
-        "helpText": "只填上面选的那一家，其他几家全部留空。留空表示「保持原样不变」，不会把已有的密钥清掉；也可以装完再到后台界面里填。"
-      },
-      {
-        "type": "tips",
-        "helpText": "【Cloudflare】后台 → 我的个人资料 → API 令牌 → 创建令牌，权限选「编辑区域 DNS」。Zone ID 在域名概览页右侧。"
-      },
-      {
-        "type": "password",
-        "field": "wizard_cf_token",
-        "label": "Cloudflare API 令牌",
-        "initValue": ""
-      },
-      {
-        "type": "text",
-        "field": "wizard_cf_zone_id",
-        "label": "Cloudflare Zone ID",
-        "initValue": ""
-      },
-      {
-        "type": "tips",
-        "helpText": "【阿里云】控制台 → 访问控制 RAM → 创建 AccessKey，并授予该账号 DNS 编辑权限。"
-      },
-      {
-        "type": "password",
-        "field": "wizard_aliyun_ak",
-        "label": "阿里云 AccessKey ID",
-        "initValue": ""
-      },
-      {
-        "type": "password",
-        "field": "wizard_aliyun_sk",
-        "label": "阿里云 AccessKey Secret",
-        "initValue": ""
-      },
-      {
-        "type": "tips",
-        "helpText": "【腾讯云 DNSPod】控制台 → 访问管理 → API 密钥管理 → 新建密钥。"
-      },
-      {
-        "type": "password",
-        "field": "wizard_tencent_id",
-        "label": "腾讯云 SecretId",
-        "initValue": ""
-      },
-      {
-        "type": "password",
-        "field": "wizard_tencent_key",
-        "label": "腾讯云 SecretKey",
-        "initValue": ""
-      },
-      {
-        "type": "tips",
-        "helpText": "【华为云】控制台 → 我的凭证 → 访问密钥 → 新增。Zone ID 在云解析服务的域名列表里。"
-      },
-      {
-        "type": "password",
-        "field": "wizard_huawei_ak",
-        "label": "华为云 Access Key",
-        "initValue": ""
-      },
-      {
-        "type": "password",
-        "field": "wizard_huawei_sk",
-        "label": "华为云 Secret Key",
-        "initValue": ""
-      },
-      {
-        "type": "text",
-        "field": "wizard_huawei_zone_id",
-        "label": "华为云 Zone ID",
-        "initValue": ""
+        "helpText": "留空就保持当前密码。改完之后所有已登录的设备都要重新登录。<br>忘了密码也只能在这里重设——数据目录里的 <code>dashboard-password</code> 文件是旧密码，改完会被覆盖。"
       }
     ]
   }
