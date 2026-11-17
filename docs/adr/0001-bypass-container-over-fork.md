@@ -49,3 +49,34 @@ cf-dns-select 与其上游测速内核均为 GPL-3.0（强 copyleft）。选项�
 以及两个进程共享容器生命周期（任一退出则整体重启）。
 
 保留 `--target sidecar` 构建目标，供只想跑旁路的高级用户单独部署。
+
+## 修订 2（v3.0.x）：双进程 → 单进程
+
+上一段说的「单容器双进程」在实现里没有成立过，需要更正。
+
+- **主体（cf-dns-select）最终没有被引入。** 测速能力改为直接复用 xinyitang3/cfnb（MIT）
+  的 `main.py`：由本项目的 Go 主程序在需要测速时用 `exec.CommandContext("python3", ...)`
+  拉起，跑完读回 `ip.txt` 即结束。**它不是常驻进程**——不监听端口、不参与请求处理、
+  平时不存在。所以「双进程」这个说法只在测速那几十秒里勉强成立。
+- **Go 主程序一个进程承担全部职责**：统一后台界面（`web/`）、写 AdGuard Home 重写
+  （`dns/`）、推送四家 DNS 服务商（`ddns/`）、按需触发测速（`engine/`）。
+  入口 `main.go`，构建产物是单个静态二进制。
+- **数据耦合也随之消失。** 上一段说「主体的 `config.json` 与旁路的 `ddns.env` 共处一目录，
+  旁路直接读同目录文件」，这句话描述的前提不存在了：没有两个东西需要跨进程通信。
+  现在最优 IP 就是同一进程里 `engine.Result.IPs[0]`（`Result.Best()`）的返回值，
+  落盘为 `config.json` 的 `last_ip`，直接供 AdGuard 写入与 DDNS 推送使用。
+  **原「接缝」概念从「进程间的文件字段 `LastResultIP`」退化为「进程内的函数返回值」**，
+  该字段名在代码中已完全不存在（`grep LastResultIP` 无结果）。
+- 镜像仍是单容器：`Dockerfile` 的 `allinone` 阶段，基础镜像 `python:3.12-alpine`，
+  里面装 Go 二进制 + cfnb 脚本 + `docker-entrypoint.sh`。入口脚本最后一行是
+  `exec su-exec app:app "$APP_BIN" "$@"`——**只拉起一个进程**。
+
+另：上一段末尾「保留 `--target sidecar` 构建目标，供只想跑旁路的高级用户单独部署」
+也一并作废。`Dockerfile` 现在只有 `builder` 与 `allinone` 两个阶段，没有 `sidecar`。
+「只想跑旁路」这个需求随主体消失而消失——旁路已经不存在，它自己就是全部。
+
+对原决策的影响：**「不 fork 主体源码」这一核心不变**，而且比上一段更彻底——
+cf-dns-select 的代码一行都没进入本仓库，只引用了 MIT 的 cfnb，并以子进程方式调用。
+原 ADR 里「规避 GPL-3.0 copyleft」的论证随之失去实际意义：本项目自身已选择以
+GPL-3.0 发布（见 `LICENSE`），不再需要靠架构隔离来规避。保留此段历史是为了记录
+当时的判断依据，不是因为现在仍需遵守它。
