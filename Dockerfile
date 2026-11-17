@@ -8,6 +8,10 @@ ARG VERSION=dev
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
+# 每个包单独 COPY 是为了让改动只失效对应那一层缓存；但也意味着
+# **新增一个包就必须在这儿加一行**——漏了的话本地怎么编译都过，
+# 只有真正走 Dockerfile 构建时才会报「no required module provides package」。
+COPY applog/ applog/
 COPY config/ config/
 COPY ddns/ ddns/
 COPY dns/ dns/
