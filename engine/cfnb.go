@@ -227,9 +227,12 @@ func writeCfnbConfig(path string, opt Options) error {
 		// 关闭与本产品无关的附加能力
 		"ENABLE_WXPUSHER":        false,
 		"CF_ENABLED":             false,
-		"GITHUB_SYNC_ENABLED":    false,
 		"IP_CALIBRATION_ENABLED": false,
 		"ENABLE_LOGGING":         false,
+		// 这里以前还写了 "GITHUB_SYNC_ENABLED": false，但 cfnb 根本没有这个键
+		// （它只有 GITHUB_SYNC_MAX_RETRIES / GITHUB_SYNC_RETRY_DELAY /
+		// GIT_SYNC_PROCESS_TIMEOUT），写进去等于什么都没做，还容易让人以为
+		// 「GitHub 同步已经关掉了」是靠这一行保证的。
 
 		// 输出内容：IP 后面跟上速度与延迟。
 		//

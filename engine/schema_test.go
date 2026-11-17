@@ -249,3 +249,51 @@ func TestDescribeOverrides(t *testing.T) {
 		t.Errorf("不该把参数名打给用户看: %q", got)
 	}
 }
+
+// TestEveryBooleanSwitchAccountedFor 守的是「日志里有、界面没有」这个具体投诉。
+//
+// cfnb 一共 24 个布尔开关。18 个在 Schema 里给了开关，剩下 6 个必须能在
+// ExcludedReasons() 里找到名字和理由——否则用户又会在日志里看到一个
+// 「启用/禁用」，翻遍后台却找不到，只能再来问一遍。
+//
+// 这里把 6 个键写死：它们是「确定不给」的，不该因为某次重构被悄悄忘掉。
+func TestEveryBooleanSwitchAccountedFor(t *testing.T) {
+	exposed := map[string]bool{}
+	for _, s := range Schema {
+		if s.Kind == KindBool {
+			exposed[s.Key] = true
+		}
+	}
+
+	deliberatelyOff := []string{
+		"CF_ENABLED",         // 会和本程序自己的 DDNS 抢写同一条记录
+		"CF_PROXIED",         // 同上
+		"ENABLE_WXPUSHER",    // 需要另外申请凭证，本程序没接
+		"AD_HEADER_ENABLED",  // 往结果里插广告行
+		"AD_FOOTER_ENABLED",  // 同上
+		"AD_PERLINE_ENABLED", // 同上
+	}
+
+	var all strings.Builder
+	for _, e := range ExcludedReasons() {
+		all.WriteString(e.Key)
+		all.WriteString("\n")
+	}
+	text := all.String()
+
+	for _, k := range deliberatelyOff {
+		if exposed[k] {
+			t.Errorf("%s 不该出现在 Schema 里（它会让本程序的功能互相打架）", k)
+		}
+		if !strings.Contains(text, k) {
+			t.Errorf("%s 没有出现在「不给开关」的说明里——用户会以为界面漏了", k)
+		}
+	}
+
+	// 反过来：每个不给的键都得有非空理由，界面上不允许出现只有名字没有原因的行。
+	for _, e := range ExcludedReasons() {
+		if strings.TrimSpace(e.Why) == "" {
+			t.Errorf("%q 没有写原因", e.Key)
+		}
+	}
+}

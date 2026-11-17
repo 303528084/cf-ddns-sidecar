@@ -43,7 +43,10 @@ type OptSpec struct {
 	// Help 是问号里那段话。写给完全不懂编程的人看：先说这是什么，
 	// 再说「动了会发生什么」，最后说「什么时候该动」。不写参数名。
 	Help string `json:"help"`
-	// Def 是 cfnb 的默认值，也是「恢复默认」的目标值。
+	// Def 是程序实际写进引擎的值，也就是「恢复默认」的目标值。
+	// 注意它不一定等于 cfnb 自己的默认值：比如前置黑名单 cfnb 默认是开的，
+	// 我们替用户关掉了（聚合源的国家标签大多不准），这里的 Def 就是 false。
+	// 界面上的「已改」标记和「恢复默认」都以这个值为准。
 	Def any `json:"def"`
 	// Min/Max 只对 int/float 生效，0 表示不限。越界直接钳住而不是报错——
 	// 用户填 0 个并发不该被弹窗挡住，钳到 1 继续跑更符合预期。
@@ -289,18 +292,30 @@ type ExcludedOpt struct {
 //
 // 界面上会把这些理由原样显示出来——用户问「为什么这个没有」，答案必须
 // 在界面上看得到，而不是只存在于某次对话里。
+//
+// 覆盖情况（对着 cfnb 的 99 个默认参数数出来的）：24 个布尔开关里 18 个
+// 给了开关，剩下 6 个（CF_ENABLED / CF_PROXIED / ENABLE_WXPUSHER / AD_*3）
+// 在下面第 1、2、4 组里说明了原因；另外 57 个是超时、重试间隔、并发数这类
+// 数字，其中由程序自己管的在第 5 组、其余保持引擎默认值的在第 6 组。
+// 加新参数之前先确认它不属于这六类，否则用户会看到「日志里有、界面没有」。
 var excludedKeys = []ExcludedOpt{
-	{"CF_ENABLED / CF_API_TOKEN / CF_ZONE_ID / CF_DNS_RECORD_NAME",
+	{"CF_ENABLED / CF_API_TOKEN / CF_ZONE_ID / CF_DNS_RECORD_NAME / CF_TTL / CF_PROXIED",
 		"这是引擎自带的「更新 Cloudflare 解析记录」功能。本程序已经用自己的代码推 DDNS 了，" +
 			"两边同时写同一条记录会互相覆盖，解析结果会来回跳。所以这一组永久关闭。"},
-	{"ENABLE_WXPUSHER / WXPUSHER_*",
+	{"ENABLE_WXPUSHER / WXPUSHER_APP_TOKEN / WXPUSHER_UIDS / WXPUSHER_API_URL",
 		"微信推送。需要另外申请 AppToken 和 UID，本程序没有接这套通知，开了也不会有任何反应。"},
-	{"GITHUB_SYNC_ENABLED / GITHUB_SYNC_*",
+	{"GITHUB_SYNC_MAX_RETRIES / GITHUB_SYNC_RETRY_DELAY / GIT_SYNC_PROCESS_TIMEOUT",
 		"把结果同步到 GitHub 仓库。需要仓库地址和令牌，本程序没有接，开了也不会有反应。"},
 	{"AD_HEADER_ENABLED / AD_FOOTER_ENABLED / AD_PERLINE_ENABLED",
 		"往结果文件里插广告行。这是上游项目给自己用的，插进来会污染本程序的解析。"},
-	{"OUTPUT_FILE / LOG_FILE / USER_AGENT / FETCH_TIMEOUT",
-		"文件路径和抓取超时由程序自己管。路径改了会读不到结果，超时改了会影响数据源抓取。"},
+	{"OUTPUT_FILE / LOG_FILE / USER_AGENT / ADDITIONAL_SOURCES / GLOBAL_TOP_N / BANDWIDTH_CANDIDATES / DNS_UPDATE_TARGET_COUNT",
+		"这几项由程序自己填：结果文件写在哪、去哪里拉候选、保留几个、要不要加内置聚合源，" +
+			"都是本程序根据你在界面上填的东西算出来的。改了会直接和界面对不上（比如结果文件换了名字，" +
+			"程序就找不到测速结果，页面一片空白）。"},
+	{"其余的超时 / 重试间隔 / 并发数（*_TIMEOUT、*_CONNECT_TIMEOUT、*_RETRY_DELAY、*_MAX_RETRIES、*_WORKERS、PROGRESS_PRINT_INTERVAL 等）",
+		"这些是引擎内部的节奏参数，我们保留了它的默认值。它们不改变「选哪些 IP」，只影响跑得多快、" +
+			"失败几次才放弃；调错的方向几乎都是「更慢或更容易失败」，而不是「更准」。真正需要调的" +
+			"那几项（总并发数、反代验证并发数、带宽测速并发数、各阶段超时）已经在上面「性能与超时」里给了开关。"},
 }
 
 // specByKey 是 Schema 的索引，查起来 O(1)。
