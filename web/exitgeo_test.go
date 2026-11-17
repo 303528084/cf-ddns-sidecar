@@ -81,14 +81,34 @@ func TestParseTrace(t *testing.T) {
 }
 
 func TestExitInfo(t *testing.T) {
-	cases := []struct{ loc, colo, want string }{
-		{"JP", "NRT", "JP/NRT"},
-		{"JP", "", "JP"},
-		{"", "", "未知"},
+	cases := []struct{ colo, want string }{
+		{"NRT", "日本·东京(NRT)"},
+		{"SIN", "新加坡·新加坡(SIN)"},
+		{"LAX", "美国·洛杉矶(LAX)"},
+		{"HKG", "中国香港·香港(HKG)"},
+		// 表里没有的机房：只给代码，不猜国家（编一个比不给更糟）。
+		{"ZZZ", "机房 ZZZ（位置未知）"},
+		{"", "位置未知"},
 	}
 	for _, c := range cases {
-		if got := exitInfo(c.loc, c.colo); got != c.want {
-			t.Errorf("exitInfo(%q,%q)=%q，期望 %q", c.loc, c.colo, got, c.want)
+		if got := exitInfo(c.colo); got != c.want {
+			t.Errorf("exitInfo(%q)=%q，期望 %q", c.colo, got, c.want)
+		}
+	}
+}
+
+// TestColoGeoSanity 守住那张对照表不被写坏：国家/城市不能为空，
+// 城市里不能混进「location unknown」这类占位话术（那应该走 fallback 分支）。
+func TestColoGeoSanity(t *testing.T) {
+	if len(coloGeo) < 30 {
+		t.Fatalf("机房表只剩 %d 条，八成是被误删了", len(coloGeo))
+	}
+	for code, g := range coloGeo {
+		if len(code) != 3 {
+			t.Errorf("机房代码 %q 不是 3 位", code)
+		}
+		if g.country == "" || g.city == "" {
+			t.Errorf("%s 的国家或城市为空: %+v", code, g)
 		}
 	}
 }

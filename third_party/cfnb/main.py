@@ -587,6 +587,19 @@ async def _batch_get_ip_risk_levels_async(ips, workers):
         await asyncio.gather(*worker_tasks)
     return results
 
+def display_node(node):
+    """本地补丁（cf-ddns-sidecar）：打印日志时把国家标签去掉。
+
+    为什么要有这个函数：`ip:端口` 不带国家标签的节点，会掉进 _parse_text_nodes
+    的 pending 分支，然后被 _resolve_countries_batch 逐条探测——那一步既慢，
+    又会把探测不通的节点直接丢掉。所以上游会统一补一个占位标签（#US）。
+    占位值只服务本产品已经关闭的国家过滤，对结果零影响；但它原样显示在
+    「最终优选节点」里，会被读成「程序认为这些 IP 都在美国」。
+    真正的位置由调用方的「各节点实际出口」那一行给。节点字符串本身不改，
+    下游（写 ip.txt、DNS 更新）照常用原样。
+    """
+    return node.rsplit('#', 1)[0] if '#' in node else node
+
 def extract_country_code(label):
     label = label.strip()
     if not label:
@@ -1521,7 +1534,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             http_lat_ms = http_latency_map[node]
         if http_jitter_map and node in http_jitter_map:
             http_jitter_ms = http_jitter_map[node]
-        display_label = node if '#' in node else content
+        display_label = display_node(node) if '#' in node else content
         line = f"{i}. {display_label} 速度 {speed:.2f} Mbps"
         if http_lat_ms is not None:
             line += f" 延迟 {http_lat_ms:.2f} ms"
@@ -1888,7 +1901,7 @@ def main():
             tcp_lat = latency_map.get(node, float('inf'))
             http_lat = http_latency_map.get(node, None)
             http_jitter = http_jitter_map.get(node, None)
-            line = f"{i}. {node} 速度 {speed:.2f} Mbps"
+            line = f"{i}. {display_node(node)} 速度 {speed:.2f} Mbps"
             if http_lat is not None:
                 line += f" 延迟 {http_lat:.2f} ms"
             if http_jitter is not None:

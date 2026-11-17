@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cloudflare 优选 IP · DDNS</title>
+<!-- 标签页图标：一段内联的 SVG（蓝底白色闪电），不额外发请求。
+     为什么不放 /favicon.ico 文件：这个后台经常被嵌在飞牛的应用页里，
+     路径前缀不一定落在根上，反而容易 404；内联就没有这个问题，
+     断网时也一样显示。纯装饰，去掉不影响任何功能。 -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzI1NjNlYicvPjxwYXRoIGQ9J00xOC40IDQgOCAxOC42aDYuMkwxMi44IDI4IDI0IDEzLjJoLTYuNHonIGZpbGw9JyNmZmYnLz48L3N2Zz4=">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzI1NjNlYicvPjxwYXRoIGQ9J00xOC40IDQgOCAxOC42aDYuMkwxMi44IDI4IDI0IDEzLjJoLTYuNHonIGZpbGw9JyNmZmYnLz48L3N2Zz4=">
 <style>
   :root {
     --bg: #f5f6f8;
@@ -46,6 +52,11 @@
   }
   .card h2 { font-size: 14.5px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
   .card h2 .tag { font-size: 11px; font-weight: 400; color: var(--muted); }
+  /* 卡片标题右侧的工具条：只有「运行日志」这张卡用得上，但做成通用样式，
+     以后再放别的按钮不用重新写一遍。 */
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .card-head h2 { margin-bottom: 12px; }
+  .btn-mini { padding: 4px 11px; font-size: 12px; border-radius: 7px; flex: none; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; }
   .row > * { flex: 1 1 200px; }
   label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
@@ -81,9 +92,13 @@
   .domain-row button { padding: 6px 10px; font-size: 12.5px; }
   .logs {
     background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-    padding: 10px 12px; height: 190px; overflow: auto;
+    padding: 10px 12px; height: 320px; overflow: auto;
     font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     white-space: pre-wrap; word-break: break-all; color: var(--muted);
+    /* 这块的主要用途就是「选中、复制出去问人」，所以光标明确提示可选。
+       高度固定 + overflow:auto 是为了不让日志把整页顶长；320px 约 15 行，
+       比原来的 190px（约 9 行）多看几条，又不会把下面的滚动条拉得太远。 */
+    cursor: text; user-select: text;
   }
   .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -339,9 +354,12 @@
 
   <!-- 日志 -->
   <div class="card">
-    <h2>运行日志</h2>
+    <div class="card-head">
+      <h2>运行日志</h2>
+      <button class="btn-mini" id="btn-copy-log" onclick="copyLogs()">复制全部</button>
+    </div>
     <div class="logs" id="logs">暂无日志</div>
-    <div class="hint" id="log-hint">日志同时写进数据目录的 app.log（超过 2MB 自动轮转），重启后这里会显示上次的最近 100 行。</div>
+    <div class="hint" id="log-hint">最新的在最上面；点「复制全部」整段带走，也可以直接拖选——拖着选字的时候这里会暂停刷新，免得选到一半文字被换掉。</div>
   </div>
 </div>
 
@@ -370,8 +388,19 @@ const PROVIDERS = {
   ]}
 };
 
+// LOG_HINT_TAIL 是日志卡下面那行提示的固定后半句。
+// 单独抽出来是因为前半句要拼运行时的日志文件名，两处必须一致——否则
+// 「日志插到哪里去了」和「怎么复制」这两句话里总有一句会丢。
+const LOG_HINT_TAIL = "最新的在最上面；点「复制全部」整段带走，也可以直接拖选——" +
+  "拖着选字的时候这里会暂停刷新，免得选到一半文字被换掉。";
+
 let credState = {};
 let pollTimer = null;
+// 日志面板的两个缓存：logShown 是「当前显示顺序」（最新在上）的那一份，
+// logSig 是它的指纹。没有这两个，每次轮询都要不必要地重写 DOM，
+// 而重写 DOM 会把用户正在拖选的那段文字连同选择一起清掉。
+let logShown = [];
+let logSig = "";
 
 function $(id) { return document.getElementById(id); }
 function toast(msg) {
@@ -426,13 +455,23 @@ function showLogin() {
   $("app").classList.add("hidden");
 }
 
+// enterApp 把登录遮罩收起来、露出后台。
+//
+// 单独抽成一个函数是因为它有**两个**调用点：登录成功后，以及「刷新页面时
+// 手里已经有令牌」。以前只有登录成功那一处会收起遮罩，于是刷新一下就出现
+// 那个假象——数据其实已经按令牌加载好了，遮罩却一直盖在上面，看起来像是
+// 「每次刷新都要重新输密码」。真被 401 拒绝时 api() 会自己把遮罩放回来。
+function enterApp() {
+  $("pw").value = "";
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+}
+
 async function doLogin() {
   try {
     const r = await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
     if (r && r.token) setToken(r.token);
-    $("pw").value = "";
-    $("login").classList.add("hidden");
-    $("app").classList.remove("hidden");
+    enterApp();
     boot();
   } catch (e) { toast(e.message); }
 }
@@ -540,12 +579,7 @@ async function loadStatus() {
   $("btn-run").disabled = s.running;
   $("btn-run").textContent = s.running ? "测速中…" : "立即测速";
 
-  const logs = $("logs");
-  if (s.logs && s.logs.length) {
-    const atBottom = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 30;
-    logs.textContent = s.logs.join("\n");
-    if (atBottom) logs.scrollTop = logs.scrollHeight;
-  }
+  renderLogs(s.logs);
 
   let err = $("s-err");
   err.innerHTML = "";
@@ -567,6 +601,84 @@ function setStat(id, text, color) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// renderLogs 把一份「正序」日志数组倒过来显示：最新的在最上面。
+//
+// 为什么倒序：日志是按时间往后追加的，正序看的时候要一路滚到底才知道刚才
+// 发生了什么，而真正想看的永远是最新那几行。落盘的 app.log 不动，仍然是
+// 正序（用别的工具打开时代码习惯没变），只有这一处的显示顺序反过来。
+//
+// 三件事必须挡住，否则「方便查看」会变成「看不了」：
+//   1) 内容没变就不动 DOM —— 否则每 2 秒一次轮询都在重写，页面一直闪；
+//   2) 用户正在框里拖选时不动 DOM —— 一重写，选中的内容和选区一起没了，
+//      这正是「不方便复制」的根源；
+//   3) 用户自己往下滚动看历史时不要把位置拽回去 —— 只有停在顶部
+//      （<= 4px，含一点点滚动余量）才跟着最新一条走。
+function renderLogs(next) {
+  const box = $("logs");
+  if (!box) return;
+  if (!next || !next.length) return;         // 空的时候保留「暂无日志」
+  if (selectionInside(box)) return;          // 正在选字，等选完再更新
+
+  const shown = next.slice().reverse();
+  const text = shown.join("\n");
+  if (text === logSig) return;               // 一个字符都没变，什么都不做
+
+  const atTop = box.scrollTop <= 4;
+  logShown = shown;
+  logSig = text;
+  box.textContent = text;
+  if (atTop) box.scrollTop = 0;
+}
+
+// selectionInside 判断当前选区是否落在某个元素里。
+// 没有选区、或只是光标点了一下（isCollapsed），都不算「正在选」。
+function selectionInside(el) {
+  const sel = window.getSelection && window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+  for (let i = 0; i < sel.rangeCount; i++) {
+    if (el.contains(sel.getRangeAt(i).commonAncestorContainer)) return true;
+  }
+  return false;
+}
+
+// copyLogs 复制当前显示的全部日志（顺序与屏幕上一致，所见即所复）。
+async function copyLogs() {
+  const text = logShown.length ? logShown.join("\n") : $("logs").textContent;
+  if (!text || text === "暂无日志") { toast("还没有日志可复制"); return; }
+  const ok = await copyText(text);
+  toast(ok ? `已复制 ${logShown.length} 行（顺序与显示一致）` : "复制失败，请直接拖选后按 Ctrl+C");
+}
+
+// copyText 把一段文字放进剪贴板。
+//
+// 为什么不能只用 navigator.clipboard：后台一般是 http://<NAS>:端口 直连的，
+// 而 Clipboard API 只在「安全上下文」（https 或 127.0.0.1）里存在。飞牛把
+// 后台嵌在 iframe 里时更是如此。所以必须有 textarea + execCommand 这条
+// 兜底路径，否则按钮在某些浏览器上点了就是没反应。
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(() => true, () => legacyCopy(text));
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  // 不能 display:none —— 那样 select() 选不中，execCommand 复制出来是空的。
+  ta.style.position = "fixed";
+  ta.style.top = "-2000px";
+  ta.style.left = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 // renderBanners 渲染顶部的全局告警。
@@ -598,7 +710,7 @@ function renderBanners(s) {
 
   if (s.log_file) {
     $("log-hint").textContent = "日志同时写进数据目录的 " + s.log_file
-      + "（超过 2MB 自动轮转，留一份 .1 历史），重启后这里会显示上次的最近 100 行。";
+      + "（超过 2MB 自动轮转，留一份 .1 历史），重启后这里会显示上次的最近 100 行。" + LOG_HINT_TAIL;
   }
 }
 
@@ -872,6 +984,10 @@ async function doRun() {
 }
 
 async function boot() {
+  // 手里已经有令牌就别先摆登录页：先按「已登录」展示，后面的请求真被
+  // 401 拒绝时 api() 会把遮罩放回来。这样刷新一下就直接回到后台，
+  // 而不是盖着一个登录框让人以为登录状态没了。
+  if (getToken()) enterApp();
   try {
     credState = await api("/api/credentials");
     await loadConfig();
@@ -880,6 +996,10 @@ async function boot() {
     if (e.message !== "未登录") toast(e.message);
     return;
   }
+  // 走到这里说明身份是有效的——不管靠的是 localStorage 里的令牌，还是
+  // 服务端那次登录时种下的 Cookie（飞牛 iframe 里 localStorage 可能被禁，
+  // 那时就只有 Cookie 能用）。所以这里要再收一次遮罩，不能只看有没有令牌。
+  enterApp();
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(loadStatus, 3000);
 }

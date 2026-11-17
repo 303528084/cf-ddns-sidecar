@@ -115,23 +115,87 @@ func parseTrace(body string) (loc, colo string, err error) {
 	return loc, colo, nil
 }
 
-// exitInfo 是「哪个 IP 落在哪个机房」的一句话描述。
-func exitInfo(loc, colo string) string {
-	switch {
-	case loc != "" && colo != "":
-		return loc + "/" + colo
-	case loc != "":
-		return loc
-	default:
-		return "未知"
+// exitInfo 是「这个节点落在哪儿」的一句话描述。
+//
+// 为什么用 colo（机房代码）而不是 loc（国家代码）：2026-11-17 实测了 6 个
+// 优选 IP，返回的 loc **全部是 CN**——那是我们自己宽带出口的国家，不是节点的。
+// 真正跟着 IP 变的是 colo：同一个网络下，不同 IP 分别落到 FRA / LAX / NRT。
+// 所以「这个 IP 把我送进了哪个机房」才是能解释速度差异的那条事实。
+func exitInfo(colo string) string {
+	if colo == "" {
+		return "位置未知"
 	}
+	if g, ok := coloGeo[colo]; ok {
+		return g.country + "·" + g.city + "(" + colo + ")"
+	}
+	// 表里没有就老实说「位置未知」，只给代码。两百多个机房铺全没必要，
+	// 而随手编一个国家比不给更糟。
+	return "机房 " + colo + "（位置未知）"
+}
+
+// place 是机房代码到「国家 + 城市」的对照表。
+//
+// 只收常见的那批：Cloudflare 有 300 多个机房，而实际被优选到的就那十几个。
+// 表里查不到时调用方会显示「位置未知」，不会瞎猜。
+// 注意香港/台湾按国内口径写成「中国香港」「中国台湾」。
+type place struct{ country, city string }
+
+var coloGeo = map[string]place{
+	// 亚洲
+	"NRT": {"日本", "东京"}, "HND": {"日本", "东京"}, "KIX": {"日本", "大阪"},
+	"ICN": {"韩国", "首尔"}, "HKG": {"中国香港", "香港"}, "TPE": {"中国台湾", "台北"},
+	"SIN": {"新加坡", "新加坡"}, "BKK": {"泰国", "曼谷"}, "KUL": {"马来西亚", "吉隆坡"},
+	"CGK": {"印度尼西亚", "雅加达"}, "MNL": {"菲律宾", "马尼拉"},
+	"HAN": {"越南", "河内"}, "SGN": {"越南", "胡志明市"},
+	"DEL": {"印度", "新德里"}, "BOM": {"印度", "孟买"}, "MAA": {"印度", "金奈"},
+	"CMB": {"斯里兰卡", "科伦坡"}, "DAC": {"孟加拉国", "达卡"},
+	"KTM": {"尼泊尔", "加德满都"}, "ISB": {"巴基斯坦", "伊斯兰堡"},
+	"ALA": {"哈萨克斯坦", "阿拉木图"}, "TAS": {"乌兹别克斯坦", "塔什干"},
+
+	// 北美
+	"LAX": {"美国", "洛杉矶"}, "SJC": {"美国", "圣何塞"}, "SFO": {"美国", "旧金山"},
+	"SEA": {"美国", "西雅图"}, "PDX": {"美国", "波特兰"}, "DEN": {"美国", "丹佛"},
+	"ORD": {"美国", "芝加哥"}, "DFW": {"美国", "达拉斯"}, "IAH": {"美国", "休斯顿"},
+	"IAD": {"美国", "华盛顿"}, "EWR": {"美国", "纽瓦克"}, "ATL": {"美国", "亚特兰大"},
+	"MIA": {"美国", "迈阿密"}, "BOS": {"美国", "波士顿"}, "PHX": {"美国", "凤凰城"},
+	"YYZ": {"加拿大", "多伦多"}, "YVR": {"加拿大", "温哥华"},
+	"MEX": {"墨西哥", "墨西哥城"}, "PTY": {"巴拿马", "巴拿马城"},
+
+	// 欧洲
+	"FRA": {"德国", "法兰克福"}, "MUC": {"德国", "慕尼黑"}, "BER": {"德国", "柏林"},
+	"DUS": {"德国", "杜塞尔多夫"}, "HAM": {"德国", "汉堡"},
+	"AMS": {"荷兰", "阿姆斯特丹"}, "BRU": {"比利时", "布鲁塞尔"},
+	"LHR": {"英国", "伦敦"}, "LGW": {"英国", "伦敦"}, "MAN": {"英国", "曼彻斯特"},
+	"CDG": {"法国", "巴黎"}, "MRS": {"法国", "马赛"},
+	"MAD": {"西班牙", "马德里"}, "BCN": {"西班牙", "巴塞罗那"},
+	"LIS": {"葡萄牙", "里斯本"}, "FCO": {"意大利", "罗马"}, "MXP": {"意大利", "米兰"},
+	"ZRH": {"瑞士", "苏黎世"}, "VIE": {"奥地利", "维也纳"},
+	"ARN": {"瑞典", "斯德哥尔摩"}, "CPH": {"丹麦", "哥本哈根"}, "OSL": {"挪威", "奥斯陆"},
+	"HEL": {"芬兰", "赫尔辛基"}, "WAW": {"波兰", "华沙"}, "PRG": {"捷克", "布拉格"},
+	"BUD": {"匈牙利", "布达佩斯"}, "OTP": {"罗马尼亚", "布加勒斯特"},
+	"SOF": {"保加利亚", "索非亚"}, "BEG": {"塞尔维亚", "贝尔格莱德"},
+	"ATH": {"希腊", "雅典"}, "DUB": {"爱尔兰", "都柏林"},
+	"IST": {"土耳其", "伊斯坦布尔"}, "SVO": {"俄罗斯", "莫斯科"},
+	"DME": {"俄罗斯", "莫斯科"}, "LED": {"俄罗斯", "圣彼得堡"},
+
+	// 大洋洲 / 中东 / 非洲 / 南美
+	"SYD": {"澳大利亚", "悉尼"}, "MEL": {"澳大利亚", "墨尔本"},
+	"BNE": {"澳大利亚", "布里斯班"}, "PER": {"澳大利亚", "珀斯"},
+	"AKL": {"新西兰", "奥克兰"},
+	"DXB": {"阿联酋", "迪拜"}, "TLV": {"以色列", "特拉维夫"},
+	"RUH": {"沙特阿拉伯", "利雅得"}, "KWI": {"科威特", "科威特城"},
+	"JNB": {"南非", "约翰内斯堡"}, "CPT": {"南非", "开普敦"},
+	"LOS": {"尼日利亚", "拉各斯"}, "NBO": {"肯尼亚", "内罗毕"},
+	"GRU": {"巴西", "圣保罗"}, "GIG": {"巴西", "里约热内卢"},
+	"EZE": {"阿根廷", "布宜诺斯艾利斯"}, "SCL": {"智利", "圣地亚哥"},
+	"LIM": {"秘鲁", "利马"}, "BOG": {"哥伦比亚", "波哥大"},
 }
 
 // logExitCountries 探测这一轮选出来的 IP 实际落在哪个机房，并写一行日志。
 //
 // 只探前 exitProbes 个：这一行的用途是让用户对「这些 IP 到底在哪儿」有个
-// 可信的说法，不是做全量地理库。并发拉高一点让这一批一次跑完，尽量不拖慢
-// 紧接着的写 DNS。
+// 可信的说法，不是做全量地理库。这些正是日志里排在最前面的那几条，所以
+// 输出的序号和上面的列表一一对应（1 对 1、2 对 2）。
 func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 	n := len(ips)
 	if n == 0 {
@@ -143,6 +207,7 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 	head := ips[:n]
 
 	results := make([]string, n)
+	okCount := make([]bool, n)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, traceWorkers)
 	for i, ip := range head {
@@ -154,30 +219,28 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 
 			cctx, cancel := context.WithTimeout(ctx, traceTimeout)
 			defer cancel()
-			loc, colo, err := traceThroughIP(cctx, ip, 443)
+			_, colo, err := traceThroughIP(cctx, ip, 443)
 			if err != nil {
-				results[i] = ip + "→未知"
+				results[i] = fmt.Sprintf("%d. %s→探测不到", i+1, ip)
 				return
 			}
-			results[i] = ip + "→" + exitInfo(loc, colo)
+			okCount[i] = true
+			results[i] = fmt.Sprintf("%d. %s→%s", i+1, ip, exitInfo(colo))
 		}(i, ip)
 	}
 	wg.Wait()
 
 	known := 0
-	for _, r := range results {
-		if !strings.HasSuffix(r, "→未知") {
+	for _, ok := range okCount {
+		if ok {
 			known++
 		}
 	}
-	// 括号里那半句是必须的：日志里那些 `#US` 就在上一屏，用户看到的第一反应
-	// 就是「它把我这些 IP 全认成美国了」。不在这里挑明，等于让他带着一个
-	// 错误的结论去怀疑测速结果。
+	// 一个都没探到就只留一句结论，别把 5 条「探测不到」铺开——那既占地方，
+	// 又像是出了问题（其实只是这个网络到那个域名不通，和测速结果无关）。
 	if known == 0 {
-		s.appendLog("各节点实际出口：探测不到（连不上 " + traceHost +
-			"，与测速结果无关；上面每行结尾的 #US 是占位值，不是真实位置）")
+		s.appendLog("各节点实际出口：探测不到（连不上 " + traceHost + "，与测速结果无关）")
 		return
 	}
-	s.appendLog("各节点实际出口（上面每行结尾的 #US 是占位值，不是真实位置）：" +
-		strings.Join(results, "、"))
+	s.appendLog("各节点实际出口（对应上面同样序号那一条）：" + strings.Join(results, "、"))
 }
