@@ -1,0 +1,38 @@
+{
+    "docker-project":
+    {
+        "projects":
+        [
+            {
+                "name": "cf-ddns-sidecar",
+                "path": "docker"
+            }
+        ]
+    },
+    "data-share":
+    {
+        "shares":
+        [
+            {
+                "name": "cf-ddns-sidecar",
+                "permission":
+                {
+                    "rw":
+                    [
+                        "docker-cf-ddns-sidecar"
+                    ]
+                }
+            },
+            {
+                "name": "cf-ddns-sidecar/data",
+                "permission":
+                {
+                    "rw":
+                    [
+                        "docker-cf-ddns-sidecar"
+                    ]
+                }
+            }
+        ]
+    }
+}

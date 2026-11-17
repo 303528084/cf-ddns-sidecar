@@ -1,0 +1,86 @@
+#!/bin/bash
+
+FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
+# data-share 根（与 docker-compose.yaml 中的挂载路径保持一致）
+SHARE_DATA="${TRIM_APPDEST}/shares/cf-ddns-sidecar/data"
+
+# 首次启动时生成示例配置文件（仅当不存在时），避免 env_file 缺失导致
+# compose 无法拉起容器。用户编辑 ddns.env 后在应用中心重启本应用生效。
+gen_examples () {
+    if [ ! -f "${SHARE_DATA}/sidecar/ddns.env" ]; then
+        mkdir -p "${SHARE_DATA}/sidecar" "${SHARE_DATA}/conf"
+        cat > "${SHARE_DATA}/sidecar/ddns.env" <<'EOF'
+# ============================================================
+# cf-ddns-sidecar 配置（本文件是唯一必填入口）
+# 修改保存后：飞牛「应用中心 → 本应用 → 重启」使其生效
+# ============================================================
+
+# --- 必填：DDNS 服务商（四选一：cloudflare / aliyun / dnspod / huawei）---
+CFDDNS_PROVIDER=cloudflare
+
+# --- 必填：你的优选域名（A 记录将指向最优 IP）---
+CFDDNS_DOMAIN=cf.example.com
+
+# --- Cloudflare 密钥（provider=cloudflare 时必填）---
+#CF_API_TOKEN=
+#CF_ZONE_ID=
+
+# --- 阿里云密钥（provider=aliyun 时必填）---
+#ALIYUN_ACCESS_KEY_ID=
+#ALIYUN_ACCESS_KEY_SECRET=
+# 多级公共后缀（如 example.com.cn）才需要，一般留空
+#ALIYUN_ROOT_DOMAIN=
+
+# --- 腾讯云 DNSPod 密钥（provider=dnspod 时必填）---
+#TENCENT_SECRET_ID=
+#TENCENT_SECRET_KEY=
+# 多级公共后缀才需要，一般留空
+#DNSPOD_ROOT_DOMAIN=
+
+# --- 华为云密钥（provider=huawei 时必填）---
+#HUAWEI_AK=
+#HUAWEI_SK=
+#HUAWEI_ZONE_ID=
+
+# --- 可选：轮询间隔（秒，默认 30）---
+#CFDDNS_POLL_INTERVAL=30
+EOF
+        echo "[cf-ddns-sidecar] 已生成示例配置: ${SHARE_DATA}/sidecar/ddns.env"
+    fi
+}
+
+is_docker_running () {
+    DOCKER_NAME=""
+
+    if [ -f "$FILE_PATH" ]; then
+        DOCKER_NAME=$(cat "$FILE_PATH" | grep "container_name" | awk -F ':' '{print $2}' | xargs)
+    fi
+
+    if [ -n "$DOCKER_NAME" ]; then
+        docker inspect "$DOCKER_NAME" 2>/dev/null | grep -q '"Status": "running"' || return 1
+        return 0
+    fi
+    return 1
+}
+
+case $1 in
+    start)
+        # docker application will be started by appcenter
+        gen_examples
+        exit 0
+        ;;
+    stop)
+        # docker application will be stopped by appcenter
+        exit 0
+        ;;
+    status)
+        if is_docker_running; then
+            exit 0
+        else
+            exit 3
+        fi
+        ;;
+    *)
+        exit 1
+        ;;
+esac

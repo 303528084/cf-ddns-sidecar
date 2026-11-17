@@ -1,0 +1,15 @@
+# 本地运行产物（含密钥，严禁提交）
+.env
+config.yaml
+config/config.yaml
+
+# 数据目录
+sidecar-data/
+subject-data/
+
+# 构建产物
+dist-fpk/
+*.fpk
+test_icon.png
+fnpack
+fnpack*

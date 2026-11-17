@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "cf-ddns-sidecar.Application": {
+            "title": "优选IP DDNS",
+            "icon": "images/icon_{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "8080",
+            "url": "/",
+            "allUsers": false
+        }
+    }
+}

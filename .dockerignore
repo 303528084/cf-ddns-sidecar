@@ -1,0 +1,16 @@
+# 防止敏感文件与无关目录进入 Docker 构建上下文（Dockerfile 的 COPY . .）
+.env
+config.yaml
+sidecar-data/
+subject-data/
+dist-fpk/
+*.fpk
+.git/
+.github/
+fpk/
+scripts/
+docs/
+README.md
+LICENSE
+test_icon.png
+fnpack*

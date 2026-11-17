@@ -1,0 +1,105 @@
+name: Build & Release
+
+# 打 tag（如 v1.0.0）推送后触发：
+#   1) buildx 构建 amd64 + arm64 镜像并推送 DockerHub
+#   2) 用 fnpack 打包飞牛 .fpk
+#   3) 创建 GitHub Release，仅上传 .fpk 文件
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（X.Y.Z）"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/cf-ddns-sidecar
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "版本号: $V / 镜像tag: v$V"
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建并推送多架构镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: 安装 fnpack
+        env:
+          FNPACK_URL: ${{ vars.FNPACK_URL }}
+        run: |
+          set -e
+          URL="${FNPACK_URL:-https://developer.fnnas.com/downloads/fnpack-latest-linux-amd64}"
+          echo "下载 fnpack: $URL"
+          curl -fsSL "$URL" -o fnpack || {
+            echo "::error::fnpack 下载失败。请在仓库 Settings → Variables 设置 FNPACK_URL 为官方 linux-amd64 二进制直链。"
+            exit 1
+          }
+          chmod +x fnpack
+          ./fnpack --help >/dev/null 2>&1 || echo "（fnpack 可执行，帮助命令非 0 属正常）"
+
+      - name: 打包飞牛 FPK
+        env:
+          DOCKERHUB_REPO: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ steps.ver.outputs.tag }}
+          FPK_VERSION: ${{ steps.ver.outputs.version }}
+          FNPACK_BIN: ${{ github.workspace }}/fnpack
+        run: python3 scripts/build_fpk.py
+
+      - name: 列出产物
+        run: ls -lh dist-fpk/
+
+      - name: 创建 GitHub Release 并仅上传 FPK
+        uses: softprops/action-gh-release@v2
+        with:
+          # 用已解析的 tag（vX.Y.Z），确保 workflow_dispatch 手动触发时
+          # 不会把 Release 错误地挂到分支名上。
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "v${{ steps.ver.outputs.version }}"
+          body: |
+            ## Cloudflare 优选 IP + DDNS（飞牛 fnOS）
+
+            本 Release 仅提供飞牛应用安装包 `.fpk`。
+            Docker 镜像（amd64/arm64）已推送至 DockerHub：`${{ env.IMAGE_NAME }}`。
+
+            安装：下载下方 `.fpk` → 飞牛「应用中心 → 设置 → 手动安装应用」。
+          files: |
+            dist-fpk/*.fpk
+          fail_on_unmatched_files: true

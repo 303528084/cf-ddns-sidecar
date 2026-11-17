@@ -1,0 +1,30 @@
+services:
+  # 主体：测速 + 写入 AdGuard Home（官方多架构镜像，源码零改动）
+  cf-dns-select:
+    image: ghcr.io/neon9809/cf-dns-select:latest
+    container_name: cf-dns-select
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # 允许访问主体 Dashboard 的网段，按需修改后到应用详情里重启
+      DSA_ALLOWED_CIDRS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+      DSA_COLO_IP_DB: /app/data/colo_ip_db.json
+      TZ: Asia/Shanghai
+    volumes:
+      - "/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/subject:/app/data"
+
+  # 旁路：读取最优 IP 并推送 DDNS
+  cf-ddns-sidecar:
+    image: {{DOCKERHUB_REPO}}:{{IMAGE_TAG}}
+    container_name: cf-ddns-sidecar
+    restart: unless-stopped
+    depends_on:
+      - cf-dns-select
+    env_file:
+      # 首次 start 时由 cmd/main 自动生成示例文件，用户编辑后重启应用生效
+      - "/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/sidecar/ddns.env"
+    volumes:
+      - "/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/sidecar:/app/data"
+      - "/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/subject:/app/subject:ro"
+      # 可选：高级配置（不创建 config.yaml 则纯用 ddns.env 环境变量）
+      - "/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/conf:/app/config:ro"
