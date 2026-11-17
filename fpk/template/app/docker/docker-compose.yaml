@@ -33,3 +33,13 @@ services:
       # 飞牛数据共享目录的稳定绝对路径（安装时自动创建并授予本应用 ACL 权限）
       # 一个目录装下全部：config.json、ddns.env、dashboard-password、测速工作目录
       - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/data:/app/data"
+      # 升级前的自动备份（由宿主机脚本 cmd/upgrade_init 写进来），**只读**挂载。
+      #
+      # 为什么路径是 cf-ddns-sidecar-backup 而不是 cf-ddns-sidecar/share/...：
+      # 飞牛覆盖升级时会删掉整个 /var/apps/<app> 目录，放在里面的备份会跟着一起没
+      # （2026-11-17 的两次配置丢失都是这么来的）。这个目录是 <app> 的兄弟，
+      # 不在它里面，整层被删也能活。
+      #
+      # 只读是刻意的：容器里的程序只负责「读回来」，不需要写。
+      # 目录不存在时 docker 会自动建一个空的，不会导致启动失败。
+      - "/var/apps/cf-ddns-sidecar-backup:/app/backup:ro"

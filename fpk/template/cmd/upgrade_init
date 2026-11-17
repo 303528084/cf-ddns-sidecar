@@ -2,15 +2,23 @@
 #
 # 飞牛生命周期脚本：upgrade_init（升级开始前执行）。
 #
-# 这个脚本原本是空壳 exit 0，2026-11-17 出过一次事故：
-# 用户从 v1.0.1 直接升级到 v1.1.0（不是卸载重装），升级后后台里的
-# AdGuard 地址、域名、各家 DNS 密钥全部变回默认值——数据目录被清空了。
-# 密码看起来还在，是因为飞牛把上次向导的答案又传了一遍、程序用种子重写了
-# dashboard-password；而域名/密钥这些不在向导里，就真丢了。
+# 这个脚本原本是空壳 exit 0。两次升级事故都从这里开始：
 #
-# 结论：不能假设升级一定保住 /var/apps/<app>/share/<app>。升级窗口里必须
-# 先自己备一份。这件事要三处一起改才闭环（另两处见 uninstall_callback 和
-# config/config.go 的 Save/Load），因为只靠猜平台行为不可靠。
+# 一、2026-11-17 v1.0.1 → v1.1.0（覆盖升级，不是卸载重装）：
+#     升级后后台里的 AdGuard 地址、域名、各家 DNS 密钥全部变回默认值——数据目录
+#     被清空了。密码看起来还在，是因为飞牛把上次向导的答案又传了一遍、程序用种子
+#     重写了 dashboard-password；域名/密钥这些不在向导里，就真丢了。
+#
+# 二、2026-11-17 v1.2.0 → v1.3.0：同样整层被清空，而当时的备份**没救回来**。
+#     原因很具体：备份写在 /var/apps/<app>/share/<app>-backup-<时间>/，
+#     **还在 <app> 这个目录里面**。平台删的是整个 /var/apps/<app>，
+#     备份跟着一起塌了——等于把保险柜放在要拆的楼里。
+#
+# 所以 v1.3.1 起备份搬到 /var/apps/<app>-backup/<时间>/，是 <app> 的**兄弟**，
+# 不在它里面。恢复由容器里的程序自己完成（见 config/restore.go 的
+# RestoreFromUpgradeBackup），因为这个脚本跑得比容器晚——等它动手，程序早就
+# 用空配置起来了（证据：事故日志里「已把安装向导里设的密码写入…」是程序打的，
+# 本该由本脚本生成的那份 16 位随机密码根本没出现过）。
 #
 # 备份失败绝不能阻断升级：宁可升级后提示「没备份成功」，也不能让用户卡在
 # 升不上去的状态里。
@@ -20,8 +28,24 @@ SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
 DATA_DIR="${SHARE_ROOT}/data"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
+# 主备份位置：<app> 的兄弟目录。平台删 <app> 时它不受影响。
+BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+# 老位置（v1.1.0～v1.3.0 用的），只作为「兄弟目录建不出来」时的退路，
+# 顺便继续清理里面的历史备份。
+LEGACY_SIBLING_ROOT="/var/apps/${APP_NAME}/share"
+LEGACY_SIBLING="${LEGACY_SIBLING_ROOT}/${APP_NAME}-backup-${STAMP}"
+LEGACY_INNER="${DATA_DIR}/.backup/${STAMP}"
+
 log() {
     echo "[cf-ddns-sidecar] $*"
+}
+
+# 判断一个目录能不能真的写进去（mkdir 成功不代表能写，ACL 会在写的时候才拦）。
+try_dir() {
+    mkdir -p "$1" 2>/dev/null || return 1
+    : > "$1/.probe" 2>/dev/null || return 1
+    rm -f "$1/.probe" 2>/dev/null
+    return 0
 }
 
 # 没有数据目录就没什么可备的
@@ -43,20 +67,22 @@ if [ "$TOTAL" -eq 0 ]; then
     exit 0
 fi
 
-# 备份目标优先放在数据目录的**同级**（.../share/cf-ddns-sidecar-backup-<时间>）：
-# 如果平台删的是 share/<app> 这一层，同级目录能活下来。
-# 万一同级不可写（ACL 限制），退回到数据目录内部，至少能防「文件被写坏」。
-BACKUP_DIR="/var/apps/${APP_NAME}/share/${APP_NAME}-backup-${STAMP}"
-if ! mkdir -p "$BACKUP_DIR" 2>/dev/null || ! : > "${BACKUP_DIR}/.probe" 2>/dev/null; then
-    rm -rf "$BACKUP_DIR" 2>/dev/null
-    BACKUP_DIR="${DATA_DIR}/.backup/${STAMP}"
-    if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
-        log "升级前备份：无法创建备份目录，跳过（不影响升级本身）"
-        exit 0
-    fi
+# 三级退路，能拿到哪一级用哪一级，并且**明说**这一份会不会跟着升级一起没：
+#   ① /var/apps/<app>-backup/<时间>      ← 应用目录外面，整层被删也活着
+#   ② /var/apps/<app>/share/<app>-backup-<时间>  ← 平台只删 share/<app> 时能活
+#   ③ 数据目录内 .backup/<时间>          ← 只能防「文件被写坏」，目录没了就没了
+if try_dir "${BACKUP_ROOT}/${STAMP}"; then
+    BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+elif try_dir "$LEGACY_SIBLING"; then
+    BACKUP_DIR="$LEGACY_SIBLING"
+    log "升级前备份：${BACKUP_ROOT} 写不进去，退回到 ${BACKUP_DIR}（若平台删掉整个应用目录，这一份也会一起没）"
+elif try_dir "$LEGACY_INNER"; then
+    BACKUP_DIR="$LEGACY_INNER"
+    log "升级前备份：应用目录外都写不进去，退回到 ${BACKUP_DIR}（只能防文件被写坏，目录被删就没了）"
+else
+    log "升级前备份：无法创建备份目录，跳过（不影响升级本身）"
+    exit 0
 fi
-# 探测用的临时文件要清掉，别在备份目录里留垃圾
-rm -f "${BACKUP_DIR}/.probe" 2>/dev/null
 
 ok=0
 for f in $WANTED; do
@@ -66,20 +92,48 @@ for f in $WANTED; do
     fi
 done
 
+# 备份副本必须让容器里的程序读得到，否则恢复会一声不响地失败——「备份还在、却没恢复」
+# 比根本没有备份更让人糊涂。容器里的程序固定是 uid 1000（见 Dockerfile 里
+# `adduser -u 1000` 和 docker-entrypoint.sh 的 su-exec），所以：
+#   ① 属主先对齐成数据目录的属主（正常就是 app:app），权限保持原样，不额外放开；
+#   ② 目录补一个「可穿过」位，防止 umask 077 时变成 0700、容器用户根本进不去；
+#   ③ 只有属主没对齐（ACL 拦住 chown）时，才补「其他人可读」当兜底。
+OWNER="$(stat -c '%u:%g' "$DATA_DIR" 2>/dev/null)"
+[ -n "$OWNER" ] && chown -R "$OWNER" "$BACKUP_DIR" 2>/dev/null
+chmod o+x "$BACKUP_DIR" 2>/dev/null
+for f in "${BACKUP_DIR}"/*; do
+    [ -f "$f" ] || continue
+    [ "$(stat -c '%u' "$f" 2>/dev/null)" = "1000" ] && continue
+    case "$(stat -c '%A' "$f" 2>/dev/null)" in
+        *r??) ;;                                  # 其他人已经能读，不用动
+        *) chmod o+r "$f" 2>/dev/null ;;
+    esac
+done
+
 log "升级前备份：已保存 ${ok}/${TOTAL} 个文件到 ${BACKUP_DIR}"
 
-# 只保留最近 3 份，避免长期占空间。两处命名规则不同，分开清理。
-for base in "/var/apps/${APP_NAME}/share" "${DATA_DIR}/.backup"; do
-    [ -d "$base" ] || continue
-    # 同级备份：cf-ddns-sidecar-backup-20261117-151200
-    ls -1dt "${base}/${APP_NAME}-backup-"* 2>/dev/null | tail -n +4 | while read -r old; do
-        rm -rf "$old" 2>/dev/null
-    done
-    # 目录内备份：.backup/20261117-151200
-    find "$base" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*-[0-9]*' 2>/dev/null \
+# 只保留最近 3 份，避免长期占空间。
+#
+# 排序靠目录名（<年月日>-<时分秒>），字典序就是时间序，所以 sort -r 后
+# tail -n +4 留下的正好是最新 3 份。三处命名规则不同，分开清理：
+#   · 新位置：/var/apps/<app>-backup/20261117-151200
+#   · 老位置：/var/apps/<app>/share/<app>-backup-20261117-151200
+#   · 目录内：<data>/.backup/20261117-151200
+#
+# 清理时**绝不能**删掉刚建好的这份：三种命名都不会互相匹配上，
+# 而且都带时间戳，刚建的那份必然排在最新。
+prune_dir() {
+    local base="$1"
+    local pattern="$2"
+    [ -d "$base" ] || return 0
+    find "$base" -mindepth 1 -maxdepth 1 -type d -name "$pattern" 2>/dev/null \
         | sort -r | tail -n +4 | while read -r old; do
         rm -rf "$old" 2>/dev/null
     done
-done
+}
+
+prune_dir "$BACKUP_ROOT" '[0-9]*-[0-9]*'
+prune_dir "$LEGACY_SIBLING_ROOT" "${APP_NAME}-backup-[0-9]*-[0-9]*"
+prune_dir "${DATA_DIR}/.backup" '[0-9]*-[0-9]*'
 
 exit 0

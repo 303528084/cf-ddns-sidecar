@@ -565,7 +565,16 @@ function escapeHtml(s) {
 function renderBanners(s) {
   const box = $("banners");
   let html = "";
-  if (s.restored_config) {
+  if (s.restored_config && s.restored_upgrade) {
+    // 整个数据目录被删过（连 config.json.bak 都没了），靠升级前搬到应用目录外面的
+    // 那份备份救回来。比只恢复 .bak 严重得多，所以单独说，并把来源路径写出来。
+    html += `<div class="banner err"><b>升级时数据目录被整个删掉了，已用升级前的自动备份恢复。</b>
+      这次连 config.json.bak 都没剩下，配置是从
+      <code>${escapeHtml(s.restored_source || "升级前的自动备份")}</code> 捡回来的——
+      所以里面的端口、后台密码、AdGuard 地址、域名、同步几条 IP、各家密钥都是<b>升级前那一刻</b>的样子，
+      升级之后你在后台改动过的东西不在里面。
+      请逐项核对下面的内容，确认无误后点一次「保存全部设置」，这条提示才会消失。</div>`;
+  } else if (s.restored_config) {
     html += `<div class="banner err"><b>配置文件不见了，已从上次的备份自动恢复。</b>
       数据目录里的 config.json 消失过（升级、清理脚本或误删），本次是用 config.json.bak 顶上来的。
       请逐项核对下面的 AdGuard 地址、要加速的域名、DDNS 服务商和密钥，确认无误后点一次「保存全部设置」，这条提示才会消失。</div>`;

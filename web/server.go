@@ -104,6 +104,12 @@ type Server struct {
 	// 用户就又回到「一切正常，只是全空了」的假象里。
 	restored bool
 
+	// restoredUpgrade / restoredSource 是「从升级前自动备份恢复」这一种的明细：
+	// 那种情况连 config.json.bak 都没了（整个数据目录被删），红条要说清
+	// 「是从哪儿捡回来的」，否则用户没法判断要不要去翻别的备份。
+	restoredUpgrade bool
+	restoredSource  string
+
 	// schedWake 用来把「正睡着的定时器」叫醒。
 	// 没有它的话，用户把间隔从 60 分钟改成 10 分钟，调度器还按旧的 60 分钟
 	// 睡在那儿，界面上「下次测速」也要等它醒过来才更新——最长能差一小时。
@@ -127,6 +133,10 @@ func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, 
 		cfg:        cfg,
 		restored:   cfg.RestoredFromBackup,
 		schedWake:  make(chan struct{}, 1),
+	}
+	if cfg.RestoredFromUpgradeBackup {
+		s.restoredUpgrade = true
+		s.restoredSource = config.RestoreMarkerSource()
 	}
 	// 把上次（重启前）的日志尾巴回填到界面。用户反映「重启后日志一片空白，
 	// 出事那段根本看不到」，这就是那一段。
@@ -457,10 +467,16 @@ type statusResp struct {
 	// 下面三个是「必须让用户看见」的状态，不是可选信息：
 	// 配置是从备份恢复的、密码太弱。以前这些都只进运行日志，
 	// 而运行日志在卡片最下面、还要往下滚，等于没提示。
-	RestoredConfig bool   `json:"restored_config"`
-	PasswordWeak   bool   `json:"password_weak"`
-	PasswordReason string `json:"password_reason"`
-	LogFile        string `json:"log_file"`
+	RestoredConfig bool `json:"restored_config"`
+	// 恢复的两种来路，界面据此决定说哪句话（见 index.html 的 renderBanners）：
+	//   restored_upgrade=false → 只是 config.json 丢了，config.json.bak 顶上；
+	//   restored_upgrade=true  → 整个数据目录被删过，连 .bak 都没了，
+	//                            靠升级前搬到外面的那份救回来，来源在 restored_source。
+	RestoredUpgrade bool   `json:"restored_upgrade"`
+	RestoredSource  string `json:"restored_source"`
+	PasswordWeak    bool   `json:"password_weak"`
+	PasswordReason  string `json:"password_reason"`
+	LogFile         string `json:"log_file"`
 
 	// 定时器状态：下次几点跑、上次成没成、连续失败几次。
 	NextRunAt string `json:"next_run_at"`
@@ -479,24 +495,26 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	resp := statusResp{
-		Version:        version,
-		Running:        s.running,
-		LastIP:         cfg.LastIP,
-		LastTime:       cfg.LastTime,
-		LastError:      s.lastErr,
-		Logs:           append([]string(nil), s.logs...),
-		Domains:        append([]string(nil), cfg.Domains...),
-		DDNSEnabled:    cfg.DDNS.Enabled,
-		DDNSProvider:   cfg.DDNS.Provider,
-		DDNSDomain:     cfg.DDNS.Domain,
-		IntervalMin:    cfg.Speed.IntervalMinutes,
-		RestoredConfig: s.restored,
-		PasswordWeak:   weakReason != "",
-		PasswordReason: weakReason,
-		NextRunAt:      formatRunTime(s.nextRunAt),
-		LastOK:         s.lastOK,
-		FailCount:      s.failCount,
-		LastIPs:        append([]string{}, cfg.LastIPs...),
+		Version:         version,
+		Running:         s.running,
+		LastIP:          cfg.LastIP,
+		LastTime:        cfg.LastTime,
+		LastError:       s.lastErr,
+		Logs:            append([]string(nil), s.logs...),
+		Domains:         append([]string(nil), cfg.Domains...),
+		DDNSEnabled:     cfg.DDNS.Enabled,
+		DDNSProvider:    cfg.DDNS.Provider,
+		DDNSDomain:      cfg.DDNS.Domain,
+		IntervalMin:     cfg.Speed.IntervalMinutes,
+		RestoredConfig:  s.restored,
+		RestoredUpgrade: s.restoredUpgrade,
+		RestoredSource:  s.restoredSource,
+		PasswordWeak:    weakReason != "",
+		PasswordReason:  weakReason,
+		NextRunAt:       formatRunTime(s.nextRunAt),
+		LastOK:          s.lastOK,
+		FailCount:       s.failCount,
+		LastIPs:         append([]string{}, cfg.LastIPs...),
 	}
 	s.mu.Unlock()
 
@@ -629,7 +647,12 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 只在这里清，不在定时测速顺手保存时清——那种保存不是「人看过了」。
 	s.mu.Lock()
 	s.restored = false
+	s.restoredUpgrade = false
+	s.restoredSource = ""
 	s.mu.Unlock()
+	// 落盘的标记也要一起清。否则下次重启改从 .bak 那条路走，红条又冒出来一次，
+	// 用户会以为自己刚才那次保存没生效（这一条只有真的从备份恢复过才有文件）。
+	config.ClearRestoreMarker()
 
 	// 把「服务商 / 域名 / 间隔」同步回 ddns.env。这个文件是安装向导的入口，
 	// 也是用户排查问题时会用文本编辑器打开的地方，不能和后台显示的值打架。

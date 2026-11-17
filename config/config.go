@@ -98,6 +98,16 @@ type Config struct {
 	// 恢复出来的。调用方应当把这个情况显式告诉用户——「静默退回默认值」正是
 	// 2026-11-17 配置丢失事故里最误导人的地方：后台看起来一切正常，只是全空了。
 	RestoredFromBackup bool `json:"-"`
+
+	// RestoredFromUpgradeBackup 为 true 表示这次是从「升级前自动备份」恢复的
+	// （数据目录整个被清空、config.json.bak 也没了那种），恢复来源目录见
+	// RestoreMarkerSource()。
+	//
+	// 和上面那个分成两个字段，是因为要让用户看懂到底出了什么事：
+	//   · 只有 .bak → 「升级把它们删了，但备份文件还在同一个目录里」
+	//   · 连 .bak 都没了 → 「整个目录被删了，靠升级前搬到外面的那份救回来」
+	// 两句话的严重程度不一样，混成一句用户就没法判断要不要报警。
+	RestoredFromUpgradeBackup bool `json:"-"`
 }
 
 var (
@@ -152,6 +162,13 @@ func Load() (*Config, error) {
 	case err == nil:
 		if err := json.Unmarshal(data, c); err != nil {
 			return nil, err
+		}
+		// 这份配置是启动时从「升级前备份」捡回来的（见 restore.go）。
+		// 必须让界面也知道——捡回来的配置看起来和正常的完全一样，
+		// 不说的话用户会以为升级一切顺利，而实际上中间出过事。
+		if restoredFromUpgradeBackup() {
+			c.RestoredFromBackup = true
+			c.RestoredFromUpgradeBackup = true
 		}
 		// 用户在飞牛「应用设置」里保存过：一次性覆盖
 		if kv := LoadEnvFile(EnvFilePath()); envOrFile(kv, "CFDDNS_APPLY_ENV") == "1" {

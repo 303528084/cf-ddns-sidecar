@@ -40,6 +40,22 @@ func main() {
 		defer logFile.Close()
 	}
 
+	// 升级窗口最坏的情况：数据目录整个被平台删了（2026-11-17 第二次事故）。
+	// 宿主机脚本 cmd/upgrade_init 在升级前把配置备到了 /var/apps/<app>-backup/<时间>，
+	// 这里趁还没人往数据目录里写过 config.json，把最新那份搬回来。
+	//
+	// 为什么恢复必须在程序里做、而不是让宿主机脚本自己恢复：容器是 appcenter
+	// 先拉起来的，cmd/main start 跑得更晚——等它动手，程序早就用空配置起来了
+	// （证据：那次日志里「已把安装向导里设的密码写入…」是程序自己打的，
+	// 宿主机脚本本该生成的那份 16 位随机密码根本没出现过）。
+	//
+	// 顺序也很关键：必须在 seedFromWizardEnv() 之前。恢复会连
+	// .wizard-env-applied 一起搬回来，种子函数看到标记就直接退出，
+	// 不会拿容器里烘死的旧端口/旧密码把刚恢复的内容再盖一遍。
+	if src := config.RestoreFromUpgradeBackup(); src != "" {
+		log.Printf("[警告] 数据目录是空的，已从升级前的自动备份恢复：%s", src)
+	}
+
 	// 必须放在最前面：-listen 的默认值在 flag.Parse 之前就已求值（看 defaultListen），
 	// 所以安装向导的端口种子得先落进 ddns.env，否则程序会按旧端口起监听。
 	seedFromWizardEnv()
@@ -65,7 +81,19 @@ func main() {
 	}
 	// 主配置不见了但备份还在：说明有东西动过数据目录（升级、清理脚本、误删）。
 	// 必须显式说出来——静默恢复等于让用户以为一切正常。
-	if cfg.RestoredFromBackup {
+	//
+	// 两种情况分开说，因为严重程度和「用户该做什么」不一样：
+	//   · 连 config.json.bak 都没了，靠外面那份备份救的 → 整个目录被删过，最严重；
+	//   · .bak 还在 → 只是主文件丢了，还算温和。
+	if cfg.RestoredFromUpgradeBackup {
+		src := config.RestoreMarkerSource()
+		if src == "" {
+			src = "升级前的自动备份"
+		}
+		log.Printf("[警告] 升级期间数据目录被清空了，已从升级前的自动备份恢复（来源 %s）。"+
+			"请核对后台里的 AdGuard 地址、要加速的域名、同步几条 IP 和各家密钥是否完整；"+
+			"核对无误后点一次「保存全部设置」，页面顶上的红条就会消失", src)
+	} else if cfg.RestoredFromBackup {
 		log.Printf("[警告] config.json 不见了，已从 config.json.bak 恢复。" +
 			"请核对后台里的 AdGuard 地址、要加速的域名和各家密钥是否完整")
 	}

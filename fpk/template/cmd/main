@@ -48,6 +48,16 @@ cleanup_legacy_container() {
 init_on_start() {
     mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
 
+    # 升级前备份目录（v1.3.1 起）。compose 把它**只读**挂进容器的 /app/backup，
+    # 程序启动时从这里捡回被升级删掉的配置。
+    #
+    # 这里顺手建一下有两个原因：
+    #   ① 挂载源不存在时 docker 会自动建，但建出来是 root:root 0755，
+    #      有的平台版本会在「挂载源不存在」这一步直接拒绝建容器，提前建好更稳；
+    #   ② 建完不受容器内 umask 影响，路径固定可预期。
+    # 失败不影响启动：真要没有，升级时备份会自动落回老位置，只是那一份活不过删目录。
+    mkdir -p "/var/apps/${APP_NAME}-backup" 2>/dev/null
+
     cleanup_legacy_container
     migrate_legacy
 
