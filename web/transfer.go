@@ -288,5 +288,8 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		warns = append(warns, "ddns.env 回写失败: "+friendlyErr(err))
 	}
 
+	// 恢复出来的间隔可能和原来不同，同样要把定时器叫醒重算。
+	s.wakeScheduler()
+
 	writeJSON(w, 200, map[string]any{"ok": true, "warnings": warns})
 }

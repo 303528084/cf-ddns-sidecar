@@ -106,6 +106,28 @@
   .banner.err { background: rgba(220,38,38,.1); color: var(--err); }
   .switch { display: flex; align-items: center; gap: 8px; }
   .switch input { width: auto; }
+  /* 重写表预览：「现在 AdGuard 里到底写了什么」，一行一条 */
+  .rw-list {
+    margin-top: 10px; border: 1px solid var(--line); border-radius: 8px;
+    max-height: 220px; overflow: auto; font-size: 12.5px;
+  }
+  .rw-item {
+    display: flex; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; word-break: break-all; align-items: baseline;
+  }
+  .rw-item:last-child { border-bottom: none; }
+  .rw-item .d { flex: 1 1 55%; }
+  .rw-item .i { flex: 0 0 auto; color: var(--muted); }
+  .rw-item .mark { flex: 0 0 auto; font-family: inherit; font-size: 11px; }
+  .rw-item.stale .d { color: var(--warn); }
+  .rw-item .mark.keep { color: var(--ok); }
+  .rw-item .mark.drop { color: var(--warn); }
+  .rw-empty { padding: 10px; color: var(--muted); font-size: 12.5px; }
+  .kv { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+  .kv .line { display: flex; gap: 8px; }
+  .kv .line .k2 { color: var(--muted); flex: 0 0 74px; }
+  .kv .line .v2 { flex: 1; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -134,6 +156,8 @@
     <div class="stat-grid">
       <div class="stat"><div class="k">最优 IP</div><div class="v" id="s-ip">—</div></div>
       <div class="stat"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
+      <div class="stat"><div class="k">下次测速</div><div class="v" id="s-next">—</div></div>
+      <div class="stat"><div class="k">上次结果</div><div class="v" id="s-lastok">—</div></div>
       <div class="stat"><div class="k">运行状态</div><div class="v"><span class="dot idle" id="s-dot"></span> <span id="s-state">空闲</span></div></div>
     </div>
     <div class="actions">
@@ -155,6 +179,18 @@
       <div class="field"><label>密码</label><input type="password" id="ag-pass" placeholder="留空表示不修改"></div>
     </div>
     <div class="hint">在 AdGuard Home 的「设置 → 常规设置」里可以看到管理界面地址和登录账号。</div>
+    <div class="actions">
+      <button onclick="loadRewrites()">看看现在写了哪几条</button>
+      <a href="#" id="rw-toggle" class="hint hidden" onclick="toggleRewrites();return false" style="text-decoration:none">收起</a>
+    </div>
+    <div id="rw-box" class="hidden">
+      <div class="hint" style="margin-top:8px">
+        这就是 AdGuard Home 里当前的 DNS 重写表（原文，不经任何加工）。
+        绿色的行是下次测速后会保留的；<span style="color:var(--warn)">黄色的行是下次测速会被清掉的</span>——
+        因为每次测速都是「清空整张表，再按「要加速的域名」重新写一遍」，你自己手工加的其他记录也会被清掉。
+      </div>
+      <div class="rw-list" id="rw-list"></div>
+    </div>
   </div>
 
   <!-- 域名 -->
@@ -198,6 +234,16 @@
     </div>
     <div id="cred-fields"></div>
     <div class="hint">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
+    <div class="actions">
+      <button onclick="checkDDNS()">测试密钥</button>
+      <button onclick="pushDDNS()">立即更新一次</button>
+    </div>
+    <div class="hint">
+      这两个按钮用的是<b>已经保存的</b>设置——刚改完的密钥请先点上方的「保存全部设置」，否则测的还是旧的。<br>
+      「测试密钥」只读：只确认密钥能不能用、能不能查到这个域名、现在指向哪里，<b>不会改动你的解析</b>。<br>
+      「立即更新一次」才会真的把当前最优 IP 写进去，不用等下一个测速周期。
+    </div>
+    <div id="dd-result" style="margin-top:10px"></div>
   </div>
 
   <!-- 备份与恢复 -->
@@ -317,7 +363,13 @@ async function api(path, opts = {}) {
     showLogin();
     throw new Error("未登录");
   }
-  if (!res.ok) throw new Error((data && data.error) || text || ("HTTP " + res.status));
+  if (!res.ok) {
+    const err = new Error((data && data.error) || text || ("HTTP " + res.status));
+    // 带上状态码：调用方靠它区分「本机就没配好」（400）和「服务商那边报错」（5xx），
+    // 这两种情况该说的话完全不同。
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -395,6 +447,36 @@ async function loadStatus() {
   renderBanners(s);
   $("s-ip").textContent = s.last_ip || "—";
   $("s-time").textContent = s.last_time || "—";
+
+  // 下次测速：后端给的是「15:04」这种已经排好版的时间，为空就是没开定时。
+  if (s.next_run_at) {
+    setStat("s-next", s.next_run_at, "");
+  } else if (!s.interval_minutes) {
+    setStat("s-next", "未开启", "muted");
+  } else {
+    setStat("s-next", "—", "");
+  }
+
+  // 上次结果。last_ok 是 false 时有两种情况要分开说：跑过但失败，
+  // 和一次都还没跑过（那时 last_error 也是空的）。混在一起说
+  // 「上次失败」会在刚装好、还没测过的时候就把人吓一跳。
+  const runhint = $("s-runhint");
+  runhint.textContent = "";
+  if (s.running) {
+    setStat("s-lastok", "测速中…", "muted");
+  } else if (s.last_ok) {
+    setStat("s-lastok", "成功", "ok");
+  } else if (s.last_error) {
+    setStat("s-lastok", s.fail_count > 1 ? "失败（连续 " + s.fail_count + " 次）" : "失败", "err");
+  } else if (s.last_time) {
+    // 有「上次测速时间」却没有结果：那个时间是重启前存进配置文件的，
+    // 而成败只存在内存里。老实说「未知」，别让上面一行的时间和这里打架。
+    setStat("s-lastok", "未知", "muted");
+    runhint.textContent = "上次测速发生在本次启动之前，那次成没成没有存下来；本次启动后还没跑过。";
+  } else {
+    setStat("s-lastok", "还没跑过", "muted");
+  }
+
   const dot = $("s-dot"), state = $("s-state");
   if (s.running) { dot.className = "dot busy"; state.textContent = "测速中"; }
   else { dot.className = "dot ok"; state.textContent = "空闲"; }
@@ -416,6 +498,14 @@ async function loadStatus() {
   if (s.ddns_enabled && s.ddns_missing && s.ddns_missing.length) {
     err.innerHTML += `<div class="banner warn">域名解析还没配好，缺少：${s.ddns_missing.join("、")}</div>`;
   }
+}
+
+// setStat 改一个指标格子的文字和颜色。color 传 ok/err/warn/muted，空串表示跟随主题。
+function setStat(id, text, color) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = color ? "var(--" + color + ")" : "";
 }
 
 function escapeHtml(s) {
@@ -522,6 +612,115 @@ async function importConfig(input) {
     toast("恢复失败：" + e.message);
   }
   input.value = "";
+}
+
+// ---- 域名解析的「测试密钥」与「立即更新一次」 ----
+// 两个按钮都是打后端，返回一句话结论 + 关键字段。这里只负责把话说清楚：
+// 用户填密钥时最想知道的是「对了没」「错了错在哪」，不是状态码。
+function ddLine(k, v) {
+  return `<div class="line"><span class="k2">${k}</span><span class="v2">${v}</span></div>`;
+}
+
+// 绿底告警条。--ok 在深色主题下会自动换色，背景用一个半透明绿跟得上。
+const DD_OK_STYLE = 'style="background:rgba(22,163,74,.12);color:var(--ok)"';
+
+async function checkDDNS() {
+  const box = $("dd-result");
+  box.innerHTML = `<div class="banner">正在连服务商，稍等…</div>`;
+  try {
+    const r = await api("/api/ddns/check", { method: "POST" });
+    const label = (PROVIDERS[r.provider] || {}).label || r.provider;
+    let rows = ddLine("服务商", escapeHtml(label)) + ddLine("域名", escapeHtml(r.domain));
+    if (r.found) rows += ddLine("现在指向", escapeHtml(r.current_ip || "（空）"));
+    else rows += ddLine("现在指向", "还没有这条 A 记录");
+    if (r.best_ip) rows += ddLine("最优 IP", escapeHtml(r.best_ip));
+
+    // 结论分四种，别说「成功」两个字就完事——每一种接下来该做什么都不一样。
+    let next;
+    if (!r.found) {
+      next = "密钥没问题，只是这条域名还没有 A 记录。下次测速成功后会自己创建；想现在就建，点「立即更新一次」。";
+    } else if (!r.best_ip) {
+      next = "密钥没问题。现在还没有测出最优 IP，回去点「立即测速」。";
+    } else if (r.current_ip !== r.best_ip) {
+      next = "密钥没问题，但现在的指向和最优 IP 不一样——点「立即更新一次」就改过来。";
+    } else {
+      next = "密钥没问题，指向已经是最优 IP，不用动。";
+    }
+    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>密钥可用</b></div>`
+      + `<div class="kv">${rows}</div><div class="hint">${next}</div>`;
+  } catch (e) {
+    // 400 = 本机检查没过（没启用、没填服务商、缺密钥），根本没连到服务商；
+    // 502 = 真的连了，是服务商那边回的错误。这两句提示不能混着说。
+    const hint = e.status === 400
+      ? "这是本机检查没过，还没连到服务商。按上面这句改完，点「保存全部设置」，再回来测。"
+      : "上面是服务商原样返回的错误，括号里是我猜的原因。改完密钥记得先点「保存全部设置」，再回来测。";
+    box.innerHTML = `<div class="banner err"><b>没通过</b><br>${escapeHtml(e.message)}</div>`
+      + `<div class="hint">${hint}</div>`;
+  }
+}
+
+async function pushDDNS() {
+  const box = $("dd-result");
+  const ok = confirm("现在就把当前最优 IP 写进域名解析？\n\n这会真的改动你在服务商那里的 A 记录（不是只读）。");
+  if (!ok) return;
+  box.innerHTML = `<div class="banner">正在推送…</div>`;
+  try {
+    const r = await api("/api/ddns/update", { method: "POST" });
+    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新</b>`
+      + `<div class="kv">${ddLine("域名", escapeHtml(r.domain))}${ddLine("现在指向", escapeHtml(r.ip))}</div></div>`
+      + `<div class="hint">服务商那边生效通常要几秒到几分钟（看 TTL）。</div>`;
+    await loadStatus();
+  } catch (e) {
+    const hint = e.status === 400
+      ? "按上面这句处理后回来再点一次。"
+      : "服务商那边没接受这次写入。去服务商后台看一眼这条记录现在是什么，再决定要不要重试。";
+    box.innerHTML = `<div class="banner err"><b>推送失败</b><br>${escapeHtml(e.message)}</div>`
+      + `<div class="hint">${hint}</div>`;
+  }
+}
+
+// ---- AdGuard 重写表预览 ----
+// 为什么要给用户看这个：每次测速都会「清空整张表再重建」，你在 AdGuard 里
+// 自己手工加的重写会被一起清掉。以前这件事只写在代码注释里，用户是受害者。
+async function loadRewrites() {
+  const box = $("rw-box"), list = $("rw-list"), toggle = $("rw-toggle");
+  box.classList.remove("hidden");
+  toggle.classList.remove("hidden");
+  toggle.textContent = "收起";
+  list.innerHTML = `<div class="rw-empty">正在读取…</div>`;
+
+  try {
+    const r = await api("/api/adguard/rewrites");
+    const entries = r.entries || [];
+    if (!entries.length) {
+      list.innerHTML = `<div class="rw-empty">重写表现在是空的。`
+        + (r.last_ip ? "下次测速成功后会按「要加速的域名」写进去。" : "还没有测出最优 IP，所以下次测速只会清空、不会写入。")
+        + `</div>`;
+      return;
+    }
+
+    // 用「域名|IP」拼成的集合判断哪几条会被保留，比嵌套对象取值干净。
+    const expected = r.expected || {};
+    const keep = new Set(Object.keys(expected).map(d => d + "|" + expected[d]));
+
+    list.innerHTML = entries.map(e => {
+      const kept = keep.has(e.domain + "|" + e.answer);
+      const ip = escapeHtml(e.answer || "（空）") + (e.enabled ? "" : " · 已停用");
+      return `<div class="rw-item ${kept ? "" : "stale"}">`
+        + `<span class="d">${escapeHtml(e.domain || "（空域名）")}</span>`
+        + `<span class="i">→ ${ip}</span>`
+        + `<span class="mark ${kept ? "keep" : "drop"}">${kept ? "保留" : "会被清掉"}</span>`
+        + `</div>`;
+    }).join("");
+  } catch (e) {
+    list.innerHTML = `<div class="rw-empty" style="color:var(--err)">读不到：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function toggleRewrites() {
+  const box = $("rw-box"), toggle = $("rw-toggle");
+  const hidden = box.classList.toggle("hidden");
+  toggle.textContent = hidden ? "展开" : "收起";
 }
 
 async function saveAll() {

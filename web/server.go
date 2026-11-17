@@ -92,11 +92,22 @@ type Server struct {
 	running bool
 	logs    []string
 	lastErr string
+	// 定时器状态：下一次什么时候跑、上一次成没成、连续失败几次。
+	// 以前后台只能看到「上次测速时间」，看不出「它到底还活着吗、还是每小时
+	// 都在失败」——这两样才是判断「要不要管它」的依据。
+	nextRunAt time.Time
+	lastOK    bool
+	failCount int
 	// restored 表示这次启动时 config.json 不见了、是从 .bak 恢复的。
 	// 单独存一份而不是每次去读 cfg.RestoredFromBackup：cfg 会被 Clone 和
 	// 覆盖，标志容易在某个保存路径上被顺手清掉，而这个提示一旦消失，
 	// 用户就又回到「一切正常，只是全空了」的假象里。
 	restored bool
+
+	// schedWake 用来把「正睡着的定时器」叫醒。
+	// 没有它的话，用户把间隔从 60 分钟改成 10 分钟，调度器还按旧的 60 分钟
+	// 睡在那儿，界面上「下次测速」也要等它醒过来才更新——最长能差一小时。
+	schedWake chan struct{}
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
@@ -115,6 +126,7 @@ func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, 
 		logFile:    logFile,
 		cfg:        cfg,
 		restored:   cfg.RestoredFromBackup,
+		schedWake:  make(chan struct{}, 1),
 	}
 	// 把上次（重启前）的日志尾巴回填到界面。用户反映「重启后日志一片空白，
 	// 出事那段根本看不到」，这就是那一段。
@@ -148,6 +160,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/config/import", s.auth(s.handleImport))
 	mux.HandleFunc("/api/credentials", s.auth(s.handleCredentials))
 	mux.HandleFunc("/api/password", s.auth(s.handlePassword))
+	mux.HandleFunc("/api/ddns/check", s.auth(s.handleDDNSCheck))
+	mux.HandleFunc("/api/ddns/update", s.auth(s.handleDDNSUpdate))
+	mux.HandleFunc("/api/adguard/rewrites", s.auth(s.handleAdguardRewrites))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
@@ -446,6 +461,11 @@ type statusResp struct {
 	PasswordWeak   bool   `json:"password_weak"`
 	PasswordReason string `json:"password_reason"`
 	LogFile        string `json:"log_file"`
+
+	// 定时器状态：下次几点跑、上次成没成、连续失败几次。
+	NextRunAt string `json:"next_run_at"`
+	LastOK    bool   `json:"last_ok"`
+	FailCount int    `json:"fail_count"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -469,6 +489,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RestoredConfig: s.restored,
 		PasswordWeak:   weakReason != "",
 		PasswordReason: weakReason,
+		NextRunAt:      formatRunTime(s.nextRunAt),
+		LastOK:         s.lastOK,
+		FailCount:      s.failCount,
 	}
 	s.mu.Unlock()
 
@@ -585,6 +608,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[警告] 回写 ddns.env 失败: %v", err)
 	}
 
+	// 间隔可能变了，把睡着的定时器叫醒重算，否则「下次测速」要等旧的
+	// 周期走完才更新（最长能差一小时）。
+	s.wakeScheduler()
+
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -669,6 +696,51 @@ func (s *Server) RunOnce() error {
 	return s.runOnce(cfg)
 }
 
+// retryDelay 是测速失败后自动重试的等待时间。抽成变量是为了测试能改成 0。
+var retryDelay = 10 * time.Second
+
+// waitFor 等一段时间；ctx 提前结束就返回 false。
+func waitFor(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// formatRunTime 把「下次测速时间」变成界面上好看的样子：
+// 今天只显示时分，跨天带上月日，没有定时就留空（前端显示「未开启」）。
+func formatRunTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	if t.Format("2006-01-02") == time.Now().Format("2006-01-02") {
+		return t.Format("15:04")
+	}
+	return t.Format("01-02 15:04")
+}
+
+// delayText 把等待时长说成人话，直接拼进日志句子（「10 秒后自动重试一次」）。
+// 超过一分钟就不用秒了，因为没人愿意读「90 秒后」。
+func delayText(d time.Duration) string {
+	switch {
+	case d <= 0:
+		return "马上"
+	case d < time.Minute:
+		return fmt.Sprintf("%d 秒后", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟后", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%d 小时后", int(d.Hours()))
+	}
+}
+
 func (s *Server) runOnce(cfg config.Config) error {
 	defer func() {
 		s.mu.Lock()
@@ -679,21 +751,44 @@ func (s *Server) runOnce(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
 	defer cancel()
 
+	run := func() (*engine.Result, error) {
+		return engine.Run(ctx, s.enginePath, s.workDir, engine.Options{
+			TopN:                cfg.Speed.TopN,
+			BandwidthCandidates: cfg.Speed.BandwidthCandidates,
+			CandidatesURL:       s.selfURL + "/api/candidates",
+		}, s.appendLog)
+	}
+
 	s.appendLog("开始测速…")
-	res, err := engine.Run(ctx, s.enginePath, s.workDir, engine.Options{
-		TopN:                cfg.Speed.TopN,
-		BandwidthCandidates: cfg.Speed.BandwidthCandidates,
-		CandidatesURL:       s.selfURL + "/api/candidates",
-	}, s.appendLog)
+	res, err := run()
+
+	// 失败自动重试一次。cfnb 的失败大多是「某个数据源或节点刚好超时」这类
+	// 偶发问题，重试一次往往就过了。以前碰到只能干等下一个周期（默认 60
+	// 分钟），等于白丢一轮。ctx 已经耗尽时不重试——那说明是真跑满了超时。
+	if err != nil && ctx.Err() == nil {
+		s.appendLog("测速失败: " + friendlyErr(err) + "；" + delayText(retryDelay) + "后自动重试一次")
+		if waitFor(ctx, retryDelay) {
+			s.appendLog("开始重试…")
+			res, err = run()
+		}
+	}
 
 	if err != nil {
 		msg := friendlyErr(err)
 		s.mu.Lock()
 		s.lastErr = msg
+		s.lastOK = false
+		s.failCount++
 		s.mu.Unlock()
 		s.appendLog("测速失败: " + msg)
 		return err
 	}
+
+	s.mu.Lock()
+	s.lastErr = ""
+	s.lastOK = true
+	s.failCount = 0
+	s.mu.Unlock()
 
 	best := res.Best()
 	s.appendLog("测速完成，最优 IP: " + best)
@@ -752,18 +847,41 @@ func (s *Server) runOnce(cfg config.Config) error {
 }
 
 // StartScheduler 启动定时测速。
+//
+// nextRunAt 在这里算并暴露给界面。算的是「真的要跑的时刻」，不是「间隔」——
+// 用户看到「下次 16:35」就是他该等的那个点，不会因为改过间隔而说一套做一套。
 func (s *Server) StartScheduler() {
 	go func() {
 		for {
 			s.mu.Lock()
 			interval := s.cfg.Speed.IntervalMinutes
+			if interval <= 0 {
+				s.nextRunAt = time.Time{}
+			} else {
+				s.nextRunAt = time.Now().Add(time.Duration(interval) * time.Minute)
+			}
+			next := s.nextRunAt
 			s.mu.Unlock()
 
 			if interval <= 0 {
-				time.Sleep(time.Minute)
+				// 没开定时：等配置被改（wakeScheduler）或者干等一分钟兜底。
+				// 不用两分钟的 sleep 是因为「改成 0 之后界面上要说未开启」，
+				// 这一分钟只是防呆，不承担主要更新责任。
+				select {
+				case <-s.schedWake:
+				case <-time.After(time.Minute):
+				}
 				continue
 			}
-			time.Sleep(time.Duration(interval) * time.Minute)
+
+			// 睡到下次该跑的时刻；中途配置被改了就先醒，重新算时间，不跑。
+			timer := time.NewTimer(time.Until(next))
+			select {
+			case <-timer.C:
+			case <-s.schedWake:
+				timer.Stop()
+				continue
+			}
 
 			s.mu.Lock()
 			busy := s.running
@@ -778,6 +896,21 @@ func (s *Server) StartScheduler() {
 			_ = s.runOnce(cfg)
 		}
 	}()
+}
+
+// wakeScheduler 让调度循环重新算一次「下次什么时候跑」。
+//
+// 保存配置后必须叫一声：否则间隔从 60 分钟改成 10 分钟，它还要按旧的
+// 60 分钟睡足，界面上「下次测速」会一直显示一小时之后。
+// 非阻塞发送：已经有一次待处理的唤醒就够了，多余的丢掉。
+func (s *Server) wakeScheduler() {
+	if s.schedWake == nil {
+		return
+	}
+	select {
+	case s.schedWake <- struct{}{}:
+	default:
+	}
 }
 
 // maxLogLines 是界面上保留的日志行数上限。文件里另有一份更长的完整日志

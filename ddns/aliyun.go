@@ -19,13 +19,15 @@ type aliyun struct {
 	client   *http.Client
 }
 
+type aliyunRecord struct {
+	RecordID string `json:"RecordID"`
+	Value    string `json:"Value"`
+}
+
 type aliyunRecordsResp struct {
 	TotalCount    int `json:"TotalCount"`
 	DomainRecords struct {
-		Record []struct {
-			RecordID string `json:"RecordID"`
-			Value    string `json:"Value"`
-		} `json:"Record"`
+		Record []aliyunRecord `json:"Record"`
 	} `json:"DomainRecords"`
 }
 
@@ -57,18 +59,39 @@ func inferRoot(domain string) string {
 
 func (a *aliyun) Name() string { return "阿里云" }
 
-func (a *aliyun) EnsureARecord(domain, ip string) error {
-	// 查询现有记录
+// queryA 查这条域名的 A 记录（查询与校验共用）。
+func (a *aliyun) queryA(domain string) (aliyunRecord, bool, error) {
 	q := url.Values{}
 	q.Set("Action", "DescribeSubDomainRecords")
 	q.Set("SubDomain", domain)
 	q.Set("Type", "A")
 	var list aliyunRecordsResp
 	if err := a.request(q, &list); err != nil {
-		return fmt.Errorf("查询记录失败: %w", err)
+		return aliyunRecord{}, false, fmt.Errorf("查询记录失败: %w", err)
 	}
 	if list.TotalCount > 0 && len(list.DomainRecords.Record) > 0 {
-		rec := list.DomainRecords.Record[0]
+		return list.DomainRecords.Record[0], true, nil
+	}
+	return aliyunRecord{}, false, nil
+}
+
+func (a *aliyun) Verify(domain string) (RecordState, error) {
+	rec, found, err := a.queryA(domain)
+	if err != nil {
+		return RecordState{}, err
+	}
+	if !found {
+		return RecordState{}, nil
+	}
+	return RecordState{Found: true, CurrentIP: rec.Value}, nil
+}
+
+func (a *aliyun) EnsureARecord(domain, ip string) error {
+	rec, found, err := a.queryA(domain)
+	if err != nil {
+		return err
+	}
+	if found {
 		if rec.Value == ip {
 			return nil
 		}

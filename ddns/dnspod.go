@@ -70,7 +70,8 @@ func newDNSPod(domain string, creds map[string]string) (Provider, error) {
 
 func (d *dnspod) Name() string { return "腾讯云 DNSPod" }
 
-func (d *dnspod) EnsureARecord(domain, ip string) error {
+// queryA 查这条域名的 A 记录（查询与校验共用）。
+func (d *dnspod) queryA(domain string) (tcRecord, bool, error) {
 	sub, _ := splitDomain(domain, d.root)
 	if sub == "@" {
 		sub = ""
@@ -78,18 +79,43 @@ func (d *dnspod) EnsureARecord(domain, ip string) error {
 	query := tcRecord{Domain: d.root, Subdomain: sub, RecordType: "A", RecordLine: "默认"}
 	var list tcListResp
 	if err := d.request("DescribeRecordList", query, &list); err != nil {
-		return fmt.Errorf("查询记录失败: %w", err)
+		return tcRecord{}, false, fmt.Errorf("查询记录失败: %w", err)
 	}
 	if list.Response.Error.Code != "" {
-		return fmt.Errorf("%s: %s", list.Response.Error.Code, list.Response.Error.Message)
+		return tcRecord{}, false, fmt.Errorf("%s: %s", list.Response.Error.Code, list.Response.Error.Message)
 	}
+	if list.Response.RecordCountInfo.TotalCount > 0 && len(list.Response.RecordList) > 0 {
+		return list.Response.RecordList[0], true, nil
+	}
+	return tcRecord{}, false, nil
+}
 
+func (d *dnspod) Verify(domain string) (RecordState, error) {
+	rec, found, err := d.queryA(domain)
+	if err != nil {
+		return RecordState{}, err
+	}
+	if !found {
+		return RecordState{}, nil
+	}
+	return RecordState{Found: true, CurrentIP: rec.Value}, nil
+}
+
+func (d *dnspod) EnsureARecord(domain, ip string) error {
+	sub, _ := splitDomain(domain, d.root)
+	if sub == "@" {
+		sub = ""
+	}
 	stdSub := sub
 	if stdSub == "" {
 		stdSub = "@"
 	}
-	if list.Response.RecordCountInfo.TotalCount > 0 && len(list.Response.RecordList) > 0 {
-		rec := list.Response.RecordList[0]
+
+	rec, found, err := d.queryA(domain)
+	if err != nil {
+		return err
+	}
+	if found {
 		if rec.Value == ip {
 			return nil
 		}

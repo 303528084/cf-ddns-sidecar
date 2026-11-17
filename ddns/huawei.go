@@ -52,27 +52,54 @@ func newHuawei(domain string, creds map[string]string) (Provider, error) {
 
 func (h *huawei) Name() string { return "华为云" }
 
-func (h *huawei) EnsureARecord(domain, ip string) error {
+// queryA 查这条域名的 A 记录（查询与校验共用）。
+func (h *huawei) queryA(domain string) (hwRecordset, bool, error) {
 	q := url.Values{}
 	q.Set("name", domain+".")
 	q.Set("type", "A")
 	var list hwListResp
 	if err := h.request(http.MethodGet, huaweiAPIBase+"/v2.1/recordsets", q, nil, &list); err != nil {
-		return fmt.Errorf("查询记录失败: %w", err)
+		return hwRecordset{}, false, fmt.Errorf("查询记录失败: %w", err)
 	}
 	for _, rec := range list.Recordsets {
 		if strings.TrimSuffix(rec.Name, ".") == domain && rec.Type == "A" {
-			if len(rec.Records) > 0 && rec.Records[0] == ip {
-				return nil
-			}
-			body := map[string]any{
-				"name": rec.Name, "type": rec.Type,
-				"records": []string{ip}, "ttl": 300,
-			}
-			u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets/%s", huaweiAPIBase, rec.ZoneID, rec.ID)
-			var out hwRecordset
-			return h.request(http.MethodPut, u, nil, body, &out)
+			return rec, true, nil
 		}
+	}
+	return hwRecordset{}, false, nil
+}
+
+func (h *huawei) Verify(domain string) (RecordState, error) {
+	rec, found, err := h.queryA(domain)
+	if err != nil {
+		return RecordState{}, err
+	}
+	if !found {
+		return RecordState{}, nil
+	}
+	state := RecordState{Found: true}
+	if len(rec.Records) > 0 {
+		state.CurrentIP = rec.Records[0]
+	}
+	return state, nil
+}
+
+func (h *huawei) EnsureARecord(domain, ip string) error {
+	rec, found, err := h.queryA(domain)
+	if err != nil {
+		return err
+	}
+	if found {
+		if len(rec.Records) > 0 && rec.Records[0] == ip {
+			return nil
+		}
+		body := map[string]any{
+			"name": rec.Name, "type": rec.Type,
+			"records": []string{ip}, "ttl": 300,
+		}
+		u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets/%s", huaweiAPIBase, rec.ZoneID, rec.ID)
+		var out hwRecordset
+		return h.request(http.MethodPut, u, nil, body, &out)
 	}
 
 	body := map[string]any{

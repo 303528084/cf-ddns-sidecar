@@ -6,10 +6,21 @@ import (
 	"strings"
 )
 
+// RecordState 是只读校验时看到的「这条域名现在什么样」。
+type RecordState struct {
+	// Found 为 false 表示账号里还没有这条 A 记录（第一次跑之前就是这种状态）。
+	Found bool
+	// CurrentIP 是当前 A 记录的值；Found 为 false 时为空。
+	CurrentIP string
+}
+
 // Provider 是 DNS 服务商的统一接缝：把目标域名的 A 记录设为指定 IP（幂等）。
 type Provider interface {
 	// EnsureARecord 确保 domain 的 A 记录指向 ip：记录存在则更新，不存在则创建。
 	EnsureARecord(domain, ip string) error
+	// Verify 只读校验：确认密钥有效、能查到这个域名，并返回当前 A 记录值。
+	// 绝不写任何东西——用户点「测试密钥」时不该改到线上解析。
+	Verify(domain string) (RecordState, error)
 	// Name 返回服务商名称，用于日志。
 	Name() string
 }

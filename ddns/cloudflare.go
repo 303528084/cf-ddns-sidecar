@@ -51,7 +51,8 @@ func newCloudflare(domain string, creds map[string]string) (Provider, error) {
 
 func (c *cloudflare) Name() string { return "Cloudflare" }
 
-func (c *cloudflare) EnsureARecord(domain, ip string) error {
+// aRecords 查这条域名的 A 记录。查询和校验共用，避免两处各写一遍参数。
+func (c *cloudflare) aRecords(domain string) ([]cfRecord, error) {
 	q := url.Values{}
 	q.Set("name", domain)
 	q.Set("type", "A")
@@ -61,13 +62,34 @@ func (c *cloudflare) EnsureARecord(domain, ip string) error {
 	if err := c.do(http.MethodGet,
 		fmt.Sprintf("%s/zones/%s/dns_records?%s", cloudflareAPIBase, c.zoneID, q.Encode()),
 		nil, &list); err != nil {
-		return fmt.Errorf("查询记录失败: %w", err)
+		return nil, fmt.Errorf("查询记录失败: %w", err)
 	}
 	if !list.Success {
-		return fmt.Errorf("查询记录返回失败: %s", strings.Join(list.Messages, ", "))
+		return nil, fmt.Errorf("查询记录返回失败: %s", strings.Join(list.Messages, ", "))
+	}
+	return list.Result, nil
+}
+
+func (c *cloudflare) Verify(domain string) (RecordState, error) {
+	recs, err := c.aRecords(domain)
+	if err != nil {
+		return RecordState{}, err
+	}
+	for _, rec := range recs {
+		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
+			return RecordState{Found: true, CurrentIP: rec.Content}, nil
+		}
+	}
+	return RecordState{}, nil
+}
+
+func (c *cloudflare) EnsureARecord(domain, ip string) error {
+	list, err := c.aRecords(domain)
+	if err != nil {
+		return err
 	}
 
-	for _, rec := range list.Result {
+	for _, rec := range list {
 		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
 			if rec.Content == ip && !rec.Proxied {
 				return nil
