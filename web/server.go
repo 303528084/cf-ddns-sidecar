@@ -19,6 +19,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,12 +40,47 @@ var version = "dev"
 // SetVersion 设置版本号（供 /api/status 展示）。
 func SetVersion(v string) { version = v }
 
+// Auth 描述后台登录密码从哪里取。
+//
+// 关键设计：密码是**每次请求现读**的，不是启动时读一次就定死。
+// 原因：飞牛的安装/应用设置脚本（cmd/install_callback、cmd/config_callback）
+// 会改写 dashboard-password，但那些脚本以 run-as: package 运行，没有权限
+// 操作 docker，`docker restart` 常常失败。如果密码在启动时固化，
+// 用户在安装向导里设的密码就永远不生效——现象正是「设了密码还是登不上，
+// 只有日志里那个自动生成的密码能进」。
+//
+// 现读现比之后：脚本写文件即生效，不需要重启容器。
+type Auth struct {
+	// Env 是 DSA_PASSWORD 环境变量，优先级最高（手工部署时用）。
+	Env string
+	// File 是 dashboard-password 路径，每次校验都重读，让改密码即时生效。
+	File string
+	// Fallback 是启动时生成/读到的密码。文件被删或暂时不可读时仍能登录，
+	// 避免「改密码改到一半时谁也进不去」。
+	Fallback string
+}
+
+// Current 返回当前应当生效的密码。
+func (a Auth) Current() string {
+	if v := strings.TrimSpace(a.Env); v != "" {
+		return v
+	}
+	if a.File != "" {
+		if b, err := os.ReadFile(a.File); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return a.Fallback
+}
+
 // Server 是后台服务。
 type Server struct {
 	configPath string
 	enginePath string
 	workDir    string
-	password   string
+	pass       Auth
 	selfURL    string // 本机地址，用于给测速引擎提供本地候选列表
 
 	mu      sync.Mutex
@@ -52,27 +88,30 @@ type Server struct {
 	running bool
 	logs    []string
 	lastErr string
-
-	// 会话令牌签名密钥，由登录密码派生：改密码后旧令牌自动失效。
-	secret []byte
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
 //
 // 不做来源 IP 限制：局域网、容器网段、甚至从公网反代进来都放行，
 // 访问控制完全交给登录密码。
-func New(cfg *config.Config, configPath, enginePath, workDir, password, selfURL string) *Server {
-	// 密钥派生：不额外存文件，改密码即等于吊销所有旧令牌。
-	sum := sha256.Sum256([]byte("cf-ddns-sidecar/session:" + password))
+func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, selfURL string) *Server {
 	return &Server{
 		configPath: configPath,
 		enginePath: enginePath,
 		workDir:    workDir,
-		password:   password,
+		pass:       auth,
 		selfURL:    strings.TrimSuffix(selfURL, "/"),
 		cfg:        cfg,
-		secret:     sum[:],
 	}
+}
+
+// signingKey 由当前密码派生出令牌签名密钥。
+//
+// 每次都按当前密码现算，所以改密码等于立刻吊销所有旧令牌，
+// 不需要额外存密钥、也不需要在内存里维护「当前密钥」。
+func (s *Server) signingKey() []byte {
+	sum := sha256.Sum256([]byte("cf-ddns-sidecar/session:" + s.pass.Current()))
+	return sum[:]
 }
 
 // Handler 返回 HTTP 处理链。
@@ -153,7 +192,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		// 正常路径上密码一定非空（main 读不到会现生成一个）。
 		// 真走到这里说明连生成都失败了，此时必须拒绝而不是放行——
 		// 后台对所有来源 IP 开放，空密码等于谁都能改 DNS 记录。
-		if s.password == "" {
+		if s.pass.Current() == "" {
 			http.Error(w, "后台未设置密码，已锁定。请在「应用设置」里设置管理密码后重启应用", http.StatusServiceUnavailable)
 			return
 		}
@@ -178,7 +217,7 @@ func (s *Server) signToken() string {
 }
 
 func (s *Server) tokenSig(payload string) string {
-	mac := hmac.New(sha256.New, s.secret)
+	mac := hmac.New(sha256.New, s.signingKey())
 	mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -218,11 +257,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 		return
 	}
-	if s.password == "" {
+	if s.pass.Current() == "" {
 		writeJSON(w, 503, map[string]string{"error": "后台未设置密码，请先在「应用设置」里设置管理密码"})
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.password)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.pass.Current())) != 1 {
 		time.Sleep(500 * time.Millisecond) // 抬高暴力破解成本
 		writeJSON(w, 401, map[string]string{"error": "密码错误，请核对「应用设置」里的登录密码"})
 		return

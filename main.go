@@ -77,9 +77,14 @@ func main() {
 		workDir = filepath.Join(configDir, "cfnb")
 	}
 
-	password, passSource := resolvePassword(configDir)
+	passFile := filepath.Join(configDir, "dashboard-password")
+	password, passSource := resolvePassword(passFile)
 
-	srv := web.New(cfg, configPath, enginePath, workDir, password, selfURL(listen))
+	srv := web.New(cfg, configPath, enginePath, workDir, web.Auth{
+		Env:      strings.TrimSpace(os.Getenv("DSA_PASSWORD")),
+		File:     passFile,
+		Fallback: password,
+	}, selfURL(listen))
 
 	if runOnce {
 		// 测速引擎要回调本进程的 /api/candidates 拿候选 IP（内置 Cloudflare 官方段），
@@ -122,12 +127,13 @@ func main() {
 	fmt.Printf("  后台地址: http://<本机IP>%s/\n", listen)
 	switch passSource {
 	case "generated":
-		fmt.Printf("  登录密码: %s（自动生成，可在「应用设置」里改成你记得住的）\n", password)
+		fmt.Printf("  登录密码: %s（本次自动生成，可复制；在「应用设置」里重设后立即以新密码为准）\n", password)
 	case "file":
 		fmt.Println("  登录密码: 安装时设置的那个（忘了可在「应用设置」里重设）")
 	default:
 		fmt.Println("  登录密码: 由环境变量 DSA_PASSWORD 指定")
 	}
+	fmt.Println("  改密码: 在「应用设置」里保存即生效，无需重启")
 	fmt.Println("  访问限制: 无，所有 IP 均可打开后台（请务必设置登录密码）")
 	fmt.Printf("==============================================\n\n")
 
@@ -143,11 +149,51 @@ func main() {
 		close(done)
 	}()
 
+	// 端口热切换：脚本改不了容器（没有 docker 权限），但程序能改自己。
+	go watchPortChange(config.EnvFilePath(), listen, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(ctx)
+		close(done)
+	})
+
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("后台服务启动失败: %v", err)
 	}
 	<-done
 	fmt.Println("已退出。")
+}
+
+// watchPortChange 盯着 ddns.env 里的 CFDDNS_PORT，变了就优雅退出，
+// 由 Docker（compose 里 restart: unless-stopped）用新端口重新拉起。
+//
+// 为什么要程序自己退出，而不是让安装脚本 `docker restart`：
+// 飞牛的生命周期脚本以 run-as: package 运行，通常拿不到 docker 权限，
+// 那条 restart 命令经常静默失败。结果是用户在安装向导/应用设置里改了端口，
+// ddns.env 和桌面图标都改了，进程却还在老端口上跑——点图标打不开，
+// 看起来就像「设置没生效」。程序自己退出是最可靠的触发方式。
+//
+// 只在端口真的变了才退出：启动时按 ddns.env 决定监听端口，所以重启后
+// 新端口 == 当前端口，条件不成立，不会反复重启。
+func watchPortChange(envFile, listen string, shutdown func()) {
+	_, cur, err := net.SplitHostPort(listen)
+	if err != nil {
+		cur = strings.TrimPrefix(listen, ":")
+	}
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		want := strings.TrimSpace(config.LoadEnvFile(envFile)["CFDDNS_PORT"])
+		n, err := strconv.Atoi(want)
+		if err != nil || n < 1 || n > 65535 || want == cur {
+			continue
+		}
+		log.Printf("[信息] 检测到后台端口已改为 %s（当前 %s），正在自动重启以生效…", want, cur)
+		shutdown()
+		time.Sleep(1500 * time.Millisecond) // 让 HTTP 服务把响应吐完
+		os.Exit(0)
+	}
 }
 
 // waitListening 等端口进入监听状态（最多等 timeout），用于 -once 模式。
@@ -189,17 +235,20 @@ func defaultListen() string {
 	return ":8080"
 }
 
-// resolvePassword 决定后台登录密码，返回密码与来源标记（env / file / generated）。
+// resolvePassword 决定后台登录密码的兜底值，返回密码与来源标记（env / file / generated）。
 //
 // 为什么没有「空密码 = 免登录」这一档：后台现在对所有来源 IP 开放，
 // 空密码等于谁都能进来改你的 DNS 解析记录。所以读不到密码就现生成一个，
 // 打印在启动日志里，并尽量落盘，保证重启后还是同一个。
-func resolvePassword(dir string) (string, string) {
+//
+// 注意：这里读到的只是**启动时**的值，真正校验时由 web.Auth.Current()
+// 每次重读 passFile。用户在安装向导/应用设置里改了密码，即使容器没被重启，
+// 下一次登录也会按新密码比对。
+func resolvePassword(passFile string) (string, string) {
 	if v := strings.TrimSpace(os.Getenv("DSA_PASSWORD")); v != "" {
 		return v, "env"
 	}
 
-	passFile := filepath.Join(dir, "dashboard-password")
 	if b, err := os.ReadFile(passFile); err == nil {
 		if v := strings.TrimSpace(string(b)); v != "" {
 			return v, "file"

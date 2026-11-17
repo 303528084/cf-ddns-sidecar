@@ -1,29 +1,40 @@
 #!/bin/bash
 #
-# 飞牛生命周期脚本：config_callback（用户在「应用设置」里保存后执行）。
+# 飞牛生命周期脚本：config_callback（「应用设置」保存后执行；
+# 安装向导点完成后由 install_callback 复用同一份逻辑）。
 #
-# 把向导表单里填的值写进 ddns.env，然后重启容器让旁路重新读取配置，
-# 这样用户不用自己去文件管理里编辑文本文件。
+# 职责：把向导表单里填的后台端口、登录密码落到数据目录。
 #
-# 规则：字段留空 = 保持原样。这不是随手加的容错，是这两份向导的<b>正确性前提</b>：
-# 飞牛的向导表单是静态的，不会把已保存的值填回输入框，只认 JSON 里的 initValue。
-# 所以任何「有内容」的预填值，都会在用户只想改密码、其余不动地保存一次时，
-# 把它覆盖成那个预填值。域名/服务商/密钥因此不放进向导，改走后台界面
-# （那里会显示当前真实值）。下面这些 set_kv 留着是为了以后加字段时不用改脚本，
-# 空值一律跳过，不会误写。
+# 两条硬约束，改这个文件前先看懂：
+#
+# 1) 脚本以 run-as: package 运行，**没有 docker 权限**，`docker restart` 常常
+#    静默失败。所以不能指望「写完配置再重启容器」这条路。对应做法：
+#      · 密码 —— 程序每次登录时现读 dashboard-password，写完立刻生效；
+#      · 端口 —— 程序自己盯着 ddns.env，发现端口变了就自行退出让 Docker 拉起。
+#
+# 2) 向导表单是静态的，飞牛不会把已保存的值填回输入框，只认 JSON 里的 initValue。
+#    所以任何「有内容」的预填值，都会在用户只想改密码、其余不动地保存一次时
+#    把真实配置覆盖掉。域名/服务商/密钥因此不放进向导，改走后台界面
+#    （那里显示的是当前真实值）。这里的 set_kv 一律「留空 = 跳过」。
+#
+# 另外：出错不再直接 exit，而是收集起来最后统一报。否则「密码写在最后、
+# 前面某步失败」会导致密码永远写不到——这正是用户设了密码却不生效的原因之一。
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 DATA_ROOT="${CFDDNS_DATA_DIR:-/var/apps/${APP_NAME}/share/${APP_NAME}/data}"
 ENV_FILE="${DATA_ROOT}/ddns.env"
+PASS_FILE="${DATA_ROOT}/dashboard-password"
 CONTAINER_NAME="cf-ddns-sidecar"
+
+ERRORS=""
 
 log() {
     echo "[cf-ddns-sidecar] $*"
 }
 
-fail() {
-    echo "$1" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
-    exit 1
+err() {
+    echo "[cf-ddns-sidecar][错误] $*"
+    ERRORS="${ERRORS}${ERRORS:+；}$*"
 }
 
 # 把端口同步到「桌面入口」的两处静态配置：
@@ -32,26 +43,34 @@ fail() {
 # 不同步的话，用户把端口改成 9090，程序监听 9090、图标却还指着 8080，
 # 点开必然打不开页面。
 sync_port_to_entry() {
-    local port="$1"
+    local port="$1" ui_conf mf
 
-    local ui_conf="${TRIM_APPDEST}/ui/config"
+    if [ -z "${TRIM_APPDEST:-}" ]; then
+        err "缺少 TRIM_APPDEST，跳过桌面入口端口同步（图标可能仍指向旧端口）"
+        return 1
+    fi
+
+    ui_conf="${TRIM_APPDEST}/ui/config"
     if [ -f "$ui_conf" ]; then
-        if sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[0-9]+(\")/\1${port}\2/" "$ui_conf"; then
+        if sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[0-9]+(\")/\1${port}\2/" "$ui_conf" 2>/dev/null; then
             log "桌面入口端口已改为 ${port}"
         else
-            log "警告：无法修改 $ui_conf，桌面图标可能仍指向旧端口"
+            err "无法修改 $ui_conf（权限不足？），桌面图标可能仍指向旧端口"
         fi
+    else
+        log "提示：未找到 $ui_conf，跳过桌面入口端口同步"
     fi
 
     # manifest 与 app/ 同级（TRIM_APPDEST 指向 app 目录）
-    local mf="${TRIM_APPDEST}/../manifest"
+    mf="${TRIM_APPDEST}/../manifest"
     if [ -f "$mf" ]; then
-        if sed -i -E "s/^service_port[[:space:]]*=.*/service_port = ${port}/" "$mf"; then
+        if sed -i -E "s/^service_port[[:space:]]*=.*/service_port = ${port}/" "$mf" 2>/dev/null; then
             log "manifest service_port 已改为 ${port}"
         else
-            log "警告：无法修改 $mf"
+            err "无法修改 $mf（权限不足？）"
         fi
     fi
+    return 0
 }
 
 # 写入/更新一个 KEY=VALUE（值为空则跳过；同时处理被注释掉的 "#KEY=" 行）
@@ -59,10 +78,10 @@ set_kv() {
     local key="$1" val="$2" file="$3"
 
     [ -z "$val" ] && return 0
-    [ -f "$file" ] || : > "$file"
+    [ -f "$file" ] || : > "$file" 2>/dev/null || return 1
 
     local tmp
-    tmp="$(mktemp "${file}.tmpXXXXXX")" || return 1
+    tmp="$(mktemp "${file}.tmpXXXXXX" 2>/dev/null)" || return 1
 
     local found=0 line
     while IFS= read -r line || [ -n "$line" ]; do
@@ -81,69 +100,131 @@ set_kv() {
         printf '%s=%s\n' "$key" "$val" >> "$tmp"
     fi
 
-    mv "$tmp" "$file" || return 1
+    mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
     chmod 0644 "$file" 2>/dev/null
     return 0
 }
 
-mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
+# 确保数据目录可用。失败只报错不退出——后面每个动作自己再判一次，
+# 这样「目录有问题」不会把整份配置连带吞掉。
+ensure_data_root() {
+    [ -d "$DATA_ROOT" ] && return 0
+    if mkdir -p "$DATA_ROOT" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
 
-# —— 基本项 ——
-set_kv "CFDDNS_PROVIDER"         "${wizard_provider:-}"         "$ENV_FILE" || fail "写入服务商失败"
-set_kv "CFDDNS_DOMAIN"           "${wizard_domain:-}"           "$ENV_FILE" || fail "写入域名失败"
-set_kv "CFDDNS_INTERVAL_MINUTES" "${wizard_interval_minutes:-}" "$ENV_FILE" || fail "写入测速间隔失败"
+# 写入后台登录密码。这是本脚本最重要的动作，所以放最前面做。
+apply_password() {
+    local pwd="$1" back
+
+    [ -z "$pwd" ] && return 0   # 留空 = 保持原密码不变
+
+    if ! ensure_data_root; then
+        err "数据目录不可用，后台密码未写入"
+        return 1
+    fi
+
+    # 原子写入：先写临时文件再改名。
+    # 程序是每次登录现读这个文件的，直接覆盖会出现「读到写了一半的密码」的瞬间，
+    # 那一瞬的登录必然失败（用户会以为密码设错了）。改名是原子的，不会读到半截。
+    local tmp="${PASS_FILE}.tmp.$$"
+    if ! printf '%s' "$pwd" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        err "无法写入 $PASS_FILE（权限不足？），后台密码未生效"
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$PASS_FILE" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        err "无法替换 $PASS_FILE（权限不足？），后台密码未生效"
+        return 1
+    fi
+
+    # 读回来核对：避免「文件建了但内容是空的」这类静默失败，
+    # 那会让程序误判成未设置密码而重新生成一个。
+    back="$(cat "$PASS_FILE" 2>/dev/null)"
+    if [ "$back" != "$pwd" ]; then
+        err "后台密码写入后校验不一致（$PASS_FILE），请在「应用设置」里再保存一次"
+        return 1
+    fi
+
+    log "后台登录密码已写入 $PASS_FILE，立即生效（无需重启）"
+    return 0
+}
+
+ensure_data_root || err "无法创建数据目录 $DATA_ROOT，配置可能无法保存（安装阶段共享目录可能还没建好，可稍后在「应用设置」里再保存一次）"
+
+# —— 1. 后台密码：最先写，且不依赖后面任何步骤 ——
+apply_password "${wizard_dashboard_password:-}"
+
+# —— 2. 基本项（当前两份向导都没有这些字段，留空即跳过；
+#       保留是为了以后把字段加回向导时不用改脚本）——
+set_kv "CFDDNS_PROVIDER"         "${wizard_provider:-}"         "$ENV_FILE" || err "写入服务商失败"
+set_kv "CFDDNS_DOMAIN"           "${wizard_domain:-}"           "$ENV_FILE" || err "写入域名失败"
+set_kv "CFDDNS_INTERVAL_MINUTES" "${wizard_interval_minutes:-}" "$ENV_FILE" || err "写入测速间隔失败"
 
 # 标记「这次改动需要覆盖已有配置」：程序启动时读一次、落盘、把标记改回 0。
 # 没有这个标记的话，config.json 已经存在时这里的修改会被忽略。
-set_kv "CFDDNS_APPLY_ENV" "1" "$ENV_FILE" || fail "写入覆盖标记失败"
+set_kv "CFDDNS_APPLY_ENV" "1" "$ENV_FILE" || err "写入覆盖标记失败"
 
-# —— 后台端口（改了要同步桌面入口，否则图标点不开）——
+# —— 3. 后台端口 ——
+PORT_CHANGED=0
 if [ -n "${wizard_port:-}" ]; then
     case "$wizard_port" in
-        *[!0-9]*|"")
-            fail "端口必须是数字：$wizard_port"
+        *[!0-9]*)
+            err "端口必须是纯数字，当前填的是「$wizard_port」，已忽略"
+            ;;
+        *)
+            if [ "$wizard_port" -lt 1024 ] || [ "$wizard_port" -gt 65535 ]; then
+                err "端口范围是 1024-65535，当前填的是 $wizard_port，已忽略"
+            else
+                if set_kv "CFDDNS_PORT" "$wizard_port" "$ENV_FILE"; then
+                    PORT_CHANGED=1
+                    sync_port_to_entry "$wizard_port"
+                    log "后台端口设为 ${wizard_port}"
+                else
+                    err "写入端口失败（$ENV_FILE）"
+                fi
+            fi
             ;;
     esac
-    if [ "$wizard_port" -lt 1024 ] || [ "$wizard_port" -gt 65535 ]; then
-        fail "端口范围是 1024-65535，当前填的是 $wizard_port"
+fi
+
+# —— 4. 各家密钥（向导里已无这些字段，留空即跳过）——
+set_kv "CF_API_TOKEN"             "${wizard_cf_token:-}"      "$ENV_FILE" || err "写入 Cloudflare 令牌失败"
+set_kv "CF_ZONE_ID"               "${wizard_cf_zone_id:-}"    "$ENV_FILE" || err "写入 Cloudflare Zone ID 失败"
+set_kv "ALIYUN_ACCESS_KEY_ID"     "${wizard_aliyun_ak:-}"     "$ENV_FILE" || err "写入阿里云 AK 失败"
+set_kv "ALIYUN_ACCESS_KEY_SECRET" "${wizard_aliyun_sk:-}"     "$ENV_FILE" || err "写入阿里云 SK 失败"
+set_kv "TENCENT_SECRET_ID"        "${wizard_tencent_id:-}"    "$ENV_FILE" || err "写入腾讯云 SecretId 失败"
+set_kv "TENCENT_SECRET_KEY"       "${wizard_tencent_key:-}"   "$ENV_FILE" || err "写入腾讯云 SecretKey 失败"
+set_kv "HUAWEI_AK"                "${wizard_huawei_ak:-}"     "$ENV_FILE" || err "写入华为云 AK 失败"
+set_kv "HUAWEI_SK"                "${wizard_huawei_sk:-}"     "$ENV_FILE" || err "写入华为云 SK 失败"
+set_kv "HUAWEI_ZONE_ID"           "${wizard_huawei_zone_id:-}" "$ENV_FILE" || err "写入华为云 Zone ID 失败"
+
+# —— 5. 让配置生效 ——
+# 密码是热读取的，不需要重启。
+# 端口变了：程序自己会在 15 秒内发现 ddns.env 变化并退出，由 Docker 用新端口
+# 重新拉起（compose 里 restart: unless-stopped）。这里的 docker restart 只是
+# 尽力加速，失败也不影响——脚本本来就没有 docker 权限。
+if [ "$PORT_CHANGED" = "1" ]; then
+    if docker restart "$CONTAINER_NAME" >/dev/null 2>&1; then
+        log "已重启容器，新端口已生效"
+    else
+        log "容器将在 15 秒内自动按新端口重启（脚本无 docker 权限时属正常现象）"
     fi
-    set_kv "CFDDNS_PORT" "$wizard_port" "$ENV_FILE" || fail "写入端口失败"
-    sync_port_to_entry "$wizard_port"
 fi
 
-# —— Cloudflare ——
-set_kv "CF_API_TOKEN"   "${wizard_cf_token:-}"    "$ENV_FILE"
-set_kv "CF_ZONE_ID"     "${wizard_cf_zone_id:-}"  "$ENV_FILE"
-
-# —— 阿里云 ——
-set_kv "ALIYUN_ACCESS_KEY_ID"     "${wizard_aliyun_ak:-}" "$ENV_FILE"
-set_kv "ALIYUN_ACCESS_KEY_SECRET" "${wizard_aliyun_sk:-}" "$ENV_FILE"
-
-# —— 腾讯云 DNSPod ——
-set_kv "TENCENT_SECRET_ID"  "${wizard_tencent_id:-}"  "$ENV_FILE"
-set_kv "TENCENT_SECRET_KEY" "${wizard_tencent_key:-}" "$ENV_FILE"
-
-# —— 华为云 ——
-set_kv "HUAWEI_AK"      "${wizard_huawei_ak:-}"      "$ENV_FILE"
-set_kv "HUAWEI_SK"      "${wizard_huawei_sk:-}"      "$ENV_FILE"
-set_kv "HUAWEI_ZONE_ID" "${wizard_huawei_zone_id:-}" "$ENV_FILE"
-
-log "配置已保存到 ${ENV_FILE}"
-
-# 管理后台（Dashboard）登录密码：用户在这里设，就不用去翻 dashboard-password 文件。
-# 留空则保持原密码不变。
-if [ -n "${wizard_dashboard_password:-}" ]; then
-    printf '%s' "$wizard_dashboard_password" > "${DATA_ROOT}/dashboard-password" \
-        || fail "写入后台密码失败"
-    chmod 0644 "${DATA_ROOT}/dashboard-password" 2>/dev/null
-    log "后台登录密码已更新"
+# 有任何一项失败就把错误一并抛给飞牛界面，别让用户以为保存成功了。
+# 只往 TRIM_TEMP_LOGFILE 写（飞牛给的文件）；不要用 /dev/stderr 兜底——
+# 非 root 身份下重定向到 /dev/stderr 会失败，反而把脚本自己带崩。
+if [ -n "$ERRORS" ]; then
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        printf '%s\n' "$ERRORS" > "$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+    fi
+    exit 1
 fi
 
-# 重启容器让新配置生效（失败不阻断，用户也可以在应用中心手动重启）
-if docker restart "$CONTAINER_NAME" >/dev/null 2>&1; then
-    log "已重启容器使配置生效"
-else
-    log "容器重启失败，请在应用中心手动停止再启动一次"
-fi
-
+log "配置已保存"
 exit 0
