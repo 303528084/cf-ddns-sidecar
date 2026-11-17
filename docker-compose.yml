@@ -12,15 +12,13 @@ services:
     image: ${SIDECAR_IMAGE:-your-dockerhub-username/cf-ddns-sidecar:latest}
     container_name: cf-ddns-sidecar
     restart: unless-stopped
-    # 用 host 网络：后台看到的来源 IP 才是真实局域网 IP，CIDR 白名单才能生效；
-    # 同时避免测速引擎受 NAT 影响。
+    # 用 host 网络：端口由程序按 ddns.env 的 CFDDNS_PORT 监听（默认 8080），
+    # 改端口不用重建容器；同时避免测速受 NAT 影响。
     network_mode: host
     environment:
       TZ: Asia/Shanghai
-      # 允许访问后台的来源网段，逗号分隔。默认放开三段内网。
-      DSA_ALLOWED_CIDRS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
-      # 后台登录密码。留空则读数据目录下的 dashboard-password 文件；
-      # 两者都没有就不校验登录（仅适合完全可信的内网）。
+      # 后台登录密码。留空则读数据目录下的 dashboard-password；
+      # 两者都没有时，程序会自动生成一个并打印在启动日志里（不会免登录）。
       # DSA_PASSWORD: "改成你自己的密码"
     volumes:
       # 一个目录装下全部：config.json、ddns.env、dashboard-password、测速工作目录

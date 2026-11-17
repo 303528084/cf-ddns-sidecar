@@ -77,15 +77,9 @@ func main() {
 		workDir = filepath.Join(configDir, "cfnb")
 	}
 
-	password := os.Getenv("DSA_PASSWORD")
-	if password == "" {
-		// 优先读安装时生成的固定密码，避免每次重启都换
-		if b, err := os.ReadFile(filepath.Join(configDir, "dashboard-password")); err == nil {
-			password = string(b)
-		}
-	}
+	password, passSource := resolvePassword(configDir)
 
-	srv := web.New(cfg, configPath, enginePath, workDir, password, selfURL(listen), mustCIDRs())
+	srv := web.New(cfg, configPath, enginePath, workDir, password, selfURL(listen))
 
 	if runOnce {
 		// 测速引擎要回调本进程的 /api/candidates 拿候选 IP（内置 Cloudflare 官方段），
@@ -112,10 +106,6 @@ func main() {
 		return
 	}
 
-	if password == "" {
-		fmt.Println("[提示] 未设置后台密码，后台将不校验登录。可在「应用设置」里设置管理密码。")
-	}
-
 	srv.StartScheduler()
 
 	httpServer := &http.Server{
@@ -130,7 +120,15 @@ func main() {
 	fmt.Printf("\n==============================================\n")
 	fmt.Printf("  cf-ddns-sidecar %s\n", version)
 	fmt.Printf("  后台地址: http://<本机IP>%s/\n", listen)
-	fmt.Printf("  允许来源网段: %s\n", os.Getenv("DSA_ALLOWED_CIDRS"))
+	switch passSource {
+	case "generated":
+		fmt.Printf("  登录密码: %s（自动生成，可在「应用设置」里改成你记得住的）\n", password)
+	case "file":
+		fmt.Println("  登录密码: 安装时设置的那个（忘了可在「应用设置」里重设）")
+	default:
+		fmt.Println("  登录密码: 由环境变量 DSA_PASSWORD 指定")
+	}
+	fmt.Println("  访问限制: 无，所有 IP 均可打开后台（请务必设置登录密码）")
 	fmt.Printf("==============================================\n\n")
 
 	done := make(chan struct{})
@@ -191,13 +189,32 @@ func defaultListen() string {
 	return ":8080"
 }
 
-// mustCIDRs 解析来源网段；配置非法时拒绝启动（避免后台意外暴露到公网）。
-func mustCIDRs() []*net.IPNet {
-	cidrs, err := web.ParseCIDRs(os.Getenv("DSA_ALLOWED_CIDRS"))
-	if err != nil {
-		log.Fatalf("[安全门禁] %v", err)
+// resolvePassword 决定后台登录密码，返回密码与来源标记（env / file / generated）。
+//
+// 为什么没有「空密码 = 免登录」这一档：后台现在对所有来源 IP 开放，
+// 空密码等于谁都能进来改你的 DNS 解析记录。所以读不到密码就现生成一个，
+// 打印在启动日志里，并尽量落盘，保证重启后还是同一个。
+func resolvePassword(dir string) (string, string) {
+	if v := strings.TrimSpace(os.Getenv("DSA_PASSWORD")); v != "" {
+		return v, "env"
 	}
-	return cidrs
+
+	passFile := filepath.Join(dir, "dashboard-password")
+	if b, err := os.ReadFile(passFile); err == nil {
+		if v := strings.TrimSpace(string(b)); v != "" {
+			return v, "file"
+		}
+	}
+
+	v, err := web.RandomPassword()
+	if err != nil {
+		log.Fatalf("生成后台密码失败: %v", err)
+	}
+	if err := os.WriteFile(passFile, []byte(v), 0o644); err != nil {
+		log.Printf("[警告] 初始密码无法保存到 %s：%v", passFile, err)
+		log.Printf("[警告] 当前密码是临时的，重启应用后会变；建议立刻在「应用设置」里设置固定密码")
+	}
+	return v, "generated"
 }
 
 // selfURL 把监听地址转成本机可访问的 URL，供测速引擎拉候选列表。

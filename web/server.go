@@ -43,7 +43,6 @@ type Server struct {
 	enginePath string
 	workDir    string
 	password   string
-	cidrs      []*net.IPNet
 	selfURL    string // 本机地址，用于给测速引擎提供本地候选列表
 
 	mu      sync.Mutex
@@ -57,14 +56,16 @@ type Server struct {
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
-func New(cfg *config.Config, configPath, enginePath, workDir, password, selfURL string, cidrs []*net.IPNet) *Server {
+//
+// 不做来源 IP 限制：局域网、容器网段、甚至从公网反代进来都放行，
+// 访问控制完全交给登录密码。
+func New(cfg *config.Config, configPath, enginePath, workDir, password, selfURL string) *Server {
 	return &Server{
 		configPath: configPath,
 		enginePath: enginePath,
 		workDir:    workDir,
 		password:   password,
 		selfURL:    strings.TrimSuffix(selfURL, "/"),
-		cidrs:      cidrs,
 		cfg:        cfg,
 		sessions:   make(map[string]time.Time),
 	}
@@ -83,8 +84,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
-	// 所以即使所有外部数据源都不可达，测速依然能跑。不鉴权，靠 cidrGuard 限本机。
-	mux.HandleFunc("/api/candidates", s.handleCandidates)
+	// 所以即使所有外部数据源都不可达，测速依然能跑。
+	// 只对本机和已登录用户开放，免得开放网段后被外部随意刷。
+	mux.HandleFunc("/api/candidates", s.candidatesGuard)
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -92,7 +94,26 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	return s.cidrGuard(mux)
+	return mux
+}
+
+// candidatesGuard 只放行本机（测速引擎拉候选）和已登录用户。
+func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
+	if isLoopback(r.RemoteAddr) || s.hasValidSession(r) {
+		s.handleCandidates(w, r)
+		return
+	}
+	http.Error(w, "forbidden", http.StatusForbidden)
+}
+
+// isLoopback 判断请求是否来自本机（测速引擎走 127.0.0.1 回调）。
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // handleCandidates 返回候选 IP 列表（每行 ip:port#国家）。
@@ -105,57 +126,35 @@ func (s *Server) handleCandidates(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(candidateList(count)))
 }
 
-// ---------- 来源网段门禁 ----------
-
-// cidrGuard 只允许来自指定网段的请求（默认拒绝，防止后台暴露到公网）。
-func (s *Server) cidrGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.cidrs) == 0 {
-			next.ServeHTTP(w, r)
-			return
-		}
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
-		ip := net.ParseIP(host)
-		for _, n := range s.cidrs {
-			if n.Contains(ip) {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-		// 本机（测速引擎拉候选列表）始终放行
-		if ip != nil && ip.IsLoopback() {
-			next.ServeHTTP(w, r)
-			return
-		}
-		http.Error(w, "来源 IP 不在允许网段内（请检查 DSA_ALLOWED_CIDRS）", http.StatusForbidden)
-	})
-}
-
 // ---------- 认证 ----------
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 正常路径上密码一定非空（main 读不到会现生成一个）。
+		// 真走到这里说明连生成都失败了，此时必须拒绝而不是放行——
+		// 后台对所有来源 IP 开放，空密码等于谁都能改 DNS 记录。
 		if s.password == "" {
-			next(w, r)
+			http.Error(w, "后台未设置密码，已锁定。请在「应用设置」里设置管理密码后重启应用", http.StatusServiceUnavailable)
 			return
 		}
-		c, err := r.Cookie("cfddns_session")
-		if err != nil {
-			http.Error(w, "未登录", http.StatusUnauthorized)
-			return
-		}
-		s.sessMu.Lock()
-		exp, ok := s.sessions[c.Value]
-		s.sessMu.Unlock()
-		if !ok || time.Now().After(exp) {
-			http.Error(w, "登录已过期", http.StatusUnauthorized)
+		if !s.hasValidSession(r) {
+			http.Error(w, "未登录或登录已过期", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// hasValidSession 判断请求携带的会话 Cookie 是否仍然有效。
+func (s *Server) hasValidSession(r *http.Request) bool {
+	c, err := r.Cookie("cfddns_session")
+	if err != nil {
+		return false
+	}
+	s.sessMu.Lock()
+	exp, ok := s.sessions[c.Value]
+	s.sessMu.Unlock()
+	return ok && time.Now().Before(exp)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +169,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 		return
 	}
-	if s.password != "" && subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.password)) != 1 {
+	if s.password == "" {
+		writeJSON(w, 503, map[string]string{"error": "后台未设置密码，请先在「应用设置」里设置管理密码"})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.password)) != 1 {
 		time.Sleep(500 * time.Millisecond) // 抬高暴力破解成本
 		writeJSON(w, 401, map[string]string{"error": "密码错误"})
 		return
@@ -600,38 +603,6 @@ func friendlyErr(err error) string {
 		return "数据目录是只读的，请检查挂载配置"
 	}
 	return msg
-}
-
-// ParseCIDRs 解析允许访问的来源网段（空字符串表示不限制）。
-func ParseCIDRs(spec string) ([]*net.IPNet, error) {
-	spec = strings.TrimSpace(spec)
-	if spec == "" || spec == "*" {
-		return nil, nil
-	}
-	var out []*net.IPNet
-	for _, part := range strings.Split(spec, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if !strings.Contains(part, "/") {
-			if ip := net.ParseIP(part); ip != nil {
-				bits := 32
-				if ip.To4() == nil {
-					bits = 128
-				}
-				out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
-				continue
-			}
-			return nil, fmt.Errorf("非法的网段: %s", part)
-		}
-		_, n, err := net.ParseCIDR(part)
-		if err != nil {
-			return nil, fmt.Errorf("非法的网段: %s", part)
-		}
-		out = append(out, n)
-	}
-	return out, nil
 }
 
 // RandomPassword 生成随机登录密码。

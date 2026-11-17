@@ -42,12 +42,12 @@ RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 RUN mkdir -p /app/data && chown -R app:app /app
 
 ENV TZ=Asia/Shanghai \
-    CFDDNS_ENGINE=/app/cfnb/main.py \
-    DSA_ALLOWED_CIDRS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+    CFDDNS_ENGINE=/app/cfnb/main.py
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=60s --timeout=5s --start-period=15s \
-    CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null 2>&1 || exit 1
+# 端口可配置，所以健康检查不能写死 8080：跟随 ddns.env 里的 CFDDNS_PORT。
+HEALTHCHECK --interval=60s --timeout=5s --start-period=20s \
+    CMD sh -c 'p=$(grep -E "^CFDDNS_PORT=" /app/data/ddns.env 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d " \r"); case "$p" in ""|*[!0-9]*) p=8080 ;; esac; wget -qO- "http://127.0.0.1:$p/api/health" >/dev/null 2>&1 || exit 1'
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

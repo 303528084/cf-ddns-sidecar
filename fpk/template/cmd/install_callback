@@ -1,6 +1,22 @@
 #!/bin/bash
+#
+# 飞牛生命周期脚本：install_callback（安装向导点「完成」后执行）。
+#
+# 为什么这里要干活：
+#   安装向导 wizard/config 里填的值，飞牛只在「安装」和「应用设置」两个时机
+#   作为环境变量传下来。以前这个脚本是空壳 exit 0，于是安装时填的域名、
+#   服务商、端口、后台密码、各家密钥全部被丢掉——装完发现后台还是没密码、
+#   端口还是 8080，得再进「应用设置」重填一遍。
+#
+# 现在直接复用 config_callback 的写盘逻辑，两个入口一套代码，不会写岔。
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 飞牛生命周期脚本：install_callback。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+if [ -x "${SELF_DIR}/config_callback" ]; then
+    # 安装阶段容器还没创建出来，config_callback 结尾的 docker restart
+    # 必然失败——那一步已经降级成日志提示了，这里再兜一层，确保
+    # 写配置出问题也不会让整个安装流程报错。
+    "${SELF_DIR}/config_callback" || \
+        echo "[cf-ddns-sidecar] 安装向导配置写入未完成，可在「应用设置」里重新保存一次"
+fi
+
 exit 0

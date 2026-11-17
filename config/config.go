@@ -122,7 +122,12 @@ func Load() (*Config, error) {
 			c.PendingSave = true
 		}
 	case os.IsNotExist(err):
+		// 首次启动（安装向导刚写完 ddns.env）：用它打底，并立刻落盘。
+		// 这里必须也置 PendingSave —— 否则 config.json 一直不存在、
+		// 「已应用」标记永远清不掉，等用户以后在后台改了配置，
+		// 下次重启又会被安装时的旧值覆盖回去。
 		seedFromEnvFile(c, LoadEnvFile(EnvFilePath()))
+		c.PendingSave = true
 	default:
 		return nil, err
 	}

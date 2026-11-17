@@ -9,12 +9,10 @@ services:
     image: {{DOCKERHUB_REPO}}:{{IMAGE_TAG}}
     container_name: cf-ddns-sidecar
     restart: unless-stopped
-    # 用 host 网络：后台看到的来源 IP 才是真实局域网 IP，
-    # DSA_ALLOWED_CIDRS 白名单才能正确生效。
+    # 用 host 网络：端口由程序按 ddns.env 的 CFDDNS_PORT 自己监听，
+    # 不用做端口映射，改端口不需要重建容器。
     network_mode: host
     environment:
-      # 允许访问后台的来源网段，按需修改后到应用详情里重启
-      DSA_ALLOWED_CIDRS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
       TZ: Asia/Shanghai
     volumes:
       # 飞牛数据共享目录的稳定绝对路径（安装时自动创建并授予本应用 ACL 权限）
