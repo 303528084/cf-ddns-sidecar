@@ -17,7 +17,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -82,6 +81,7 @@ type Server struct {
 	workDir    string
 	pass       Auth
 	selfURL    string // 本机地址，用于给测速引擎提供本地候选列表
+	throttle   *loginThrottle
 
 	mu      sync.Mutex
 	cfg     *config.Config
@@ -93,7 +93,7 @@ type Server struct {
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
 //
 // 不做来源 IP 限制：局域网、容器网段、甚至从公网反代进来都放行，
-// 访问控制完全交给登录密码。
+// 访问控制交给「登录密码 + 登录失败限流」（见 guard.go）。
 func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, selfURL string) *Server {
 	return &Server{
 		configPath: configPath,
@@ -101,6 +101,7 @@ func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, 
 		workDir:    workDir,
 		pass:       auth,
 		selfURL:    strings.TrimSuffix(selfURL, "/"),
+		throttle:   newLoginThrottle(),
 		cfg:        cfg,
 	}
 }
@@ -137,26 +138,21 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	return mux
+	// 安全头包在最外层：静态页、API、错误响应都要带上。
+	return securityHeaders(mux)
 }
 
-// candidatesGuard 只放行本机（测速引擎拉候选）和已登录用户。
+// candidatesGuard 只放行真正的进程内调用（测速引擎拉候选）和已登录用户。
+//
+// 注意这里用的是 isLocalRequest 而不是「RemoteAddr 是不是 127.0.0.1」：
+// 加了反代或 Cloudflare Tunnel 之后，所有公网请求的 RemoteAddr 也会是
+// 127.0.0.1，只判 IP 等于把这个接口对全网敞开。见 guard.go 的说明。
 func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
-	if isLoopback(r.RemoteAddr) || s.hasValidSession(r) {
+	if isLocalRequest(r) || s.hasValidSession(r) {
 		s.handleCandidates(w, r)
 		return
 	}
 	http.Error(w, "forbidden", http.StatusForbidden)
-}
-
-// isLoopback 判断请求是否来自本机（测速引擎走 127.0.0.1 回调）。
-func isLoopback(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // handleCandidates 返回候选 IP 列表（每行 ip:port#国家）。
@@ -250,6 +246,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// 先看这个来源是不是已经在「罚站」。放在解析 body 之前：被锁的人连尝试
+	// 的机会都没有，也省得被灌数据。
+	ip := clientIP(r)
+	if ok, wait := s.throttle.allow(ip); !ok {
+		writeTooManyAttempts(w, wait)
+		return
+	}
+
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -262,19 +267,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.pass.Current())) != 1 {
-		time.Sleep(500 * time.Millisecond) // 抬高暴力破解成本
+		s.throttle.fail(ip)
+		time.Sleep(loginFailDelay) // 抬高单路爆破成本；并发的那些靠上面的限流兜住
 		writeJSON(w, 401, map[string]string{"error": "密码错误，请核对「应用设置」里的登录密码"})
 		return
 	}
+	s.throttle.reset(ip)
 	token := s.signToken()
 
 	// Cookie 仍然设一份，方便直接在浏览器地址栏访问时免登录。
 	// 值里有点号，Cookie 允许，无需转义。
+	// Secure 只在 HTTPS 下加：HTTP 下打了这个标记浏览器会直接丢弃 Cookie，
+	// 表现为「登录成功但下一个请求又 401」。
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL / time.Second),
 	})
