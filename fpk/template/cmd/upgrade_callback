@@ -1,6 +1,12 @@
 #!/bin/bash
 
-# 飞牛生命周期脚本：upgrade_callback。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+# 飞牛生命周期脚本：upgrade_callback（升级完成后、应用启动前执行）。
+# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，本应用基本无需额外动作。
+# 唯一例外：v1.0.x 是双容器架构，独立的主体容器 cf-dns-select 不在新 compose 里，
+# 升级后不会被自动清理，会继续占用 8080 端口导致新容器起不来，必须主动删掉。
+if docker inspect cf-dns-select >/dev/null 2>&1; then
+    docker rm -f cf-dns-select >/dev/null 2>&1 \
+        && echo "[cf-ddns-sidecar] 升级：已清理旧版主体容器 cf-dns-select"
+fi
+
 exit 0

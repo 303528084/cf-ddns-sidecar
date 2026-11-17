@@ -42,10 +42,21 @@ migrate_legacy() {
     fi
 }
 
+# 清理 v1.0.x 双容器架构遗留的主体容器。
+# 旧版 compose 里有一个独立的 cf-dns-select 容器，新版把它合进了本容器；
+# 升级后旧容器不会被新 compose 管理，会残留并继续占用 8080，导致新容器起不来。
+cleanup_legacy_container() {
+    if docker inspect cf-dns-select >/dev/null 2>&1; then
+        docker rm -f cf-dns-select >/dev/null 2>&1 \
+            && echo "[cf-ddns-sidecar] 已清理旧版主体容器 cf-dns-select（v1.0.x 遗留）"
+    fi
+}
+
 # 首次启动初始化：建目录 + 迁移旧数据 + 生成示例配置（幂等）
 init_on_start() {
     mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
 
+    cleanup_legacy_container
     migrate_legacy
 
     # 容器内以非 root（uid 1000）运行，需保证其可写数据目录
