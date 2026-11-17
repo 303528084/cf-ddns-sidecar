@@ -36,11 +36,15 @@ var cloudflareIPv4 = []string{
 	"131.0.72.0/22",
 }
 
-// extraSources 是解析之后的用户自定义来源，三类分开存。
+// extraSources 是解析之后的用户自定义来源，四类分开存。
 type extraSources struct {
 	cidrs []string // 已校验的 IP 段
-	ips   []string // 已校验的单 IP
-	urls  []string // http(s) 链接，原样交给测速引擎
+	ips   []string // 已校验的单 IP（不含端口）
+	// nodes 是「已经写全了」的节点：IP:端口#国家。
+	// 和 ips 分开存，是为了不丢掉用户（或链接）明确给出的端口和国家标签
+	// ——下游统一按 `ip:443#US` 输出，端口被改写会让一个能用的节点变不能用。
+	nodes []string
+	urls  []string // http(s) 链接，由本程序下载后当文本解析
 }
 
 // parseExtraSources 解析后台里填的「优选 IP 段」。
@@ -88,16 +92,38 @@ func parseExtraSources(lines []string) (extraSources, error) {
 			continue
 		}
 
-		ip := net.ParseIP(line)
-		if ip == nil || ip.To4() == nil {
-			return out, fmt.Errorf(
-				"第 %d 行「%s」既不是 IP、也不是 IP 段、也不是链接。"+
-					"单个 IP 写成 1.2.3.4，IP 段写成 1.2.3.0/24", i+1, line)
+		// 1.2.3.4 / 1.2.3.4:443 / 1.2.3.4:8443#JP 三种都认。
+		// 带端口的一律保留原端口：cfnb 默认只保留 443，把它改写成 443
+		// 会让用户明确给出的非 443 节点在下一轮被过滤掉。
+		if m := nodeTokenRe.FindStringSubmatch(line); m != nil {
+			if ip := net.ParseIP(m[1]); ip != nil && ip.To4() != nil && validPort(m[2]) {
+				if m[2] == "" && m[3] == "" {
+					if !seen["i:"+m[1]] {
+						seen["i:"+m[1]] = true
+						out.ips = append(out.ips, m[1])
+					}
+					continue
+				}
+				port, cc := m[2], m[3]
+				if port == "" {
+					port = "443"
+				}
+				if cc == "" {
+					cc = "US"
+				}
+				node := m[1] + ":" + port + "#" + cc
+				if !seen["n:"+node] {
+					seen["n:"+node] = true
+					out.nodes = append(out.nodes, node)
+				}
+				continue
+			}
 		}
-		if !seen["i:"+ip.To4().String()] {
-			seen["i:"+ip.To4().String()] = true
-			out.ips = append(out.ips, ip.To4().String())
-		}
+
+		return out, fmt.Errorf(
+			"第 %d 行「%s」既不是 IP、也不是 IP 段、也不是链接。"+
+				"单个 IP 写成 1.2.3.4（可带端口如 1.2.3.4:8443），"+
+				"IP 段写成 1.2.3.0/24", i+1, line)
 	}
 	return out, nil
 }
@@ -181,9 +207,10 @@ func sampleFromCIDRs(cidrs []string, count int) []string {
 	return out
 }
 
-// sampleFromSources 按「单 IP 全给、段里随机补足」的顺序生成候选。
+// sampleFromSources 按「写全的节点 → 单 IP → 段里随机补足」的顺序生成候选。
 //
-// 单 IP 不抽样：那是用户明确点名的地址，抽样就等于随机丢掉他想测的那个。
+// 前两类不抽样：那是用户（或他给的链接）明确点名的地址，抽样就等于随机丢掉
+// 他想测的那个。同一个 IP 只出现一次，端口不同也算同一个 IP——重复测只是白花时间。
 func sampleFromSources(src extraSources, count int) []string {
 	if count <= 0 {
 		count = 600
@@ -191,12 +218,27 @@ func sampleFromSources(src extraSources, count int) []string {
 	out := make([]string, 0, count)
 	seen := make(map[string]bool, count)
 
+	add := func(node string) bool {
+		ip, _, _ := strings.Cut(node, ":")
+		if ip == "" || seen[ip] {
+			return false
+		}
+		seen[ip] = true
+		out = append(out, node)
+		return true
+	}
+
+	for _, node := range src.nodes {
+		if len(out) >= count {
+			return out
+		}
+		add(node)
+	}
 	for _, ip := range src.ips {
 		if len(out) >= count {
 			return out
 		}
-		seen[ip] = true
-		out = append(out, ip+":443#US")
+		add(ip + ":443#US")
 	}
 
 	rest := count - len(out)
@@ -204,14 +246,27 @@ func sampleFromSources(src extraSources, count int) []string {
 		return out
 	}
 	for _, item := range sampleFromCIDRs(src.cidrs, rest) {
-		ip, _, _ := strings.Cut(item, ":")
-		if seen[ip] {
-			continue
+		if len(out) >= count {
+			break
 		}
-		seen[ip] = true
-		out = append(out, item)
+		add(item)
 	}
 	return out
+}
+
+// isEmpty 判断这批来源里有没有任何可用地址。
+func (e extraSources) isEmpty() bool {
+	return len(e.nodes) == 0 && len(e.ips) == 0 && len(e.cidrs) == 0
+}
+
+// candidatesText 把一批来源渲染成 /api/candidates 的响应正文（每行 `ip:port#国家`）。
+func candidatesText(src extraSources, count int) string {
+	var b strings.Builder
+	for _, ip := range sampleFromSources(src, count) {
+		b.WriteString(ip)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func uint32ToIP(v uint32) string {

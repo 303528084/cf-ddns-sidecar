@@ -114,6 +114,16 @@ type Server struct {
 	// 没有它的话，用户把间隔从 60 分钟改成 10 分钟，调度器还按旧的 60 分钟
 	// 睡在那儿，界面上「下次测速」也要等它醒过来才更新——最长能差一小时。
 	schedWake chan struct{}
+
+	// candText 非空时，/api/candidates 直接返回这一段。
+	//
+	// 用于「来源里有链接」的情形：链接必须在开跑前下载解析**一次**，
+	// 不能等引擎来请求时再下——引擎会重试、也可能请求多次，每来一次就
+	// 重新下载一遍外部站点，既慢又容易被对方限流。
+	// candStaged 是和它配对的「已暂存」标志：空文本也是合法结果
+	// （用户填的来源一个地址都没有），不能靠长度判断。
+	candText   string
+	candStaged bool
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
@@ -205,19 +215,97 @@ func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
 
 // handleCandidates 返回候选 IP 列表（每行 ip:port#国家）。
 //
-// 内容由用户配置决定：没设自定义来源 → 内置官方段；设了段/单 IP → 只从那里采样；
-// 只设了链接 → 返回空（候选全交给引擎自己拉）。详见 candidateList 的注释。
+// 内容由用户配置决定：没设自定义来源 → 内置官方段；设了段/单 IP/链接 →
+// 只从那里来（链接由 runOnce 预先下载解析后暂存）。详见 candidateList 的注释。
 func (s *Server) handleCandidates(w http.ResponseWriter, r *http.Request) {
-	count := atoiDefault(r.URL.Query().Get("n"), 600)
+	count := atoiDefault(r.URL.Query().Get("n"), candidateCount)
 	if count > 3000 {
 		count = 3000
 	}
+
 	s.mu.Lock()
 	c := s.cfg.Clone()
+	staged, stagedOK := s.candText, s.candStaged
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if stagedOK {
+		_, _ = w.Write([]byte(staged))
+		return
+	}
 	_, _ = w.Write([]byte(candidateList(&c, count)))
+}
+
+// candidateCount 是交给测速引擎的候选条数上限。
+//
+// 和 cfnb 请求 /api/candidates 不带 n 时的默认值保持一致：引擎实际拿到多少
+// 取决于这个上限，两边不一致就会出现「界面说 600、实际给了 3000」的错觉。
+const candidateCount = 600
+
+// stageCandidates 暂存这一轮算好的候选列表（含链接解析结果），供 /api/candidates 用。
+func (s *Server) stageCandidates(text string) {
+	s.mu.Lock()
+	s.candText, s.candStaged = text, true
+	s.mu.Unlock()
+}
+
+func (s *Server) unstageCandidates() {
+	s.mu.Lock()
+	s.candText, s.candStaged = "", false
+	s.mu.Unlock()
+}
+
+// resolveLinkSources 把配置里的链接下载下来，当成另一份 IP 列表并进 src。
+//
+// 返回合并后的来源，以及「本地认不出、留给引擎再试一次」的链接。
+// 两种情况都必须打日志说明原因：链接是用户自己填的，出问题时他只能靠日志判断
+// 是「地址坏了」还是「内容格式不对」，而这两件事的处理方式完全不同。
+func (s *Server) resolveLinkSources(ctx context.Context, src extraSources) (extraSources, []string) {
+	if len(src.urls) == 0 {
+		return src, nil
+	}
+	merged := src
+	merged.urls = nil
+	var unparsed []string
+
+	for _, u := range src.urls {
+		text, err := fetchSourceText(ctx, u)
+		if err != nil {
+			s.appendLog(fmt.Sprintf("来源链接拉取失败（%s）：%v", u, err))
+			unparsed = append(unparsed, u)
+			continue
+		}
+		got, st := parseSourceText(text)
+		if got.isEmpty() {
+			s.appendLog(fmt.Sprintf(
+				"来源链接里没认出任何 IP（%s）：内容共 %d 条认不出%s",
+				u, st.skippedTotal, sampleHint(st.skipped)))
+			unparsed = append(unparsed, u)
+			continue
+		}
+		s.appendLog(fmt.Sprintf(
+			"来源链接解析完成（%s）：单个 IP %d 个、带端口节点 %d 个、IP 段 %d 个%s",
+			u, st.ips, st.nodes, st.cidrs, sampleHint(st.skipped)))
+		mergeSources(&merged, got)
+	}
+	return merged, unparsed
+}
+
+// sampleHint 把「认不出的样例行」拼成一句人话，最多列 5 条。
+// 认不出的内容最值钱：用户给的链接格式变了、或者干脆是一个 404 网页，
+// 看这几条样例比看「0 节点」有用得多。
+func sampleHint(samples []string) string {
+	if len(samples) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(samples))
+	for _, x := range samples {
+		if len(x) > 24 {
+			x = x[:24] + "…"
+		}
+		quoted = append(quoted, "「"+x+"」")
+	}
+	return "，认不出的例如 " + strings.Join(quoted, "、")
 }
 
 // ---------- 认证 ----------
@@ -846,20 +934,37 @@ func (s *Server) runOnce(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
 	defer cancel()
 
-	// 「优选 IP 段」：把用户填的来源分成两类走不同路径 ——
-	//   · IP 段 / 单 IP 由本机的 /api/candidates 提供（见 candidateList）；
-	//   · 链接直接交给引擎自己去拉，我们不管它的格式。
+	// 「优选 IP 段」：用户填的三类来源统一在本地解析，再由 /api/candidates
+	// 交给测速引擎。
+	//
+	// 链接为什么也由我们下载：cfnb 的解析器只认单个 IP，遇到 104.16.0.0/13
+	// 这种**段**会整条丢掉，拉到内容却解析出 0 节点（2026-11-17 22:01 的
+	// 「高爆IP段.txt」就是这个）。本地解析之后，段能采样、单 IP 能直通、
+	// 带端口的节点能保住原端口，日志里也能说清到底认出了多少。
+	// 实在解析不出的链接才回退给引擎自己去试（它也许认得别的格式）。
+	//
 	// custom 为 false 表示用户没设置，完全走升级前的老行为。
 	extra, _ := parseExtraSources(cfg.Speed.ExtraSources)
 	custom := len(cfg.Speed.ExtraSources) > 0
 
-	// 本地候选列表的地址。用户只填了链接时本地一条候选都不出，这时就
-	// **不要**把这个地址交给引擎——否则它会去拉一个空列表，日志里留一行
-	// 「数据源解析完成（0 节点）」。用户看到「0 节点」会以为地址又失效了，
-	// 而这一次是他自己没填段，属于「日志把人带沟里」。
 	localCandidates := s.selfURL + "/api/candidates"
-	if custom && len(extra.cidrs) == 0 && len(extra.ips) == 0 {
-		localCandidates = ""
+	var fallbackURLs []string
+	if custom {
+		if len(extra.urls) > 0 {
+			extra, fallbackURLs = s.resolveLinkSources(ctx, extra)
+		}
+		s.stageCandidates(candidatesText(extra, candidateCount))
+		defer s.unstageCandidates()
+
+		if extra.isEmpty() && len(fallbackURLs) == 0 {
+			return fmt.Errorf("你填的来源里没解析出任何可用 IP：请检查那几行有没有写错，" +
+				"链接能否打开（具体原因看上面几行日志）")
+		}
+		// 本地一条候选都没有时不要把这个地址交给引擎：它会去拉一个空列表，
+		// 日志里留一行「0 节点」，而这一次纯粹是我们没东西给它。
+		if extra.isEmpty() {
+			localCandidates = ""
+		}
 	}
 
 	run := func() (*engine.Result, error) {
@@ -867,7 +972,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			TopN:                cfg.Speed.TopN,
 			BandwidthCandidates: cfg.Speed.BandwidthCandidates,
 			CandidatesURL:       localCandidates,
-			ExtraURLs:           extra.urls,
+			ExtraURLs:           fallbackURLs,
 			UseBuiltinSources:   !custom,
 		}, s.appendLog)
 	}
@@ -876,13 +981,13 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 这一行是给用户看的「为什么会测出这些 IP」：以前候选来源是写死的，
 	// 现在能改，就必须说清楚这一轮到底用了谁的来源，否则出了问题无从判断。
 	if custom {
-		msg := fmt.Sprintf(
-			"候选来源：按后台设置的自定义来源（IP 段 %d 个、单个 IP %d 个、链接 %d 个），不叠加内置聚合源",
-			len(extra.cidrs), len(extra.ips), len(extra.urls))
-		if len(extra.cidrs) == 0 && len(extra.ips) == 0 {
-			msg += "；本地不出候选，全部由引擎从你填的链接里拉"
+		s.appendLog(fmt.Sprintf(
+			"候选来源：按后台设置的自定义来源（IP 段 %d 个、单个 IP %d 个、带端口节点 %d 个），不叠加内置聚合源",
+			len(extra.cidrs), len(extra.ips), len(extra.nodes)))
+		if len(fallbackURLs) > 0 {
+			s.appendLog(fmt.Sprintf(
+				"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
 		}
-		s.appendLog(msg)
 	}
 	res, err := run()
 
