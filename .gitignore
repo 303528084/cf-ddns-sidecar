@@ -14,6 +14,10 @@ test_icon.png
 fnpack
 fnpack*
 
+# 冒烟测试会临时在项目根编译出一个二进制、并生成一份数据目录
+/cf-ddns-sidecar
+/data/
+
 # 本地临时脚本 / 打包缓存（.scratch 里可能有 token，别提交）
 .scratch/
 __pycache__/

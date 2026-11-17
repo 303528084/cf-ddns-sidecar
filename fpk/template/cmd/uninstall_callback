@@ -20,6 +20,9 @@
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+# v1.4.0 起数据在 <app>-data（通常指向存储卷）；v1.1.0～v1.3.2 在 share/<app>/data。
+# 两个位置都有可能存在（升级过的机器），提示里要都能指到。
+DATA_ROOT="/var/apps/${APP_NAME}-data"
 
 log() {
     echo "[cf-ddns-sidecar] $*"
@@ -29,8 +32,14 @@ log() {
 docker rm -f -v cf-ddns-sidecar >/dev/null 2>&1 || true
 docker rm -f cf-dns-select >/dev/null 2>&1 || true
 
-if [ -d "$SHARE_ROOT" ]; then
-    log "已保留数据目录：$SHARE_ROOT"
+# 指向存储卷时用解析后的真实路径，用户照着这个路径在文件管理器里更好找。
+DATA_REAL="$(readlink -f "$DATA_ROOT" 2>/dev/null)"
+if [ -n "$DATA_REAL" ] && [ -d "$DATA_REAL" ]; then
+    log "已保留数据目录：${DATA_REAL}"
+    log "它就在「文件管理」存储空间的根目录下，文件夹名 ${APP_NAME}-data。"
+    log "如需彻底清除（含域名、服务商密钥、后台密码），请手动删除该文件夹"
+elif [ -d "${SHARE_ROOT}/data" ]; then
+    log "已保留数据目录：${SHARE_ROOT}/data（老版本位置）"
     log "如需彻底清除（含域名、服务商密钥、后台密码），请到「文件管理」里手动删除该文件夹"
 fi
 

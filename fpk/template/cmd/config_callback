@@ -26,7 +26,12 @@
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:${PATH}}"
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
-DATA_ROOT="${CFDDNS_DATA_DIR:-/var/apps/${APP_NAME}/share/${APP_NAME}/data}"
+# v1.4.0 起数据在 /var/apps/<app>-data（通常是指向 <volN>/<app>-data 的符号链接）。
+#
+# 这个默认值**必须**和 cmd/main 的 DATA_ROOT、compose 里的挂载源保持一致。
+# 写岔了的后果很隐蔽：脚本把密码写到一个目录、程序从另一个目录读，界面上
+# 「保存成功」、登录却还是旧密码，而且日志里看不出任何异常。
+DATA_ROOT="${CFDDNS_DATA_DIR:-/var/apps/${APP_NAME}-data}"
 ENV_FILE="${DATA_ROOT}/ddns.env"
 PASS_FILE="${DATA_ROOT}/dashboard-password"
 CONTAINER_NAME="cf-ddns-sidecar"

@@ -7,8 +7,12 @@
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+# v1.4.0 起数据在 <app>-data（可能是指向存储卷的符号链接）
+DATA_ROOT="/var/apps/${APP_NAME}-data"
 
-if [ -d "$SHARE_ROOT" ] && [ -x "${SELF_DIR}/main" ]; then
+# 前提：飞牛已经把共享目录挂上（detect_volume_root 靠它顺着软链找到卷号），
+# 或者上一次安装已经把数据目录安置好了。两个都没有就交给 install_callback 再试。
+if { [ -d "$SHARE_ROOT" ] || [ -d "$DATA_ROOT" ]; } && [ -x "${SELF_DIR}/main" ]; then
     "${SELF_DIR}/main" init || true
 fi
 

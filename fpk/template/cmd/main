@@ -7,7 +7,13 @@
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 # 飞牛数据共享目录的稳定软链路径（官方文档：/var/apps/<appname>/share/<share name>）
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
-DATA_ROOT="${SHARE_ROOT}/data"
+# v1.1.0～v1.3.2 的数据位置。平台删 /var/apps/<app> 时它跟着一起没，
+# 所以从 v1.4.0 起不再是运行时的数据位置，只作为**搬迁来源**保留。
+LEGACY_DATA_ROOT="${SHARE_ROOT}/data"
+# v1.4.0 起的数据位置。这个路径通常是一个指向 <volN>/<app>-data 的符号链接，
+# 由下面的 ensure_data_root() 在每次启动时安置。它是 <app> 的**兄弟**，
+# 平台删应用目录时不会碰到它。
+DATA_ROOT="/var/apps/${APP_NAME}-data"
 FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
 
 fail() {
@@ -128,8 +134,120 @@ ensure_backup_root() {
     return 0
 }
 
+# 把老位置（share/<app>/data）的数据搬到 dest。
+#
+# 只在「dest 还是空的」且「老位置确实有东西」时才搬。两个判据都不能省：
+#   · 不判 dest 空 → 会拿老数据盖掉新数据（新位置才是最新的）；
+#   · 不判老位置有东西 → 全新安装时白跑一趟 cp，还会把 dest 的 mtime 搅乱。
+# 用「目录是否为空」而不是「有没有 config.json」：全新安装时老位置可能只有
+# 一个 ddns.env 示例，那种也要搬——否则新位置会再生成一份，端口就被重置了。
+migrate_from_legacy_data() {
+    local dest="$1"
+    [ -n "$dest" ] || return 0
+    [ -z "$(ls -A "$dest" 2>/dev/null)" ] || return 0
+    [ -n "$(ls -A "$LEGACY_DATA_ROOT" 2>/dev/null)" ] || return 0
+    cp -a "${LEGACY_DATA_ROOT}"/. "$dest"/ 2>/dev/null
+}
+
+# 数据根目录 /var/apps/<app>-data 的安置（v1.4.0）。
+#
+# 这是同一个东西的**第四次搬迁**，前三次搬的全是备份，正本一直没动：
+#   · v1.0.x～v1.1.0：数据在 /var/apps/<app>/share/<app>/data，整层被删就没；
+#   · v1.1.1：加了「升级前备份」，但备份也写在这一层里面，跟着一起塌；
+#   · v1.3.1：备份搬到应用目录外，真机证明 upgrade_init 根本没被执行；
+#   · v1.3.2：程序自己备份 + 备份链到存储卷——备份活下来了，**正本还在原地**。
+# 于是「用备份把配置捡回来」成了每次升级的固定流程。用户 2026-11-17 一天里
+# 丢了三次配置（v1.1.0、v1.3.0、v1.3.2）。备份是事故之后的补救；
+# 把正本放到平台不认识的地方，才是根治。
+#
+# 做法与备份完全一致：/var/apps/<app>-data 做成指向 <volN>/<app>-data 的符号
+# 链接。<volN> 下那个目录属于用户，不在任何平台会清理的路径里。
+#
+# 任何一步失败都退回「老老实实用真实目录」：数据少一层保护可以接受，
+# 让容器因为挂载源异常起不来、或者把已有配置搬丢，绝不能接受。
+ensure_data_root() {
+    local target="$1"   # 为空表示没探到存储卷，只能留在原地
+
+    if [ -z "$target" ]; then
+        # 探测不到卷（老飞牛、非标准布局）：只能留在 /var/apps 下，
+        # 但老位置的数据仍然要搬过来——换了路径却不搬数据，等于配置凭空消失。
+        mkdir -p "$DATA_ROOT" 2>/dev/null
+        migrate_from_legacy_data "$DATA_ROOT"
+        return 0
+    fi
+
+    # 已经链到正确位置：什么都不做（每次启动都会跑到这里，必须幂等）
+    if [ -L "$DATA_ROOT" ] && [ "$(readlink "$DATA_ROOT" 2>/dev/null)" = "$target" ]; then
+        return 0
+    fi
+
+    # 存储卷上那个目录必须先建出来。软链指向不存在的目标就是死链，
+    # docker 做 bind mount 时内核解析不到，容器会直接起不来。
+    if ! mkdir -p "$target" 2>/dev/null; then
+        mkdir -p "$DATA_ROOT" 2>/dev/null
+        return 0
+    fi
+
+    # 情况 A：$DATA_ROOT 已经是个真实目录。
+    # 最典型的成因是「docker 建容器时挂载源不存在，自动建了个空目录」——
+    # 说明 install_callback 那一步没跑到（飞牛的钩子不一定执行，v1.3.1 就吃过这个亏）。
+    # 这时**不能删它**：容器正挂着这个真实目录，此刻改成软链对已经建好的容器无效。
+    # 能做的是把数据复制进来，让程序至少看得到配置。
+    if [ -d "$DATA_ROOT" ] && [ ! -L "$DATA_ROOT" ]; then
+        if [ ! -e "${DATA_ROOT}/config.json" ] && [ -e "${target}/config.json" ]; then
+            # 卷上有正本，优先用卷上的
+            if cp -a "${target}"/. "$DATA_ROOT"/ 2>/dev/null; then
+                echo "[cf-ddns-sidecar] 已把存储卷上的数据复制回 ${DATA_ROOT}（本次软链未生效，下次升级会自动切过去）"
+            else
+                echo "[cf-ddns-sidecar] 警告：数据复制失败，程序将以空配置启动（可用备份恢复）"
+            fi
+        else
+            # 卷上还没有，就试老位置
+            migrate_from_legacy_data "$DATA_ROOT"
+        fi
+        return 0
+    fi
+
+    # 情况 B：$DATA_ROOT 不存在（第一次装 v1.4.0、且安装脚本正常跑到的情形）。
+    # 先把老位置的数据搬到卷上，搬成功才切软链。
+    if [ ! -e "${target}/config.json" ] && [ -f "${LEGACY_DATA_ROOT}/config.json" ]; then
+        if cp -a "${LEGACY_DATA_ROOT}"/. "$target"/ 2>/dev/null; then
+            echo "[cf-ddns-sidecar] 数据目录已搬到存储卷：${LEGACY_DATA_ROOT} -> ${target}"
+        else
+            # 搬不过来就别切软链，否则容器挂新路径 = 空配置，而老数据随后被平台删掉。
+            # 这行日志是排查线索，出现它请连同运行日志一起反馈。
+            echo "[cf-ddns-sidecar] 警告：数据迁移失败（复制不成功），暂时留在 ${LEGACY_DATA_ROOT}"
+            mkdir -p "$DATA_ROOT" 2>/dev/null
+            return 0
+        fi
+    elif [ -z "$(ls -A "$target" 2>/dev/null)" ]; then
+        # 没有 config.json，但老位置可能只有一个 ddns.env（装完还没配过）。
+        # 这种情况同样要搬，否则新位置会重新生成一份示例、把用户设的端口冲回 8080。
+        migrate_from_legacy_data "$target"
+    fi
+
+    if ln -s "$target" "$DATA_ROOT" 2>/dev/null; then
+        echo "[cf-ddns-sidecar] 数据目录：${DATA_ROOT} -> ${target}"
+    else
+        mkdir -p "$DATA_ROOT" 2>/dev/null
+        echo "[cf-ddns-sidecar] 警告：建不了符号链接，数据目录留在 ${DATA_ROOT}（升级时会被平台删掉，但有备份兜底）"
+    fi
+    return 0
+}
+
 # 首次启动初始化：建目录 + 迁移旧数据 + 生成示例配置（幂等）
 init_on_start() {
+    # 存储卷根只探一次：数据目录和备份目录都要用，两次探测没意义。
+    VOL_ROOT="$(detect_volume_root)"
+
+    # 数据目录必须先「安置」再 mkdir：它通常是一个指向存储卷的符号链接。
+    # 顺序反了的话，mkdir 会在软链所在的位置建出一个真实空目录把链接顶掉，
+    # 数据就又回到了平台会删的那一层，白搬一次。
+    if [ -n "$VOL_ROOT" ]; then
+        ensure_data_root "${VOL_ROOT}/${APP_NAME}-data"
+    else
+        ensure_data_root ""
+    fi
     mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
 
     # 备份根目录（v1.3.1 起；v1.3.2 起链到存储卷上）。
@@ -145,7 +263,6 @@ init_on_start() {
     # 属主对齐失败才退回放开 0777——宁可权限宽一点，也不要让备份悄悄写不进去。
     # 这一段整体失败也不影响启动。
     BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
-    VOL_ROOT="$(detect_volume_root)"
     if [ -n "$VOL_ROOT" ]; then
         ensure_backup_root "${VOL_ROOT}/${APP_NAME}-backup"
     else
@@ -164,9 +281,18 @@ init_on_start() {
     cleanup_legacy_container
     migrate_legacy
 
-    # 容器内以非 root（uid 1000）运行，需保证其可写数据目录
-    # （主体的 config.json、旁路的 state.json 都要落盘），否则配置无法保存。
-    chmod 0777 "$DATA_ROOT" 2>/dev/null
+    # 容器内以非 root（uid 1000）运行，需保证它写得进数据目录
+    # （config.json、ddns.env、测速工作目录都要往里写），否则配置存不下来。
+    # 与备份目录同一套做法：属主能对齐就对齐，对齐不了才放开 0777。
+    # 必须作用在 readlink -f 之后的真实目录上——chmod 会跟随软链，但 chown 不会，
+    # 直接 chown 软链只是改了链接自己的属主，容器照样写不进去。
+    DATA_REAL="$(readlink -f "$DATA_ROOT" 2>/dev/null)"
+    [ -n "$DATA_REAL" ] || DATA_REAL="$DATA_ROOT"
+    if mkdir -p "$DATA_REAL" 2>/dev/null; then
+        if ! chown 1000:1000 "$DATA_REAL" 2>/dev/null; then
+            chmod 0777 "$DATA_REAL" 2>/dev/null
+        fi
+    fi
 
     # 生成 ddns.env 示例（仅当不存在时），避免配置缺失导致排错时无从下手。
     # 注意：这里故意把「服务商 / 域名 / 间隔」也注释掉——如果写成实值，

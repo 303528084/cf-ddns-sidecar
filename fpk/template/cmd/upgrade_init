@@ -25,8 +25,12 @@
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
-DATA_DIR="${SHARE_ROOT}/data"
+# v1.1.0～v1.3.2 的数据位置（平台删 /var/apps/<app> 时跟着没）
+LEGACY_DATA_DIR="${SHARE_ROOT}/data"
+# v1.4.0 起的数据位置（通常是指向 <volN>/<app>-data 的符号链接）
+DATA_DIR="/var/apps/${APP_NAME}-data"
 STAMP="$(date +%Y%m%d-%H%M%S)"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 主备份位置：<app> 的兄弟目录。平台删 <app> 时它不受影响。
 #
@@ -55,6 +59,25 @@ try_dir() {
     rm -f "$1/.probe" 2>/dev/null
     return 0
 }
+
+# —— 0. 先把数据搬到平台删不到的地方（v1.4.0）——
+#
+# 本脚本是「平台删掉 /var/apps/<app>」之前**唯一**的时机：容器里的程序要等挂载
+# 全部完成才起来，比这里晚得多，等它动手老数据早没了。
+#
+# 直接复用 main init，迁移逻辑只有一份（探测卷号 → 在卷上建 <app>-data →
+# 从老位置复制 → 建软链 → 对齐权限），不会两边写岔。
+# 真机已证明这个钩子不一定被执行（v1.3.1 那次它压根没跑），所以下面每个分支
+# 都保留「找不到就跳过」；install_callback 里还会再试一次，两处都失败才真的没办法。
+if [ -x "${SELF_DIR}/main" ]; then
+    "${SELF_DIR}/main" init || true
+fi
+
+# 迁移之后数据正常在新位置；迁移失败或没权限时就还留在老位置。
+# 备份必须备「程序下次真正会读的那个目录」，所以按实际内容判断，而不是论路径。
+if [ ! -e "${DATA_DIR}/config.json" ] && [ -e "${LEGACY_DATA_DIR}/config.json" ]; then
+    DATA_DIR="$LEGACY_DATA_DIR"
+fi
 
 # 没有数据目录就没什么可备的
 if [ ! -d "$DATA_DIR" ]; then

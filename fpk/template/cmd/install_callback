@@ -18,6 +18,21 @@
 # 覆盖掉。这些项统一放后台界面里改，那里显示的是当前真实值。
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# v1.4.0：先把数据目录安置到位，再写配置。
+#
+# 关键是**必须赶在飞牛建容器之前**把 /var/apps/<app>-data 这个符号链接建好：
+# docker 建容器时如果挂载源不存在，会自动建一个空目录挂上去；等容器起来了再怎么
+# 建软链都晚了（容器已经挂住那个空目录，改链接对已挂载的容器无效）。
+# install_callback 是这个流程里最后一个「容器还没建出来」的时机——
+# 这正是之前调试时发现的：这个脚本结尾那句 docker restart 必然失败。
+#
+# main init 是幂等的，里面会：探测存储卷 → 在卷上建 <app>-data → 把老位置
+# (share/<app>/data) 的数据搬过去 → 建软链 → 对齐权限。任何一步失败都退回
+# 真实目录，不会阻断安装。
+if [ -x "${SELF_DIR}/main" ]; then
+    "${SELF_DIR}/main" init || true
+fi
+
 if [ -x "${SELF_DIR}/config_callback" ]; then
     # 安装阶段容器还没创建出来，config_callback 结尾的 docker restart
     # 必然失败——那一步已经降级成日志提示了，这里再兜一层，确保
