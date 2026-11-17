@@ -13,6 +13,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -604,10 +605,10 @@ type statusResp struct {
 
 	// 定时器状态：下次几点跑、还有多少秒、上次成没成、连续失败几次。
 	// next_run_at 给人看（「01:12」），next_run_in_sec 给「还剩 N 分钟」用。
-	NextRunAt      string `json:"next_run_at"`
-	NextRunInSec   int    `json:"next_run_in_sec"`
-	LastOK         bool   `json:"last_ok"`
-	FailCount      int    `json:"fail_count"`
+	NextRunAt    string `json:"next_run_at"`
+	NextRunInSec int    `json:"next_run_in_sec"`
+	LastOK       bool   `json:"last_ok"`
+	FailCount    int    `json:"fail_count"`
 
 	// 上次测速排好序的完整 IP 列表。界面用它显示「已写入前 N 条」，
 	// 也让用户在改条数之前就能看到有哪些备选。
@@ -721,13 +722,13 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		//   没传（nil）  → 保持原值，不动用户已设的段（老的导入文件、旧客户端）；
 		//   传了 []      → 用户主动清空，恢复用内置官方段。
 		// 若用普通切片，这两种情况都是长度 0，清空就永远生效不了。
-		ExtraSources    *[]string `json:"extra_sources"`
-		DDNSEnabled     bool      `json:"ddns_enabled"`
-		DDNSProvider    string    `json:"ddns_provider"`
-		DDNSDomain      string    `json:"ddns_domain"`
-		DDNSTTL         int       `json:"ddns_ttl"`
-		DDNSProxied     bool      `json:"ddns_proxied"`
-		DDNSIPCount     int       `json:"ddns_ip_count"`
+		ExtraSources *[]string `json:"extra_sources"`
+		DDNSEnabled  bool      `json:"ddns_enabled"`
+		DDNSProvider string    `json:"ddns_provider"`
+		DDNSDomain   string    `json:"ddns_domain"`
+		DDNSTTL      int       `json:"ddns_ttl"`
+		DDNSProxied  bool      `json:"ddns_proxied"`
+		DDNSIPCount  int       `json:"ddns_ip_count"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -1017,6 +1018,21 @@ func buildNodeStats(res *engine.Result, colos map[string]string) []config.NodeSt
 	return out
 }
 
+// failBeforeRun 记录「还没把候选交给引擎就失败」的情况，并把错误写进日志。
+//
+// 为什么不能只 return err：定时器那条路径是 `go func() { _ = s.runOnce(cfg) }()`，
+// 错误被丢掉了。2026-11-17 那次「候选全被筛掉」就是这样——日志停在「候选预筛：
+// 剔除 N 个」半句话，用户完全看不出这一轮为什么没有结果，只会以为程序卡住了。
+func (s *Server) failBeforeRun(msg string) error {
+	s.mu.Lock()
+	s.lastErr = msg
+	s.lastOK = false
+	s.failCount++
+	s.mu.Unlock()
+	s.appendLog("测速失败: " + msg)
+	return errors.New(msg)
+}
+
 func (s *Server) runOnce(cfg config.Config) error {
 	startedAt := time.Now()
 	defer func() {
@@ -1062,8 +1078,6 @@ func (s *Server) runOnce(cfg config.Config) error {
 			extra, fallbackURLs = s.resolveLinkSources(ctx, extra)
 		}
 		staged := candidatesText(extra, candidateCount)
-		s.stageCandidates(staged)
-		defer s.unstageCandidates()
 
 		if extra.isEmpty() && len(fallbackURLs) == 0 {
 			return fmt.Errorf("你填的来源里没解析出任何可用 IP：请检查那几行有没有写错，" +
@@ -1083,13 +1097,45 @@ func (s *Server) runOnce(cfg config.Config) error {
 		}
 		s.appendLog(fmt.Sprintf("%s%s；只用你填的来源，不叠加官方内置源",
 			planHead, sourcePlanText(extra)))
+		// 这里只说「解析出多少条」，不说「交给引擎」——真正交出去的是
+		// 下面筛选之后的那一批，由 screenCandidates 自己报数。
 		if n := strings.Count(staged, "\n"); n > 0 {
 			s.appendLog(fmt.Sprintf(
-				"候选池：本地生成 %d 条交给测速引擎（每次最多 %d 条）", n, candidateCount))
+				"候选池：本地解析出 %d 条候选（每次最多 %d 条）", n, candidateCount))
 		}
 		if len(fallbackURLs) > 0 {
 			s.appendLog(fmt.Sprintf(
 				"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
+		}
+
+		// 两道筛选（官方段预筛 + 1034 实测）放在这里，也就是**引擎启动之前**。
+		//
+		// 顺序是硬要求，不是顺手：带宽测速跑一次要几十秒，而一个会返回
+		// 1034 的 IP 照样能测出速度——它在带宽那一轮是「合格」的，只有真去
+		// 访问用户域名时才露馅。所以必须在这之前把它剔掉，否则这一轮的
+		// 带宽测试就是白跑，最终还会把一个用户根本打不开的 IP 写进 AdGuard。
+		rawStaged := staged
+		staged = s.screenCandidates(ctx, &cfg, staged)
+		s.stageCandidates(staged)
+		defer s.unstageCandidates()
+		if staged == "" && strings.TrimSpace(rawStaged) != "" {
+			return s.failBeforeRun("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
+				"这一轮没有写入任何结果——换一批来源，或把「优选 IP 段」放宽些")
+		}
+	} else {
+		// 没设自定义来源：候选是内置官方段采样。以前这份列表由
+		// /api/candidates 在引擎来取时现算，现在提前生成并暂存，为的是让
+		// 同一套筛选也作用在它上面——官方段内仍然可能有被某个企业独占的
+		// 地址，段表里看不出来，只有真问一次才知道。
+		raw := candidateList(&cfg, candidateCount)
+		staged := s.screenCandidates(ctx, &cfg, raw)
+		if staged != "" {
+			s.stageCandidates(staged)
+			defer s.unstageCandidates()
+		}
+		if staged == "" && strings.TrimSpace(raw) != "" {
+			return s.failBeforeRun("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
+				"这一轮没有写入任何结果")
 		}
 	}
 
