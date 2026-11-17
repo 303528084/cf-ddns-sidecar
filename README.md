@@ -31,9 +31,9 @@
 
 ### 安装后配置（关键，两处）
 
-应用数据目录：`/var/apps/cf-ddns-sidecar/shares/cf-ddns-sidecar/data/`
+应用数据目录：飞牛「文件管理」中的 `cf-ddns-sidecar` 共享文件夹（含 `subject` / `sidecar` / `conf` 三个子目录，安装后自动创建）。
 
-1. **填写 ddns.env（唯一必填入口）**：打开 `sidecar/ddns.env`（安装时已自动生成示例），填写：
+1. **填写 ddns.env（唯一必填入口）**：在文件管理中打开 `cf-ddns-sidecar/sidecar/ddns.env`（安装时已自动生成示例），填写：
    - `CFDDNS_PROVIDER`：`cloudflare` / `aliyun` / `dnspod` / `huawei` 四选一；
    - `CFDDNS_DOMAIN`：你的目标域名，如 `cf.example.com`；
    - 对应服务商的密钥（示例文件里有四家的注释模板，取消注释并填写即可）。

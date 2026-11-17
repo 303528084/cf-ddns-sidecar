@@ -14,24 +14,7 @@
         "shares":
         [
             {
-                "name": "cf-ddns-sidecar",
-                "permission":
-                {
-                    "rw":
-                    [
-                        "docker-cf-ddns-sidecar"
-                    ]
-                }
-            },
-            {
-                "name": "cf-ddns-sidecar/data",
-                "permission":
-                {
-                    "rw":
-                    [
-                        "docker-cf-ddns-sidecar"
-                    ]
-                }
+                "name": "cf-ddns-sidecar"
             }
         ]
     }

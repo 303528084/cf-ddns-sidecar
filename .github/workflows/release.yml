@@ -66,14 +66,19 @@ jobs:
           FNPACK_URL: ${{ vars.FNPACK_URL }}
         run: |
           set -e
-          URL="${FNPACK_URL:-https://developer.fnnas.com/downloads/fnpack-latest-linux-amd64}"
+          URL="${FNPACK_URL:-https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64}"
           echo "下载 fnpack: $URL"
           curl -fsSL "$URL" -o fnpack || {
-            echo "::error::fnpack 下载失败。请在仓库 Settings → Variables 设置 FNPACK_URL 为官方 linux-amd64 二进制直链。"
+            echo "::error::fnpack 下载失败。请在仓库 Settings → Variables 设置 FNPACK_URL 为官方 static2.fnnas.com 直链。"
+            exit 1
+          }
+          # 校验是真实 Linux ELF 二进制，防止下载到 HTML 错误页
+          file fnpack | grep -q "ELF" || {
+            echo "::error::fnpack 不是有效的 Linux 可执行文件（非 ELF），请检查 FNPACK_URL。"
             exit 1
           }
           chmod +x fnpack
-          ./fnpack --help >/dev/null 2>&1 || echo "（fnpack 可执行，帮助命令非 0 属正常）"
+          ./fnpack build --help
 
       - name: 打包飞牛 FPK
         env:

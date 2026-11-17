@@ -89,7 +89,8 @@ def main() -> int:
     before |= {p.name for p in ROOT.glob("*.fpk")}
 
     try:
-        subprocess.run([str(fnpack), "build", "-d", str(work)],
+        # 官方 CLI：fnpack build --directory <path>（见 developer.fnnas.com/docs/cli/fnpack）
+        subprocess.run([str(fnpack), "build", "--directory", str(work)],
                        cwd=str(OUT), check=True)
     except subprocess.CalledProcessError:
         print("[fpk] fnpack 执行失败", file=sys.stderr)
