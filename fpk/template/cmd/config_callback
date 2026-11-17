@@ -43,10 +43,14 @@ err() {
 }
 
 # 把端口同步到「桌面入口」的两处静态配置：
-#   app/ui/config → "port": "8080"    飞牛点图标时用它拼 URL
+#   app/ui/config → "port": "${wizard_port}"   飞牛点图标时用它拼 URL
 #   manifest      → service_port = xx
 # 不同步的话，用户把端口改成 9090，程序监听 9090、图标却还指着 8080，
-# 点开必然打不开页面。
+# 点开必然打不开页面（v1.0.0 的实际故障）。
+#
+# 首选路径是模板里的 ${wizard_port} 占位符：飞牛 1.1.8+ 生成入口时自己替换，
+# 不需要本脚本介入。这里的 sed 是给老版本飞牛兜底——它不认识占位符，会把
+# ${wizard_port} 原样留在文件里；用户留空端口时则替换成空串。两种都要纠回来。
 sync_port_to_entry() {
     local port="$1" ui_conf mf
 
@@ -61,7 +65,10 @@ sync_port_to_entry() {
 
     ui_conf="${TRIM_APPDEST}/ui/config"
     if [ -f "$ui_conf" ]; then
-        if sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[0-9]+(\")/\1${port}\2/" "$ui_conf" 2>/dev/null; then
+        # [^\"]* 而不是 [0-9]+：模板里现在是占位符 ${wizard_port}（飞牛 1.1.8+
+        # 会自己替换），老版本飞牛不认就会原样留着；用户留空端口时则被替换成空串。
+        # 这两种都不是纯数字，用 [0-9]+ 会匹配不到、静默什么都不改，图标就还指着旧端口。
+        if sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\1${port}\2/" "$ui_conf" 2>/dev/null; then
             log "桌面入口端口已改为 ${port}"
         else
             # 这条留在错误里是有意的：图标指着旧端口，用户点图标会打不开页面，

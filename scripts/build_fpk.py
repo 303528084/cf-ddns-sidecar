@@ -96,6 +96,62 @@ def validate_wizards(work: Path) -> None:
               f"{sum(1 for pg in data for it in pg['items'] if it.get('type') != 'tips')} 个输入项")
 
 
+def _wizard_has_port(work: Path) -> bool:
+    """向导里是否存在 wizard_port 输入项（决定端口是否「可改」）。"""
+    for p in (work / "wizard").glob("*"):
+        if not p.is_file():
+            continue
+        try:
+            pages = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        for page in pages if isinstance(pages, list) else []:
+            for item in page.get("items", []):
+                if item.get("field") == "wizard_port":
+                    return True
+    return False
+
+
+def validate_entry(work: Path) -> None:
+    """校验桌面入口配置 app/ui/config。
+
+    飞牛点桌面图标时，地址是 {protocol}://{当前主机}:{port}{url} 拼出来的，
+    所以 port 跟实际监听端口一旦不一致，点图标就是「拒绝了我们的连接请求」。
+    这里拦住两种必然复现该故障的写法：
+
+      1. port 写成纯数字，而向导里又提供了 wizard_port —— 用户一改端口，
+         程序监听新端口、图标还指着老端口。v1.0.0 的真机故障就是这么来的。
+         正确写法是占位符 ${wizard_port}：飞牛 1.1.8+ 生成入口时自己替换，
+         老版本则留给 cmd/main 的 sed 兜底。
+      2. 文件不是合法 JSON —— 飞牛会静默跳过，图标直接不出现。
+    """
+    p = work / "app" / "ui" / "config"
+    if not p.is_file():
+        raise ValueError("缺少 app/ui/config——没有它桌面不会出现应用图标")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"app/ui/config 不是合法 JSON: {e}") from e
+
+    entries = (data or {}).get(".url")
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError("app/ui/config 缺少 .url 对象")
+
+    has_wizard_port = _wizard_has_port(work)
+    for name, entry in entries.items():
+        port = str(entry.get("port", ""))
+        if port.isdigit():
+            if has_wizard_port:
+                raise ValueError(
+                    f"app/ui/config 的 {name}.port 写死了 {port}，而向导里提供了 wizard_port。"
+                    f"用户改端口后图标会指向旧端口（必现「拒绝连接」），请改成 \"${{wizard_port}}\""
+                )
+            print(f"[fpk] app/ui/config: {name} 端口固定为 {port}（向导未提供 wizard_port）")
+        elif "${wizard_port}" not in port:
+            print(f"[fpk] 警告：app/ui/config 的 {name}.port = {port!r} 既非占位符也非端口，"
+                  f"只能靠启动脚本兜底纠正")
+
+
 def find_fnpack() -> Optional[Path]:
     env = os.environ.get("FNPACK_BIN")
     if env and Path(env).exists():
@@ -125,6 +181,7 @@ def main() -> int:
         inject(work / "app" / "docker" / "docker-compose.yaml",
                {"IMAGE_TAG": image_tag, "DOCKERHUB_REPO": repo})
         validate_wizards(work)
+        validate_entry(work)
     except ValueError as e:
         print(f"[fpk] 错误：{e}", file=sys.stderr)
         return 1
