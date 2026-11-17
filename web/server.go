@@ -19,11 +19,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/303528084/cf-ddns-sidecar/applog"
 	"github.com/303528084/cf-ddns-sidecar/config"
 	"github.com/303528084/cf-ddns-sidecar/ddns"
 	"github.com/303528084/cf-ddns-sidecar/dns"
@@ -82,28 +84,45 @@ type Server struct {
 	pass       Auth
 	selfURL    string // 本机地址，用于给测速引擎提供本地候选列表
 	throttle   *loginThrottle
+	logFile    *applog.Log // 落盘的运行日志（可为 nil，表示只在内存里记）
 
 	mu      sync.Mutex
 	cfg     *config.Config
 	running bool
 	logs    []string
 	lastErr string
+	// restored 表示这次启动时 config.json 不见了、是从 .bak 恢复的。
+	// 单独存一份而不是每次去读 cfg.RestoredFromBackup：cfg 会被 Clone 和
+	// 覆盖，标志容易在某个保存路径上被顺手清掉，而这个提示一旦消失，
+	// 用户就又回到「一切正常，只是全空了」的假象里。
+	restored bool
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
+// logFile 可为 nil（日志就只留在内存，重启即清空）。
 //
 // 不做来源 IP 限制：局域网、容器网段、甚至从公网反代进来都放行，
 // 访问控制交给「登录密码 + 登录失败限流」（见 guard.go）。
-func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, selfURL string) *Server {
-	return &Server{
+func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, selfURL string, logFile *applog.Log) *Server {
+	s := &Server{
 		configPath: configPath,
 		enginePath: enginePath,
 		workDir:    workDir,
 		pass:       auth,
 		selfURL:    strings.TrimSuffix(selfURL, "/"),
 		throttle:   newLoginThrottle(),
+		logFile:    logFile,
 		cfg:        cfg,
+		restored:   cfg.RestoredFromBackup,
 	}
+	// 把上次（重启前）的日志尾巴回填到界面。用户反映「重启后日志一片空白，
+	// 出事那段根本看不到」，这就是那一段。
+	if logFile != nil {
+		if tail := logFile.Tail(100); len(tail) > 0 {
+			s.logs = tail
+		}
+	}
+	return s
 }
 
 // signingKey 由当前密码派生出令牌签名密钥。
@@ -125,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/config", s.auth(s.handleConfig))
 	mux.HandleFunc("/api/credentials", s.auth(s.handleCredentials))
+	mux.HandleFunc("/api/password", s.auth(s.handlePassword))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
@@ -274,11 +294,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.throttle.reset(ip)
 	token := s.signToken()
+	s.setSessionCookie(w, r, token)
+	writeJSON(w, 200, map[string]any{"ok": true, "token": token})
+}
 
-	// Cookie 仍然设一份，方便直接在浏览器地址栏访问时免登录。
-	// 值里有点号，Cookie 允许，无需转义。
-	// Secure 只在 HTTPS 下加：HTTP 下打了这个标记浏览器会直接丢弃 Cookie，
-	// 表现为「登录成功但下一个请求又 401」。
+// setSessionCookie 下发会话 Cookie，方便直接在浏览器地址栏访问时免登录。
+// 值里有点号，Cookie 允许，无需转义。
+//
+// Secure 只在 HTTPS 下加：HTTP 下打了这个标记浏览器会直接丢弃 Cookie，
+// 表现为「登录成功但下一个请求又 401」——这正是最早那版「怎么输密码都进不去」的原因。
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
@@ -288,13 +313,111 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL / time.Second),
 	})
-	writeJSON(w, 200, map[string]any{"ok": true, "token": token})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// 令牌是无状态的，服务端没法单独吊销；清掉 Cookie 由前端清本地令牌即可。
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handlePassword 修改后台登录密码。
+//
+// 为什么要在后台自己做一个改密码入口，而不是只靠飞牛的「应用设置」：
+//   - 应用设置里那个密码框没有任何校验，填 123456 也能保存成功；
+//   - 改完要回桌面重开页面，用户没法当场确认「到底生效没有」。
+//
+// 这里当场校验强度、当场原子写入文件、当场换发登录令牌，改完立刻可验证。
+func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// 密码来自环境变量时文件不起作用，写进去只会让人以为改成功了。
+	if strings.TrimSpace(s.pass.Env) != "" {
+		writeJSON(w, 400, map[string]string{
+			"error": "登录密码由环境变量 DSA_PASSWORD 指定，这里改不了；请改环境变量后重启应用",
+		})
+		return
+	}
+	if s.pass.File == "" {
+		writeJSON(w, 500, map[string]string{"error": "密码文件路径未知，无法保存"})
+		return
+	}
+
+	var body struct {
+		Old string `json:"old_password"`
+		New string `json:"new_password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+
+	// 改密码也要走同一套限流：否则这里就成了一个不需要本机位置、
+	// 可以慢慢试当前密码的入口。
+	ip := clientIP(r)
+	if ok, wait := s.throttle.allow(ip); !ok {
+		writeTooManyAttempts(w, wait)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(body.Old), []byte(s.pass.Current())) != 1 {
+		s.throttle.fail(ip)
+		time.Sleep(loginFailDelay)
+		writeJSON(w, 401, map[string]string{"error": "当前密码不对"})
+		return
+	}
+	s.throttle.reset(ip)
+
+	if reason := WeakPasswordReason(body.New); reason != "" {
+		writeJSON(w, 400, map[string]string{"error": "新密码" + reason})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(body.New), []byte(s.pass.Current())) == 1 {
+		writeJSON(w, 400, map[string]string{"error": "新密码和当前密码一样，没有改动"})
+		return
+	}
+	if err := writePasswordFile(s.pass.File, body.New); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "保存密码失败: " + friendlyErr(err)})
+		return
+	}
+
+	// 令牌签名密钥由密码派生，改完密码旧令牌全部失效。这里直接换发一个新的，
+	// 免得用户改完密码把自己踢下线、还要再登一次。
+	token := s.signToken()
+	s.setSessionCookie(w, r, token)
+	log.Printf("[信息] 后台登录密码已修改")
+	writeJSON(w, 200, map[string]any{"ok": true, "token": token})
+}
+
+// writePasswordFile 原子写入密码文件：先写同目录临时文件再改名。
+//
+// 必须原子：程序每次登录都现读这个文件，直接覆盖会出现「读到写了一半的
+// 密码」的瞬间，那一瞬的登录必然失败，用户会以为密码设错了。
+func writePasswordFile(path, pw string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".dashboard-password-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+
+	if _, err := tmp.WriteString(pw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// 0644 与生命周期脚本写出的权限保持一致：程序以另一个用户身份也可能要读它。
+	if err := os.Chmod(name, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 // ---------- 状态 ----------
@@ -312,28 +435,45 @@ type statusResp struct {
 	DDNSDomain   string   `json:"ddns_domain"`
 	DDNSMissing  []string `json:"ddns_missing"`
 	IntervalMin  int      `json:"interval_minutes"`
+
+	// 下面三个是「必须让用户看见」的状态，不是可选信息：
+	// 配置是从备份恢复的、密码太弱。以前这些都只进运行日志，
+	// 而运行日志在卡片最下面、还要往下滚，等于没提示。
+	RestoredConfig bool   `json:"restored_config"`
+	PasswordWeak   bool   `json:"password_weak"`
+	PasswordReason string `json:"password_reason"`
+	LogFile        string `json:"log_file"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	// 读密码文件有 I/O，放在锁外面。
+	weakReason := WeakPasswordReason(s.pass.Current())
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	resp := statusResp{
-		Version:      version,
-		Running:      s.running,
-		LastIP:       cfg.LastIP,
-		LastTime:     cfg.LastTime,
-		LastError:    s.lastErr,
-		Logs:         append([]string(nil), s.logs...),
-		Domains:      append([]string(nil), cfg.Domains...),
-		DDNSEnabled:  cfg.DDNS.Enabled,
-		DDNSProvider: cfg.DDNS.Provider,
-		DDNSDomain:   cfg.DDNS.Domain,
-		IntervalMin:  cfg.Speed.IntervalMinutes,
+		Version:        version,
+		Running:        s.running,
+		LastIP:         cfg.LastIP,
+		LastTime:       cfg.LastTime,
+		LastError:      s.lastErr,
+		Logs:           append([]string(nil), s.logs...),
+		Domains:        append([]string(nil), cfg.Domains...),
+		DDNSEnabled:    cfg.DDNS.Enabled,
+		DDNSProvider:   cfg.DDNS.Provider,
+		DDNSDomain:     cfg.DDNS.Domain,
+		IntervalMin:    cfg.Speed.IntervalMinutes,
+		RestoredConfig: s.restored,
+		PasswordWeak:   weakReason != "",
+		PasswordReason: weakReason,
 	}
 	s.mu.Unlock()
 
 	if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" {
 		resp.DDNSMissing = config.MissingCredentials(cfg.DDNS.Provider)
+	}
+	if s.logFile != nil {
+		resp.LogFile = "app.log"
 	}
 	writeJSON(w, 200, resp)
 }
@@ -425,6 +565,12 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 用户主动保存过一次 = 已经看过并确认了恢复出来的内容，那条红条可以撤了。
+	// 只在这里清，不在定时测速顺手保存时清——那种保存不是「人看过了」。
+	s.mu.Lock()
+	s.restored = false
+	s.mu.Unlock()
+
 	// 把「服务商 / 域名 / 间隔」同步回 ddns.env。这个文件是安装向导的入口，
 	// 也是用户排查问题时会用文本编辑器打开的地方，不能和后台显示的值打架。
 	// 失败只记日志：config.json 已经存好了，功能不受影响。
@@ -495,9 +641,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.running = true
 	s.lastErr = ""
-	s.logs = nil
 	cfg := s.cfg.Clone()
 	s.mu.Unlock()
+
+	// 以前这里是 s.logs = nil，每点一次「立即测速」就把之前的记录全抹掉，
+	// 出事时想回看上一轮发生了什么已经没有了。改成插一行分隔。
+	s.appendLog("—— 手动触发的测速 ——")
 
 	go func() { _ = s.runOnce(cfg) }()
 
@@ -628,13 +777,28 @@ func (s *Server) StartScheduler() {
 	}()
 }
 
+// maxLogLines 是界面上保留的日志行数上限。文件里另有一份更长的完整日志
+// （见 applog 包），界面只显示最近的这些，避免一次返回几十万字节。
+const maxLogLines = 300
+
+// appendLog 记一条运行日志：一份进内存给人的界面看，一份进 app.log 落盘。
+//
+// 时间戳由这里统一加上。以前日志不带时间，用户贴出来的那几行「已把安装向导里
+// 填的端口写入 ddns.env」根本看不出是几点发生的，也没法跟其他记录对时序。
 func (s *Server) appendLog(line string) {
+	stamped := time.Now().Format("01-02 15:04:05") + " " + line
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logs = append(s.logs, line)
-	if len(s.logs) > 300 {
-		s.logs = s.logs[len(s.logs)-300:]
+	s.logs = append(s.logs, stamped)
+	if len(s.logs) > maxLogLines {
+		s.logs = s.logs[len(s.logs)-maxLogLines:]
 	}
+	s.mu.Unlock()
+
+	// 走标准 log 输出：main 里已经把它接到了 stderr 和 app.log 上，
+	// 这样这一行会同时出现在 docker logs 和文件里。用 Print 而不是 Printf，
+	// 因为 line 里可能带 %（比如 Python 报错的格式串）。
+	log.Print(line)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

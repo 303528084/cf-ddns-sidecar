@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/303528084/cf-ddns-sidecar/applog"
 	"github.com/303528084/cf-ddns-sidecar/config"
 	"github.com/303528084/cf-ddns-sidecar/web"
 )
@@ -28,6 +30,15 @@ var version = "dev"
 
 func main() {
 	web.SetVersion(version)
+
+	// 数据目录要先算出来：运行日志落在里面，而且必须在最早那几条日志
+	// （安装向导播种端口/密码）之前接好——否则排查「设置没生效」时最关键的
+	// 那两行恰好不在文件里，等于白落盘。
+	configDir := dataDir()
+	logFile := setupLogFile(configDir)
+	if logFile != nil {
+		defer logFile.Close()
+	}
 
 	// 必须放在最前面：-listen 的默认值在 flag.Parse 之前就已求值（看 defaultListen），
 	// 所以安装向导的端口种子得先落进 ddns.env，否则程序会按旧端口起监听。
@@ -71,12 +82,7 @@ func main() {
 	}
 
 	// 配置文件路径：默认与 ddns.env 同目录的 config.json
-	configDir := filepath.Dir(config.EnvFilePath())
-	configPath := filepath.Join(configDir, "config.json")
-	if p := os.Getenv("CFDDNS_CONFIG"); p != "" {
-		configPath = p
-		configDir = filepath.Dir(p)
-	}
+	configPath := configFilePath(configDir)
 
 	enginePath := os.Getenv("CFDDNS_ENGINE")
 	if enginePath == "" {
@@ -90,11 +96,22 @@ func main() {
 	passFile := filepath.Join(configDir, "dashboard-password")
 	password, passSource := resolvePassword(passFile)
 
+	// 密码太弱就在启动日志里明说。后台对所有 IP 开放，这是唯一一道门，
+	// 而「应用设置」里的密码框没有任何校验，填 123456 也能保存成功。
+	// 这里不拒绝启动（把人锁在外面更糟），只提示，并让界面顶上挂一条黄条。
+	if reason := web.WeakPasswordReason(password); reason != "" {
+		if passSource == "env" {
+			log.Printf("[警告] 后台登录密码%s。这个后台对所有 IP 开放，建议改环境变量 DSA_PASSWORD 换一个 8 位以上、不重复不连续的密码", reason)
+		} else {
+			log.Printf("[警告] 后台登录密码%s。这个后台对所有 IP 开放，请在后台页面的「登录密码」里换一个", reason)
+		}
+	}
+
 	srv := web.New(cfg, configPath, enginePath, workDir, web.Auth{
 		Env:      strings.TrimSpace(os.Getenv("DSA_PASSWORD")),
 		File:     passFile,
 		Fallback: password,
-	}, selfURL(listen))
+	}, selfURL(listen), logFile)
 
 	if runOnce {
 		// 测速引擎要回调本进程的 /api/candidates 拿候选 IP（内置 Cloudflare 官方段），
@@ -132,21 +149,16 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	fmt.Printf("\n==============================================\n")
-	fmt.Printf("  cf-ddns-sidecar %s\n", version)
-	fmt.Printf("  后台地址: http://<本机IP>%s/\n", listen)
-	switch passSource {
-	case "generated":
-		fmt.Printf("  登录密码: %s（本次自动生成，可复制；在「应用设置」里重设后立即以新密码为准）\n", password)
-	case "file":
-		fmt.Println("  登录密码: 安装时设置的那个（忘了可在「应用设置」里重设）")
-	default:
-		fmt.Println("  登录密码: 由环境变量 DSA_PASSWORD 指定")
+	banner := buildBanner(version, listen, password, passSource, configDir)
+	for _, ln := range banner {
+		fmt.Println(ln)
 	}
-	fmt.Println("  改密码: 在「应用设置」里保存即生效，无需重启")
-	fmt.Println("  访问限制: 无，所有 IP 均可打开后台（请务必设置登录密码）")
-	printInstallDebug(configDir)
-	fmt.Printf("==============================================\n\n")
+	if logFile != nil {
+		// 启动横幅也抄一份进日志文件：翻 app.log 时才能知道这次跑的是哪个版本、
+		// 用的哪个端口、诊断记录说了什么。时间戳只加在整块开头，和 log 包对
+		// 一次带换行的输出只打一个前缀的行为保持一致。
+		logFile.Line(time.Now().Format("2006/01/02 15:04:05") + " " + strings.Join(banner, "\n"))
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -312,24 +324,85 @@ func seedFromWizardEnv() {
 // 什么都看不到。脚本把「这次收到了哪几个向导变量」写进 install-debug.log，
 // 这里读出来打印——用户看「应用中心 → 运行日志」就能判断是「值没送到脚本」
 // 还是「送到了但写不进去」，不用碰命令行。
-func printInstallDebug(configDir string) {
+func installDebugLines(configDir string) []string {
 	p := filepath.Join(configDir, "install-debug.log")
 	b, err := os.ReadFile(p)
 	if err != nil {
-		fmt.Println("  [诊断] 暂无 config_callback 记录（安装/设置向导尚未提交过）")
-		return
+		return []string{"  [诊断] 暂无 config_callback 记录（安装/设置向导尚未提交过）"}
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\r\n"), "\n")
 	const keep = 14
+	out := make([]string, 0, keep+1)
 	if len(lines) > keep {
 		lines = lines[len(lines)-keep:]
-		fmt.Println("  [诊断] config_callback 最近记录（只显示最后 14 行）:")
+		out = append(out, "  [诊断] config_callback 最近记录（只显示最后 14 行）:")
 	} else {
-		fmt.Println("  [诊断] config_callback 记录:")
+		out = append(out, "  [诊断] config_callback 记录:")
 	}
 	for _, ln := range lines {
-		fmt.Println("  " + ln)
+		out = append(out, "  "+ln)
 	}
+	return out
+}
+
+// buildBanner 生成启动横幅的每一行。
+//
+// 单独抽出来是为了能同时打到控制台和写进日志文件：以前这里只走 stdout，
+// 而飞牛的「运行日志」里看不到，用户问「我现在是哪个版本」时无从回答。
+func buildBanner(ver, listen, password, passSource, configDir string) []string {
+	lines := []string{
+		"==============================================",
+		"  cf-ddns-sidecar " + ver,
+		"  后台地址: http://<本机IP>" + listen + "/",
+	}
+	switch passSource {
+	case "generated":
+		lines = append(lines, "  登录密码: "+password+"（本次自动生成，可复制；在后台页面「登录密码」里重设后立即以新密码为准）")
+	case "file":
+		lines = append(lines, "  登录密码: 安装时设置的那个（忘了可在后台页面「登录密码」里重设）")
+	default:
+		lines = append(lines, "  登录密码: 由环境变量 DSA_PASSWORD 指定")
+	}
+	lines = append(lines,
+		"  改密码: 在后台页面「登录密码」里保存即生效，无需重启",
+		"  访问限制: 无，所有 IP 均可打开后台（请务必设置登录密码）",
+		"  日志文件: "+filepath.Join(configDir, "app.log")+"（超过 2MB 自动轮转，留一份 .1 历史）",
+	)
+	lines = append(lines, installDebugLines(configDir)...)
+	lines = append(lines, "==============================================", "")
+	return lines
+}
+
+// dataDir 返回数据目录。CFDDNS_CONFIG 指向具体的配置文件时，以它的所在目录为准；
+// 否则就是 ddns.env 的所在目录（容器里是 /app/data）。
+func dataDir() string {
+	if p := strings.TrimSpace(os.Getenv("CFDDNS_CONFIG")); p != "" {
+		return filepath.Dir(p)
+	}
+	return filepath.Dir(config.EnvFilePath())
+}
+
+// configFilePath 返回 config.json 的路径。CFDDNS_CONFIG 是精确覆盖，优先于推导。
+func configFilePath(configDir string) string {
+	if p := strings.TrimSpace(os.Getenv("CFDDNS_CONFIG")); p != "" {
+		return p
+	}
+	return filepath.Join(configDir, "config.json")
+}
+
+// setupLogFile 打开数据目录下的 app.log，并让所有 log.* 输出同时进文件和控制台。
+//
+// 打开失败不算致命：退回「日志只在界面内存里」的老样子，但要明确告诉用户，
+// 否则他会以为日志已经存下来了，等重启后一片空白才发现没有。
+func setupLogFile(configDir string) *applog.Log {
+	p := filepath.Join(configDir, "app.log")
+	lf, err := applog.Open(p, 0)
+	if err != nil {
+		log.Printf("[警告] 运行日志无法写入 %s（%v）：本次日志只在界面上显示，重启后会清空", p, err)
+		return nil
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, lf))
+	return lf
 }
 
 // resolvePassword 决定后台登录密码的兜底值，返回密码与来源标记（env / file / generated）。

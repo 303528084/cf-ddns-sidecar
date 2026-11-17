@@ -124,6 +124,9 @@
   <h1>Cloudflare 优选 IP · DDNS</h1>
   <div class="sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。<span id="ver"></span></div>
 
+  <!-- 全局告警：配置被自动恢复、密码太弱。放在最顶上，不滚动就看得见 -->
+  <div id="banners"></div>
+
   <!-- 概览 -->
   <div class="card">
     <h2>当前状态</h2>
@@ -196,6 +199,23 @@
     <div class="hint">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
   </div>
 
+  <!-- 登录密码 -->
+  <div class="card">
+    <h2>登录密码 <span class="tag">这个后台唯一的门</span></h2>
+    <div class="field">
+      <label>当前密码</label>
+      <input type="password" id="pw-old" autocomplete="current-password" placeholder="先验证现在的密码">
+    </div>
+    <div class="row">
+      <div class="field"><label>新密码</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+      <div class="field"><label>再输一次</label><input type="password" id="pw-new2" autocomplete="new-password"></div>
+    </div>
+    <div class="hint">至少 8 位；别用 12345678、aaaaaaaa 这类连续或重复的，也别用 password、admin123 这类最常见的。改完立即生效，不用重启，也不用再去「应用设置」里改。</div>
+    <div class="actions">
+      <button class="primary" onclick="savePassword()">修改密码</button>
+    </div>
+  </div>
+
   <div class="actions" style="margin-bottom:18px">
     <button class="primary" onclick="saveAll()">保存全部设置</button>
     <button onclick="logout()">退出登录</button>
@@ -205,6 +225,7 @@
   <div class="card">
     <h2>运行日志</h2>
     <div class="logs" id="logs">暂无日志</div>
+    <div class="hint" id="log-hint">日志同时写进数据目录的 app.log（超过 2MB 自动轮转），重启后这里会显示上次的最近 100 行。</div>
   </div>
 </div>
 
@@ -348,6 +369,7 @@ async function loadConfig() {
 async function loadStatus() {
   const s = await api("/api/status");
   $("ver").textContent = s.version ? " v" + s.version : "";
+  renderBanners(s);
   $("s-ip").textContent = s.last_ip || "—";
   $("s-time").textContent = s.last_time || "—";
   const dot = $("s-dot"), state = $("s-state");
@@ -375,6 +397,49 @@ async function loadStatus() {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// renderBanners 渲染顶部的全局告警。
+// 这两条以前只出现在运行日志里（卡片最下面、还要往下滚），等于没提示：
+// 配置被自动恢复时界面看上去「一切正常，只是全空了」，正是上次事故里
+// 最误导人的地方。
+function renderBanners(s) {
+  const box = $("banners");
+  let html = "";
+  if (s.restored_config) {
+    html += `<div class="banner err"><b>配置文件不见了，已从上次的备份自动恢复。</b>
+      数据目录里的 config.json 消失过（升级、清理脚本或误删），本次是用 config.json.bak 顶上来的。
+      请逐项核对下面的 AdGuard 地址、要加速的域名、DDNS 服务商和密钥，确认无误后点一次「保存全部设置」，这条提示才会消失。</div>`;
+  }
+  if (s.password_weak) {
+    html += `<div class="banner warn">登录密码${escapeHtml(s.password_reason)}。这个后台对所有 IP 开放，建议在页面下方的「登录密码」里换一个。</div>`;
+  }
+  box.innerHTML = html;
+
+  if (s.log_file) {
+    $("log-hint").textContent = "日志同时写进数据目录的 " + s.log_file
+      + "（超过 2MB 自动轮转，留一份 .1 历史），重启后这里会显示上次的最近 100 行。";
+  }
+}
+
+async function savePassword() {
+  const oldp = $("pw-old").value;
+  const p1 = $("pw-new").value;
+  const p2 = $("pw-new2").value;
+  if (!oldp) { toast("请先填当前密码"); return; }
+  if (!p1) { toast("请填新密码"); return; }
+  if (p1 !== p2) { toast("两次输入的新密码不一样"); return; }
+  try {
+    const r = await api("/api/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password: oldp, new_password: p1 })
+    });
+    // 换发的令牌必须立刻换上：签名密钥由密码派生，旧的已经失效了。
+    if (r && r.token) setToken(r.token);
+    $("pw-old").value = ""; $("pw-new").value = ""; $("pw-new2").value = "";
+    toast("密码已更新，下次用新密码登录");
+    await loadStatus();
+  } catch (e) { toast("修改失败：" + e.message); }
 }
 
 async function saveAll() {
