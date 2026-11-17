@@ -1,6 +1,15 @@
 #!/bin/bash
 
 # 飞牛生命周期脚本：install_init。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+# 安装阶段尽力生成 ddns.env 示例：共享目录此时可能尚未创建，
+# 因此只在目录已存在时执行（幂等，失败也不阻断安装）。
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+
+if [ -d "$SHARE_ROOT" ] && [ -x "${SELF_DIR}/main" ]; then
+    "${SELF_DIR}/main" init || true
+fi
+
 exit 0

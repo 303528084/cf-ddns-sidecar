@@ -21,11 +21,11 @@ services:
     restart: unless-stopped
     depends_on:
       - cf-dns-select
-    env_file:
-      # 首次启动时由 cmd/main 自动生成示例文件，用户编辑后重启应用生效
-      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/sidecar/ddns.env"
+    # 刻意不使用 env_file：飞牛在安装阶段就校验 env_file 是否存在，
+    # 而配置文件要等应用首次启动才生成，会直接导致安装失败。
+    # 程序自身读取 /app/data/ddns.env（首次启动由 cmd/main 生成示例文件）。
     volumes:
       - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/sidecar:/app/data"
       - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/subject:/app/subject:ro"
-      # 可选：高级配置（不创建 config.yaml 则纯用 ddns.env 环境变量）
+      # 可选：高级配置（不创建 config.yaml 则纯用 ddns.env 配置）
       - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/conf:/app/config:ro"

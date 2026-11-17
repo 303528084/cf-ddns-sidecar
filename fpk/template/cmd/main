@@ -80,6 +80,11 @@ case "$1" in
         init_on_start
         exit 0
         ;;
+    init)
+        # 供 install_init 在安装阶段提前生成配置（共享目录已就绪时）
+        init_on_start
+        exit 0
+        ;;
     stop)
         # docker application will be stopped by appcenter
         exit 0

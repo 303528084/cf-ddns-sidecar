@@ -42,7 +42,7 @@
    - 在「域名」里添加要加速的域名（即套了 Cloudflare 的网站域名，可随时增删）；
    - 触发一次「立即测速并写入」。
 
-3. **重启应用**：ddns.env 修改后需在「应用中心 → 本应用 → 重启」生效（环境变量在容器创建时注入）。
+3. **重启应用**：ddns.env 修改后需在「应用中心 → 本应用 → 重启」生效（程序在启动时读取该文件）。
 
 > 主体 Dashboard 首次密码：若未设置，从主体容器日志查看（`docker logs cf-dns-select`）。
 > 高级用户可选：在 `conf/` 下放 `config.yaml`（参照 `config.yaml.example`）覆盖默认轮询间隔等；不创建则纯用 ddns.env。
@@ -67,7 +67,9 @@ docker compose up -d
 | 根域覆盖 | `ALIYUN_ROOT_DOMAIN` / `DNSPOD_ROOT_DOMAIN` | 仅多级公共后缀需要（如 `example.com.cn`），一般留空 |
 | 要加速的域名 | 主体 Dashboard「域名」 | 套 Cloudflare 的网站域名，可随时增删 |
 
-环境变量优先级高于 `config.yaml`，便于 FPK 安装后不改容器内文件即可配置。
+配置优先级：**进程环境变量 > `ddns.env` 文件 > `config.yaml` > 默认值**。
+
+> 为什么不用 compose 的 `env_file`：飞牛在**安装阶段**就会校验 `env_file` 指向的文件是否存在，而该文件要等应用首次启动才生成，会导致安装直接失败。因此程序自身读取挂载目录内的 `ddns.env`，不依赖 compose 注入。
 
 ### 已知限制
 

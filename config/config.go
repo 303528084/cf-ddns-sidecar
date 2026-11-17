@@ -50,9 +50,42 @@ var optionalEnvByProvider = map[string][]string{
 	"dnspod": {"DNSPOD_ROOT_DOMAIN"},
 }
 
+// DefaultEnvFile 是容器内默认的 KEY=VALUE 配置文件路径。
+// 由宿主机共享目录挂载而来（见 docker-compose），用户直接编辑该文件即可配置。
+const DefaultEnvFile = "/app/data/ddns.env"
+
+// LoadEnvFile 读取 KEY=VALUE 形式的配置文件（如 ddns.env）。
+// 支持 # 注释、空行、值两侧引号与 CRLF；文件不存在时返回空表而不报错，
+// 因为 compose 挂载目录在首次启动前可能还没有该文件。
+func LoadEnvFile(path string) map[string]string {
+	kv := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return kv
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if key != "" {
+			kv[key] = val
+		}
+	}
+	return kv
+}
+
 // Load 从 YAML 文件读取配置（文件不存在时允许纯环境变量配置），
 // 补齐默认值、用环境变量覆盖关键项、并注入密钥。
-// 环境变量优先级高于 YAML，便于 FPK 安装后不进容器改文件即可配置。
+// 优先级：进程环境变量 > ddns.env 文件 > config.yaml > 默认值。
+// 之所以不依赖 compose 的 env_file：飞牛在安装阶段就会校验 env_file 是否存在，
+// 而该文件要等应用首次启动才生成，会导致安装直接失败。
 func Load(path string) (*Config, error) {
 	var c Config
 	data, err := os.ReadFile(path)
@@ -64,23 +97,36 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 	}
 
-	// 环境变量覆盖（CFDDNS_ 前缀避免与其它工具冲突）
-	if v := os.Getenv("CFDDNS_PROVIDER"); v != "" {
+	envFile := strings.TrimSpace(os.Getenv("CFDDNS_ENV_FILE"))
+	if envFile == "" {
+		envFile = DefaultEnvFile
+	}
+	fileEnv := LoadEnvFile(envFile)
+	// getenv：进程环境优先，其次读 ddns.env，缺省返回空串。
+	getenv := func(name string) string {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+		return fileEnv[name]
+	}
+
+	// 环境变量/配置文件覆盖（CFDDNS_ 前缀避免与其它工具冲突）
+	if v := getenv("CFDDNS_PROVIDER"); v != "" {
 		c.Provider = v
 	}
-	if v := os.Getenv("CFDDNS_DOMAIN"); v != "" {
+	if v := getenv("CFDDNS_DOMAIN"); v != "" {
 		c.Domain = v
 	}
-	if v := os.Getenv("CFDDNS_SUBJECT_CONFIG_PATH"); v != "" {
+	if v := getenv("CFDDNS_SUBJECT_CONFIG_PATH"); v != "" {
 		c.SubjectConfigPath = v
 	}
-	if v := os.Getenv("CFDDNS_STATE_PATH"); v != "" {
+	if v := getenv("CFDDNS_STATE_PATH"); v != "" {
 		c.StatePath = v
 	}
-	if v := os.Getenv("CFDDNS_LISTEN"); v != "" {
+	if v := getenv("CFDDNS_LISTEN"); v != "" {
 		c.Listen = v
 	}
-	if v := os.Getenv("CFDDNS_POLL_INTERVAL"); v != "" {
+	if v := getenv("CFDDNS_POLL_INTERVAL"); v != "" {
 		n, e := strconv.Atoi(v)
 		if e != nil {
 			return nil, fmt.Errorf("CFDDNS_POLL_INTERVAL=%q 不是整数: %w", v, e)
@@ -111,14 +157,15 @@ func Load(path string) (*Config, error) {
 
 	c.Credentials = make(map[string]string)
 	for _, name := range requiredEnvByProvider[c.Provider] {
-		val := os.Getenv(name)
+		val := getenv(name)
 		if strings.TrimSpace(val) == "" {
-			return nil, fmt.Errorf("缺少环境变量 %s（provider=%s）", name, c.Provider)
+			return nil, fmt.Errorf("缺少配置项 %s（provider=%s）：请在 %s 中填写，或检查该文件是否存在",
+				name, c.Provider, envFile)
 		}
 		c.Credentials[name] = val
 	}
 	for _, name := range optionalEnvByProvider[c.Provider] {
-		if val := strings.TrimSpace(os.Getenv(name)); val != "" {
+		if val := getenv(name); val != "" {
 			c.Credentials[name] = val
 		}
 	}
