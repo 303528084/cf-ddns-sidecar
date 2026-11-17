@@ -211,6 +211,16 @@
       <div class="field"><label>保留候选 IP 数</label><input type="number" id="sp-topn" min="1" placeholder="5"></div>
     </div>
     <div class="hint">间隔填 0 表示不自动测速，只在点「立即测速」时执行。候选数越大，失败时可切换的备选越多。</div>
+
+    <div class="field" style="margin-top:14px">
+      <label>优选 IP 段（留空 = 使用 Cloudflare 官方 15 个段）</label>
+      <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
+    </div>
+    <div class="hint">
+      每行一条，三种写法都认：<b>IP 段</b>（104.16.0.0/13）、<b>单个 IP</b>（1.2.3.4）、<b>链接</b>（https://…）。
+      填了之后就<b>只用这些</b>——不再叠加 Cloudflare 官方段，也不再拉内置的两个外部聚合源；想恢复原来的行为，把这里清空保存即可。<br>
+      为什么需要它：官方那 15 个段里 104.16 / 104.24 / 172.64 三块占绝大多数，优选结果会明显往这几段集中。
+    </div>
   </div>
 
   <!-- DDNS -->
@@ -475,6 +485,7 @@ async function loadConfig() {
   if (!(c.domains || []).length) addDomain();
   $("sp-interval").value = c.interval_minutes;
   $("sp-topn").value = c.top_n;
+  $("sp-sources").value = (c.extra_sources || []).join("\n");
   $("dd-enabled").checked = !!c.ddns_enabled;
   $("dd-provider").value = c.ddns_provider || "cloudflare";
   $("dd-domain").value = c.ddns_domain || "";
@@ -812,6 +823,13 @@ async function saveAll() {
         top_n: parseInt($("sp-topn").value || "5", 10),
         bandwidth_candidates: 100,
         interval_minutes: parseInt($("sp-interval").value || "0", 10),
+        // 必须**总是**带上这个字段（哪怕是空数组）：后端用「有没有这个字段」
+        // 区分「没传 = 保持原值」和「传空 = 用户主动清空」。少了它，用户
+        // 把段删光保存后，旧的段会原样留着，表现为「清空没生效」。
+        extra_sources: $("sp-sources").value
+          .split("\n")
+          .map(function (s) { return s.trim(); })
+          .filter(function (s) { return s !== ""; }),
         ddns_enabled: $("dd-enabled").checked,
         ddns_provider: $("dd-provider").value,
         ddns_domain: $("dd-domain").value.trim(),

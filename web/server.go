@@ -204,13 +204,20 @@ func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCandidates 返回候选 IP 列表（每行 ip:port#国家）。
+//
+// 内容由用户配置决定：没设自定义来源 → 内置官方段；设了段/单 IP → 只从那里采样；
+// 只设了链接 → 返回空（候选全交给引擎自己拉）。详见 candidateList 的注释。
 func (s *Server) handleCandidates(w http.ResponseWriter, r *http.Request) {
 	count := atoiDefault(r.URL.Query().Get("n"), 600)
 	if count > 3000 {
 		count = 3000
 	}
+	s.mu.Lock()
+	c := s.cfg.Clone()
+	s.mu.Unlock()
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte(candidateList(count)))
+	_, _ = w.Write([]byte(candidateList(&c, count)))
 }
 
 // ---------- 认证 ----------
@@ -535,6 +542,7 @@ type configResp struct {
 	TopN            int      `json:"top_n"`
 	Candidates      int      `json:"bandwidth_candidates"`
 	IntervalMinutes int      `json:"interval_minutes"`
+	ExtraSources    []string `json:"extra_sources"`
 	DDNSEnabled     bool     `json:"ddns_enabled"`
 	DDNSProvider    string   `json:"ddns_provider"`
 	DDNSDomain      string   `json:"ddns_domain"`
@@ -557,6 +565,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			TopN:            c.Speed.TopN,
 			Candidates:      c.Speed.BandwidthCandidates,
 			IntervalMinutes: c.Speed.IntervalMinutes,
+			ExtraSources:    c.Speed.ExtraSources,
 			DDNSEnabled:     c.DDNS.Enabled,
 			DDNSProvider:    c.DDNS.Provider,
 			DDNSDomain:      c.DDNS.Domain,
@@ -580,12 +589,17 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		TopN            int      `json:"top_n"`
 		Candidates      int      `json:"bandwidth_candidates"`
 		IntervalMinutes int      `json:"interval_minutes"`
-		DDNSEnabled     bool     `json:"ddns_enabled"`
-		DDNSProvider    string   `json:"ddns_provider"`
-		DDNSDomain      string   `json:"ddns_domain"`
-		DDNSTTL         int      `json:"ddns_ttl"`
-		DDNSProxied     bool     `json:"ddns_proxied"`
-		DDNSIPCount     int      `json:"ddns_ip_count"`
+		// 用指针是为了区分「没传这个字段」和「传了空数组」：
+		//   没传（nil）  → 保持原值，不动用户已设的段（老的导入文件、旧客户端）；
+		//   传了 []      → 用户主动清空，恢复用内置官方段。
+		// 若用普通切片，这两种情况都是长度 0，清空就永远生效不了。
+		ExtraSources    *[]string `json:"extra_sources"`
+		DDNSEnabled     bool      `json:"ddns_enabled"`
+		DDNSProvider    string    `json:"ddns_provider"`
+		DDNSDomain      string    `json:"ddns_domain"`
+		DDNSTTL         int       `json:"ddns_ttl"`
+		DDNSProxied     bool      `json:"ddns_proxied"`
+		DDNSIPCount     int       `json:"ddns_ip_count"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -609,6 +623,22 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 「优选 IP 段」逐行校验，错一行就整单退回并指明第几行。
+	// 校验放在锁外面：它只依赖请求体，没必要占着 s.mu。
+	var extraLines []string
+	if body.ExtraSources != nil {
+		extraLines = make([]string, 0, len(*body.ExtraSources))
+		for _, l := range *body.ExtraSources {
+			if t := strings.TrimSpace(l); t != "" {
+				extraLines = append(extraLines, t)
+			}
+		}
+		if _, err := parseExtraSources(extraLines); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	cfg.AdGuard.URL = strings.TrimSpace(body.AdGuardURL)
@@ -625,6 +655,11 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Speed.BandwidthCandidates = body.Candidates
 	}
 	cfg.Speed.IntervalMinutes = body.IntervalMinutes
+	// body.ExtraSources 为 nil 表示请求里没带这个字段（旧客户端/老导入文件），
+	// 此时保留原值，不能顺手清空——那会把用户辛苦填的段默默删掉。
+	if body.ExtraSources != nil {
+		cfg.Speed.ExtraSources = extraLines
+	}
 	cfg.DDNS.Enabled = body.DDNSEnabled
 	cfg.DDNS.Provider = strings.ToLower(strings.TrimSpace(body.DDNSProvider))
 	cfg.DDNS.Domain = config.NormalizeDomain(body.DDNSDomain)
@@ -811,15 +846,44 @@ func (s *Server) runOnce(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
 	defer cancel()
 
+	// 「优选 IP 段」：把用户填的来源分成两类走不同路径 ——
+	//   · IP 段 / 单 IP 由本机的 /api/candidates 提供（见 candidateList）；
+	//   · 链接直接交给引擎自己去拉，我们不管它的格式。
+	// custom 为 false 表示用户没设置，完全走升级前的老行为。
+	extra, _ := parseExtraSources(cfg.Speed.ExtraSources)
+	custom := len(cfg.Speed.ExtraSources) > 0
+
+	// 本地候选列表的地址。用户只填了链接时本地一条候选都不出，这时就
+	// **不要**把这个地址交给引擎——否则它会去拉一个空列表，日志里留一行
+	// 「数据源解析完成（0 节点）」。用户看到「0 节点」会以为地址又失效了，
+	// 而这一次是他自己没填段，属于「日志把人带沟里」。
+	localCandidates := s.selfURL + "/api/candidates"
+	if custom && len(extra.cidrs) == 0 && len(extra.ips) == 0 {
+		localCandidates = ""
+	}
+
 	run := func() (*engine.Result, error) {
 		return engine.Run(ctx, s.enginePath, s.workDir, engine.Options{
 			TopN:                cfg.Speed.TopN,
 			BandwidthCandidates: cfg.Speed.BandwidthCandidates,
-			CandidatesURL:       s.selfURL + "/api/candidates",
+			CandidatesURL:       localCandidates,
+			ExtraURLs:           extra.urls,
+			UseBuiltinSources:   !custom,
 		}, s.appendLog)
 	}
 
 	s.appendLog("开始测速…")
+	// 这一行是给用户看的「为什么会测出这些 IP」：以前候选来源是写死的，
+	// 现在能改，就必须说清楚这一轮到底用了谁的来源，否则出了问题无从判断。
+	if custom {
+		msg := fmt.Sprintf(
+			"候选来源：按后台设置的自定义来源（IP 段 %d 个、单个 IP %d 个、链接 %d 个），不叠加内置聚合源",
+			len(extra.cidrs), len(extra.ips), len(extra.urls))
+		if len(extra.cidrs) == 0 && len(extra.ips) == 0 {
+			msg += "；本地不出候选，全部由引擎从你填的链接里拉"
+		}
+		s.appendLog(msg)
+	}
 	res, err := run()
 
 	// 失败自动重试一次。cfnb 的失败大多是「某个数据源或节点刚好超时」这类

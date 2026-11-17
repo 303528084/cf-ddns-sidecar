@@ -27,8 +27,22 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # 直接复用它比自己用 Go 重写一套测速更可靠。
 FROM python:3.12-alpine AS allinone
 
+# `brotli` 不是可选项 —— 缺了它测速会「一个节点都拉不到」。
+#
+# cfnb 请求外部数据源时固定带 `Accept-Encoding: gzip, deflate, br`，而
+# requests / aiohttp 只有在 `brotli` 模块存在时才会解 br 响应；没装的话
+# `resp.text` 拿到的是**二进制乱码**，解析器一个节点都认不出来，日志里
+# 表现为「数据源解析完成（0 节点）」——看起来像数据源地址失效，其实是
+# 本地解码缺件。这个假象骗了我们一轮（2026-11-17 用户报「数据拉不出来」）。
+#
+# 2026-11-17 实测同一段解析逻辑在两个容器里的结果：
+#   ipdb.api.030101.xyz  不装 brotli → 0 节点    装 brotli →   10 节点
+#   zip.cm.edu.kg/all.txt 不装 brotli → 0 节点   装 brotli → 12757 节点
+#
+# 装同一个包装同时修好 requests（拉数据源）和 aiohttp（反代验证），
+# 两者都按模块存在与否自动启用 br 解码。
 RUN apk add --no-cache ca-certificates tzdata curl su-exec && \
-    pip install --no-cache-dir aiohttp requests && \
+    pip install --no-cache-dir aiohttp requests brotli && \
     addgroup -S -g 1000 app && adduser -S -u 1000 -G app app
 
 WORKDIR /app

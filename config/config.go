@@ -45,6 +45,17 @@ type SpeedConfig struct {
 	IntervalMinutes     int `json:"interval_minutes"`     // 自动测速间隔（分钟），0 表示不自动测
 	TopN                int `json:"top_n"`                // 最终保留的候选 IP 数量
 	BandwidthCandidates int `json:"bandwidth_candidates"` // 进入带宽测速的候选数
+	// ExtraSources 是用户自己指定的候选来源，一行一条，三种写法：
+	//   · IP 段   104.16.0.0/13   —— 本地在这些段里随机采样
+	//   · 单 IP   104.16.1.1      —— 直接进候选，不抽样
+	//   · 链接    https://...     —— 不本地解析，原样交给测速引擎自己去拉
+	//
+	// 留空 = 用内置的 Cloudflare 官方 15 个段（升级前的行为，一字未改）。
+	// 非空 = **只用这些**：既不叠加官方段，也不再拉内置的两个外部聚合源。
+	//
+	// 为什么必须是「只用」而不是「叠加」：实测 zip.cm.edu.kg 一个源就能给
+	// 12757 个 IP，叠加进来等于用户填的段被彻底淹没，设了跟没设一样。
+	ExtraSources []string `json:"extra_sources,omitempty"`
 }
 
 // DDNSConfig 描述把最优 IP 写到自有域名解析记录的行为。
@@ -326,6 +337,10 @@ func (c *Config) Clone() Config {
 	// 就意味着一个 goroutine 在读、另一个在改，属于最难查的那种问题。
 	if len(c.LastIPs) > 0 {
 		cp.LastIPs = append(make([]string, 0, len(c.LastIPs)), c.LastIPs...)
+	}
+	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
+	if len(c.Speed.ExtraSources) > 0 {
+		cp.Speed.ExtraSources = append(make([]string, 0, len(c.Speed.ExtraSources)), c.Speed.ExtraSources...)
 	}
 	return cp
 }

@@ -28,6 +28,18 @@ type Options struct {
 	TopN                int    // 最终保留的 IP 数量
 	BandwidthCandidates int    // 进入带宽测速的候选数
 	CandidatesURL       string // 本地候选列表地址（Cloudflare 官方段随机采样）
+	// ExtraURLs 是用户在后台填的链接型来源，原样交给引擎自己去拉。
+	// 内容格式不用我们管：cfnb 的 parse_adaptive 已支持纯 IP 列表、
+	// `IP:端口#国家`、以及 JSON 三种。
+	ExtraURLs []string
+	// UseBuiltinSources 决定要不要附带内置的两个外部聚合源
+	// （ipdb.api.030101.xyz、zip.cm.edu.kg）。
+	//
+	// 用户**没有**指定自定义来源时必须为 true，那是原本的行为；
+	// 一旦用户指定了（段/单 IP/链接），就必须为 false —— 这两个源一个能
+	// 吐 12757 个 IP，叠加进来会把用户划定的范围整个淹没，
+	// 表现为「我明明填了段，优选出来还是原来那些」。
+	UseBuiltinSources bool
 }
 
 // Result 是一次测速的结果。
@@ -128,17 +140,32 @@ func writeCfnbConfig(path string, opt Options) error {
 	}
 
 	// 数据源顺序很关键：
-	//  1) 先吃本地候选列表（Cloudflare 官方段随机采样）——不依赖任何第三方，
+	//  1) 先吃本地候选列表（这一段的内容由用户的「优选 IP 段」决定，
+	//     没设置时就是 Cloudflare 官方段随机采样）——不依赖任何第三方，
 	//     保证即使所有外部源都挂了，测速依然能跑出结果；
-	//  2) 再叠加外部聚合源作为补充，扩大机房覆盖。
+	//  2) 再叠加用户自己填的链接；
+	//  3) 只有用户没指定任何自定义来源时，才带上内置的两个外部聚合源。
+	//     这一条是「只用我给的段」能成立的前提，见 Options.UseBuiltinSources
+	//     的注释——实测 zip.cm.edu.kg 一个源就有 12757 个 IP。
 	sources := make([]map[string]any, 0, 4)
 	if opt.CandidatesURL != "" {
 		sources = append(sources, map[string]any{"url": opt.CandidatesURL, "enabled": true})
 	}
-	sources = append(sources,
-		map[string]any{"url": "https://ipdb.api.030101.xyz/?type=bestcf", "enabled": true},
-		map[string]any{"url": "https://zip.cm.edu.kg/all.txt", "enabled": true},
-	)
+	for _, u := range opt.ExtraURLs {
+		// 这里再 TrimSpace 一次：web 层保存时已经去过空白，但 cfnb 拿到一个
+		// 带空格的 URL 会静默当成「拉不到数据」，日志只说 0 节点，
+		// 排查起来要去翻它内部实现。多这一步几乎不要成本。
+		if u = strings.TrimSpace(u); u == "" {
+			continue
+		}
+		sources = append(sources, map[string]any{"url": u, "enabled": true})
+	}
+	if opt.UseBuiltinSources {
+		sources = append(sources,
+			map[string]any{"url": "https://ipdb.api.030101.xyz/?type=bestcf", "enabled": true},
+			map[string]any{"url": "https://zip.cm.edu.kg/all.txt", "enabled": true},
+		)
+	}
 
 	cfg := map[string]any{
 		// 输出与筛选
