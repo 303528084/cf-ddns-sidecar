@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # 飞牛生命周期脚本：处理 start / stop / status。
-# 首次 start 时：解析数据共享目录真实路径 → 注入 compose → 生成 ddns.env 示例。
+# 首次 start 时：创建数据子目录 → 生成 ddns.env 示例配置（幂等，可重复执行）。
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+# 飞牛数据共享目录的稳定软链路径（官方文档：/var/apps/<appname>/share/<share name>）
+SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
 FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
 
 fail() {
@@ -11,32 +13,14 @@ fail() {
     exit 1
 }
 
-# 解析数据共享目录真实路径（官方环境变量，多个以 : 分隔）
-resolve_share_root() {
-    local root="${TRIM_DATA_SHARE_PATHS%%:*}"
-    if [ -z "$root" ] || [ ! -d "$root" ]; then
-        # 兜底：官方约定的软链路径
-        root="/var/apps/${APP_NAME}/share/${APP_NAME}"
-    fi
-    echo "$root"
-}
-
-# 首次启动初始化：注入共享路径 + 生成示例配置（幂等，可重复执行）
+# 首次启动初始化：建目录 + 生成示例配置（幂等）
 init_on_start() {
-    local share_root
-    share_root="$(resolve_share_root)" || fail "无法定位数据共享目录"
-    mkdir -p "${share_root}/subject" "${share_root}/sidecar" "${share_root}/conf" \
-        || fail "无法创建数据目录: ${share_root}"
-
-    # 将占位符替换为真实路径（已替换过则 sed 自然跳过）
-    if [ -f "$FILE_PATH" ] && grep -q "__SHARE_ROOT__" "$FILE_PATH"; then
-        sed -i "s|__SHARE_ROOT__|${share_root}|g" "$FILE_PATH" \
-            || fail "compose 路径注入失败"
-    fi
+    mkdir -p "${SHARE_ROOT}/subject" "${SHARE_ROOT}/sidecar" "${SHARE_ROOT}/conf" \
+        || fail "无法创建数据目录: ${SHARE_ROOT}"
 
     # 生成 ddns.env 示例（仅当不存在时），避免 env_file 缺失导致 compose 起不来
-    if [ ! -f "${share_root}/sidecar/ddns.env" ]; then
-        cat > "${share_root}/sidecar/ddns.env" <<'EOF'
+    if [ ! -f "${SHARE_ROOT}/sidecar/ddns.env" ]; then
+        cat > "${SHARE_ROOT}/sidecar/ddns.env" <<'EOF'
 # ============================================================
 # cf-ddns-sidecar 配置（本文件是唯一必填入口）
 # 修改保存后：飞牛「应用中心 → 本应用 → 重启」使其生效
@@ -72,19 +56,19 @@ CFDDNS_DOMAIN=cf.example.com
 # --- 可选：轮询间隔（秒，默认 30）---
 #CFDDNS_POLL_INTERVAL=30
 EOF
-        echo "[cf-ddns-sidecar] 已生成示例配置: ${share_root}/sidecar/ddns.env"
+        echo "[cf-ddns-sidecar] 已生成示例配置: ${SHARE_ROOT}/sidecar/ddns.env"
     fi
 }
 
 is_docker_running() {
-    DOCKER_NAME=""
+    local container_name=""
 
     if [ -f "$FILE_PATH" ]; then
-        DOCKER_NAME=$(cat "$FILE_PATH" | grep "container_name" | awk -F ':' '{print $2}' | xargs)
+        container_name=$(grep "container_name" "$FILE_PATH" | awk -F ':' '{print $2}' | xargs)
     fi
 
-    if [ -n "$DOCKER_NAME" ]; then
-        docker inspect "$DOCKER_NAME" 2>/dev/null | grep -q '"Status": "running"' || return 1
+    if [ -n "$container_name" ]; then
+        docker inspect "$container_name" 2>/dev/null | grep -q '"Status": "running"' || return 1
         return 0
     fi
     return 1

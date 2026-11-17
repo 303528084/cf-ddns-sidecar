@@ -11,8 +11,8 @@ services:
       DSA_COLO_IP_DB: /app/data/colo_ip_db.json
       TZ: Asia/Shanghai
     volumes:
-      # __SHARE_ROOT__ 由 cmd/main 首次 start 时替换为真实共享目录路径
-      - "__SHARE_ROOT__/subject:/app/data"
+      # 飞牛数据共享目录的稳定绝对路径（安装时自动创建并授予本应用 ACL 权限）
+      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/subject:/app/data"
 
   # 旁路：读取最优 IP 并推送 DDNS
   cf-ddns-sidecar:
@@ -22,10 +22,10 @@ services:
     depends_on:
       - cf-dns-select
     env_file:
-      # 首次 start 时由 cmd/main 自动生成示例文件，用户编辑后重启应用生效
-      - "__SHARE_ROOT__/sidecar/ddns.env"
+      # 首次启动时由 cmd/main 自动生成示例文件，用户编辑后重启应用生效
+      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/sidecar/ddns.env"
     volumes:
-      - "__SHARE_ROOT__/sidecar:/app/data"
-      - "__SHARE_ROOT__/subject:/app/subject:ro"
+      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/sidecar:/app/data"
+      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/subject:/app/subject:ro"
       # 可选：高级配置（不创建 config.yaml 则纯用 ddns.env 环境变量）
-      - "__SHARE_ROOT__/conf:/app/config:ro"
+      - "/var/apps/cf-ddns-sidecar/share/cf-ddns-sidecar/conf:/app/config:ro"
