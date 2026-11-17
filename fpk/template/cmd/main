@@ -32,14 +32,6 @@ migrate_legacy() {
         cp -p "$old_state" "$new_state" 2>/dev/null \
             && echo "[cf-ddns-sidecar] 已迁移旧状态: $old_state -> $new_state"
     fi
-
-    # 旧的 conf/config.yaml 也一并搬到新目录（旁路仍支持 config.yaml 高级配置）
-    local old_conf="${SHARE_ROOT}/conf/config.yaml"
-    local new_conf="${DATA_ROOT}/config.yaml"
-    if [ -f "$old_conf" ] && [ ! -f "$new_conf" ]; then
-        cp -p "$old_conf" "$new_conf" 2>/dev/null \
-            && echo "[cf-ddns-sidecar] 已迁移旧高级配置: $old_conf -> $new_conf"
-    fi
 }
 
 # 清理 v1.0.x 双容器架构遗留的主体容器。
@@ -63,21 +55,33 @@ init_on_start() {
     # （主体的 config.json、旁路的 state.json 都要落盘），否则配置无法保存。
     chmod 0777 "$DATA_ROOT" 2>/dev/null
 
-    # 生成 ddns.env 示例（仅当不存在时），避免配置缺失导致旁路一直等待
+    # 生成 ddns.env 示例（仅当不存在时），避免配置缺失导致排错时无从下手。
+    # 注意：这里故意把「服务商 / 域名 / 间隔」也注释掉——如果写成实值，
+    # 程序首次启动会把占位域名 cf.example.com 当成真域名去推解析。
     if [ ! -f "${DATA_ROOT}/ddns.env" ]; then
         cat > "${DATA_ROOT}/ddns.env" <<'EOF'
 # ============================================================
-# cf-ddns-sidecar 配置（本文件是 DDNS 唯一的必填入口）
-# 修改保存后：飞牛「应用中心 → 本应用 → 重启」使其生效
+# cf-ddns-sidecar 密钥与基础配置
 #
-# 后台（Dashboard）登录密码：见同目录下的 dashboard-password 文件
+# 正常情况下你不需要改这个文件：
+#   打开后台 http://飞牛IP:8080 ，所有项都在界面里填，保存后自动写到这里。
+# 这个文件只是让人能一眼看到、或者用文本编辑器批量改。
+#
+# 下面这些项同时也是「安装向导 / 应用设置」的入口：
+# 从设置里保存后，程序启动时会应用一次并清掉 CFDDNS_APPLY_ENV 标记。
 # ============================================================
 
-# --- 必填：DDNS 服务商（四选一：cloudflare / aliyun / dnspod / huawei）---
-CFDDNS_PROVIDER=cloudflare
+# --- 自动化标记：设置页保存后置 1，程序应用完改回 0，不要手改 ---
+CFDDNS_APPLY_ENV=0
 
-# --- 必填：你的优选域名（A 记录将指向最优 IP）---
-CFDDNS_DOMAIN=cf.example.com
+# --- DDNS 服务商（cloudflare / aliyun / dnspod / huawei）---
+#CFDDNS_PROVIDER=cloudflare
+
+# --- 优选域名（A 记录将指向最优 IP，如 cf.example.com）---
+#CFDDNS_DOMAIN=
+
+# --- 自动测速间隔（分钟，0 表示不自动测）---
+#CFDDNS_INTERVAL_MINUTES=60
 
 # --- Cloudflare 密钥（provider=cloudflare 时必填）---
 #CF_API_TOKEN=
@@ -99,9 +103,6 @@ CFDDNS_DOMAIN=cf.example.com
 #HUAWEI_AK=
 #HUAWEI_SK=
 #HUAWEI_ZONE_ID=
-
-# --- 可选：轮询间隔（秒，默认 30）---
-#CFDDNS_POLL_INTERVAL=30
 EOF
         echo "[cf-ddns-sidecar] 已生成示例配置: ${DATA_ROOT}/ddns.env"
     fi

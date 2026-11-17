@@ -1,4 +1,4 @@
-package provider
+package ddns
 
 // 本文件的签名算法移植自 MIT 许可项目 jeessy2/ddns-go (https://github.com/jeessy2/ddns-go)
 // Copyright (c) 2020 jeessy，依据 MIT License 使用，特此保留版权声明。

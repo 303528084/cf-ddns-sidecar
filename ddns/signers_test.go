@@ -1,4 +1,4 @@
-package provider
+package ddns
 
 import (
 	"net/http"

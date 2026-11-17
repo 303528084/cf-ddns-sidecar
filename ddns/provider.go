@@ -1,5 +1,5 @@
-// Package provider 定义 DNS 服务商适配的统一接口与各家实现。
-package provider
+// Package ddns 定义 DNS 服务商适配的统一接口与各家实现。
+package ddns
 
 import (
 	"fmt"

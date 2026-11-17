@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloudflare 优选 IP · DDNS</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --text: #1c1f23;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --err: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181d;
+      --card: #1d2127;
+      --text: #e8eaed;
+      --muted: #9aa3af;
+      --line: #2c313a;
+      --accent: #5b93ff;
+      --accent-soft: #1e2a42;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px 16px 60px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14.5px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .tag { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 200px; }
+  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13.5px;
+    font-family: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .field { margin-bottom: 12px; }
+  .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  button {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); font-size: 13.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+  .stat .k { font-size: 11.5px; color: var(--muted); }
+  .stat .v { font-size: 15px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: var(--ok); } .dot.idle { background: var(--muted); }
+  .dot.busy { background: var(--warn); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .domains { display: flex; flex-direction: column; gap: 8px; }
+  .domain-row { display: flex; gap: 8px; align-items: center; }
+  .domain-row input { flex: 1; }
+  .domain-row button { padding: 6px 10px; font-size: 12.5px; }
+  .logs {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; height: 190px; overflow: auto;
+    font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-all; color: var(--muted);
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 9px 18px;
+    border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none;
+    transition: opacity .2s; z-index: 99; max-width: 90vw; text-align: center;
+  }
+  .toast.show { opacity: 1; }
+  .login {
+    position: fixed; inset: 0; background: var(--bg); display: flex;
+    align-items: center; justify-content: center; z-index: 50; padding: 20px;
+  }
+  .login .box { width: 100%; max-width: 320px; }
+  .hidden { display: none !important; }
+  .banner {
+    border-radius: 8px; padding: 10px 12px; font-size: 12.5px;
+    background: var(--accent-soft); color: var(--accent); margin-bottom: 12px;
+  }
+  .banner.warn { background: rgba(217,119,6,.12); color: var(--warn); }
+  .banner.err { background: rgba(220,38,38,.1); color: var(--err); }
+  .switch { display: flex; align-items: center; gap: 8px; }
+  .switch input { width: auto; }
+</style>
+</head>
+<body>
+
+<div class="login" id="login">
+  <div class="box card">
+    <h1>登录</h1>
+    <div class="sub">请输入管理密码</div>
+    <div class="field">
+      <input type="password" id="pw" placeholder="管理密码" autocomplete="current-password">
+    </div>
+    <button class="primary" style="width:100%" onclick="doLogin()">登录</button>
+  </div>
+</div>
+
+<div class="wrap" id="app" class="hidden">
+  <h1>Cloudflare 优选 IP · DDNS</h1>
+  <div class="sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。<span id="ver"></span></div>
+
+  <!-- 概览 -->
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="k">最优 IP</div><div class="v" id="s-ip">—</div></div>
+      <div class="stat"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
+      <div class="stat"><div class="k">运行状态</div><div class="v"><span class="dot idle" id="s-dot"></span> <span id="s-state">空闲</span></div></div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btn-run" onclick="doRun()">立即测速</button>
+      <span class="hint" id="s-runhint"></span>
+    </div>
+    <div id="s-err"></div>
+  </div>
+
+  <!-- AdGuard -->
+  <div class="card">
+    <h2>AdGuard Home <span class="tag">把最优 IP 写进它的 DNS 重写</span></h2>
+    <div class="field">
+      <label>地址</label>
+      <input type="text" id="ag-url" placeholder="http://192.168.1.2:3000">
+    </div>
+    <div class="row">
+      <div class="field"><label>用户名</label><input type="text" id="ag-user" placeholder="admin"></div>
+      <div class="field"><label>密码</label><input type="password" id="ag-pass" placeholder="留空表示不修改"></div>
+    </div>
+    <div class="hint">在 AdGuard Home 的「设置 → 常规设置」里可以看到管理界面地址和登录账号。</div>
+  </div>
+
+  <!-- 域名 -->
+  <div class="card">
+    <h2>要加速的域名 <span class="tag">这些域名会指向最优 IP</span></h2>
+    <div class="domains" id="domains"></div>
+    <div class="actions">
+      <button onclick="addDomain()">+ 添加域名</button>
+    </div>
+    <div class="hint">填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。改完保存后，下次测速即生效。</div>
+  </div>
+
+  <!-- 测速 -->
+  <div class="card">
+    <h2>测速设置</h2>
+    <div class="row">
+      <div class="field"><label>自动测速间隔（分钟）</label><input type="number" id="sp-interval" min="0" step="10" placeholder="60"></div>
+      <div class="field"><label>保留候选 IP 数</label><input type="number" id="sp-topn" min="1" placeholder="5"></div>
+    </div>
+    <div class="hint">间隔填 0 表示不自动测速，只在点「立即测速」时执行。候选数越大，失败时可切换的备选越多。</div>
+  </div>
+
+  <!-- DDNS -->
+  <div class="card">
+    <h2>域名解析（DDNS） <span class="tag">把最优 IP 写到你的域名</span></h2>
+    <div class="field switch">
+      <input type="checkbox" id="dd-enabled" onchange="renderProvider()">
+      <label for="dd-enabled" style="margin:0">启用（测速后自动更新 A 记录）</label>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>服务商</label>
+        <select id="dd-provider" onchange="renderProvider()">
+          <option value="cloudflare">Cloudflare</option>
+          <option value="aliyun">阿里云 DNS</option>
+          <option value="dnspod">腾讯云 DNSPod</option>
+          <option value="huawei">华为云 DNS</option>
+        </select>
+      </div>
+      <div class="field"><label>优选域名</label><input type="text" id="dd-domain" placeholder="cf.example.com"></div>
+    </div>
+    <div id="cred-fields"></div>
+    <div class="hint">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
+  </div>
+
+  <div class="actions" style="margin-bottom:18px">
+    <button class="primary" onclick="saveAll()">保存全部设置</button>
+    <button onclick="logout()">退出登录</button>
+  </div>
+
+  <!-- 日志 -->
+  <div class="card">
+    <h2>运行日志</h2>
+    <div class="logs" id="logs">暂无日志</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const PROVIDERS = {
+  cloudflare: { label: "Cloudflare", fields: [
+    { key: "CF_API_TOKEN", label: "API 令牌", type: "password", hint: "Cloudflare 后台 → 我的个人资料 → API 令牌 → 创建令牌，权限选「编辑区域 DNS」" },
+    { key: "CF_ZONE_ID", label: "Zone ID", type: "text", hint: "域名概览页右侧那一串" }
+  ]},
+  aliyun: { label: "阿里云", fields: [
+    { key: "ALIYUN_ACCESS_KEY_ID", label: "AccessKey ID", type: "password" },
+    { key: "ALIYUN_ACCESS_KEY_SECRET", label: "AccessKey Secret", type: "password" },
+    { key: "ALIYUN_ROOT_DOMAIN", label: "根域名（可选）", type: "text", hint: "只有 example.com.cn 这类多级后缀才需要填" }
+  ]},
+  dnspod: { label: "腾讯云 DNSPod", fields: [
+    { key: "TENCENT_SECRET_ID", label: "SecretId", type: "password" },
+    { key: "TENCENT_SECRET_KEY", label: "SecretKey", type: "password" },
+    { key: "DNSPOD_ROOT_DOMAIN", label: "根域名（可选）", type: "text", hint: "只有多级后缀才需要填" }
+  ]},
+  huawei: { label: "华为云", fields: [
+    { key: "HUAWEI_AK", label: "Access Key", type: "password" },
+    { key: "HUAWEI_SK", label: "Secret Key", type: "password" },
+    { key: "HUAWEI_ZONE_ID", label: "Zone ID", type: "text", hint: "云解析服务的域名列表里" }
+  ]}
+};
+
+let credState = {};
+let pollTimer = null;
+
+function $(id) { return document.getElementById(id); }
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts
+  });
+  if (res.status === 401) { showLogin(); throw new Error("未登录"); }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  if (!res.ok) throw new Error((data && data.error) || text || ("HTTP " + res.status));
+  return data;
+}
+
+function showLogin() {
+  $("login").classList.remove("hidden");
+  $("app").classList.add("hidden");
+}
+
+async function doLogin() {
+  try {
+    await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
+    $("login").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    boot();
+  } catch (e) { toast(e.message); }
+}
+
+async function logout() {
+  await api("/api/logout", { method: "POST" }).catch(() => {});
+  showLogin();
+}
+
+// ---- 域名列表 ----
+function addDomain(value = "") {
+  const row = document.createElement("div");
+  row.className = "domain-row";
+  row.innerHTML = `<input type="text" placeholder="例如 openai.com" value="${value.replace(/"/g, '&quot;')}">
+    <button onclick="this.parentElement.remove()">删除</button>`;
+  $("domains").appendChild(row);
+}
+
+// ---- 服务商密钥渲染 ----
+function renderProvider() {
+  const p = $("dd-provider").value;
+  const box = $("cred-fields");
+  box.innerHTML = "";
+  const def = PROVIDERS[p];
+  if (!def) return;
+  def.fields.forEach(f => {
+    const has = credState[f.key];
+    const div = document.createElement("div");
+    div.className = "field";
+    div.innerHTML = `<label>${f.label}${has ? ' <span style="color:var(--ok)">已配置</span>' : ""}</label>
+      <input type="${f.type}" data-cred="${f.key}" placeholder="${has ? "已保存，留空不修改" : "必填"}">
+      ${f.hint ? `<div class="hint">${f.hint}</div>` : ""}`;
+    box.appendChild(div);
+  });
+}
+
+// ---- 加载 ----
+async function loadConfig() {
+  const c = await api("/api/config");
+  $("ag-url").value = c.adguard_url || "";
+  $("ag-user").value = c.adguard_user || "";
+  $("ag-pass").value = "";
+  $("ag-pass").placeholder = c.has_adguard_password ? "已保存，留空不修改" : "未设置";
+  $("domains").innerHTML = "";
+  (c.domains || []).forEach(addDomain);
+  if (!(c.domains || []).length) addDomain();
+  $("sp-interval").value = c.interval_minutes;
+  $("sp-topn").value = c.top_n;
+  $("dd-enabled").checked = !!c.ddns_enabled;
+  $("dd-provider").value = c.ddns_provider || "cloudflare";
+  $("dd-domain").value = c.ddns_domain || "";
+  renderProvider();
+}
+
+async function loadStatus() {
+  const s = await api("/api/status");
+  $("ver").textContent = s.version ? " v" + s.version : "";
+  $("s-ip").textContent = s.last_ip || "—";
+  $("s-time").textContent = s.last_time || "—";
+  const dot = $("s-dot"), state = $("s-state");
+  if (s.running) { dot.className = "dot busy"; state.textContent = "测速中"; }
+  else { dot.className = "dot ok"; state.textContent = "空闲"; }
+  $("btn-run").disabled = s.running;
+  $("btn-run").textContent = s.running ? "测速中…" : "立即测速";
+
+  const logs = $("logs");
+  if (s.logs && s.logs.length) {
+    const atBottom = logs.scrollTop + logs.clientHeight >= logs.scrollHeight - 30;
+    logs.textContent = s.logs.join("\n");
+    if (atBottom) logs.scrollTop = logs.scrollHeight;
+  }
+
+  let err = $("s-err");
+  err.innerHTML = "";
+  if (s.last_error) {
+    err.innerHTML = `<div class="banner err">上次测速失败：${escapeHtml(s.last_error)}</div>`;
+  }
+  if (s.ddns_enabled && s.ddns_missing && s.ddns_missing.length) {
+    err.innerHTML += `<div class="banner warn">域名解析还没配好，缺少：${s.ddns_missing.join("、")}</div>`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function saveAll() {
+  const domains = [...document.querySelectorAll("#domains input")]
+    .map(i => i.value.trim()).filter(Boolean);
+
+  // 1) 保存主配置
+  try {
+    await api("/api/config", {
+      method: "POST",
+      body: JSON.stringify({
+        adguard_url: $("ag-url").value.trim(),
+        adguard_user: $("ag-user").value.trim(),
+        adguard_password: $("ag-pass").value,
+        domains,
+        top_n: parseInt($("sp-topn").value || "5", 10),
+        bandwidth_candidates: 100,
+        interval_minutes: parseInt($("sp-interval").value || "0", 10),
+        ddns_enabled: $("dd-enabled").checked,
+        ddns_provider: $("dd-provider").value,
+        ddns_domain: $("dd-domain").value.trim()
+      })
+    });
+  } catch (e) { toast("保存失败：" + e.message); return; }
+
+  // 2) 保存密钥（只提交填了值的）
+  const creds = {};
+  document.querySelectorAll("#cred-fields input[data-cred]").forEach(i => {
+    if (i.value.trim()) creds[i.dataset.cred] = i.value.trim();
+  });
+  if (Object.keys(creds).length) {
+    try {
+      await api("/api/credentials", { method: "POST", body: JSON.stringify(creds) });
+    } catch (e) { toast("密钥保存失败：" + e.message); return; }
+  }
+
+  toast("已保存");
+  await loadConfig();
+  credState = await api("/api/credentials");
+  renderProvider();
+  await loadStatus();
+}
+
+async function doRun() {
+  try {
+    await api("/api/run", { method: "POST" });
+    toast("已开始测速，进度见下方日志");
+    setTimeout(loadStatus, 600);
+  } catch (e) { toast(e.message); }
+}
+
+async function boot() {
+  try {
+    credState = await api("/api/credentials");
+    await loadConfig();
+    await loadStatus();
+  } catch (e) {
+    if (e.message !== "未登录") toast(e.message);
+    return;
+  }
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(loadStatus, 3000);
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !$("login").classList.contains("hidden")) doLogin();
+});
+
+boot();
+</script>
+</body>
+</html>

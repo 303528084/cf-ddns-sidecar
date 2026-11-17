@@ -30,13 +30,13 @@
       },
       {
         "type": "text",
-        "field": "wizard_poll",
-        "label": "检查间隔（秒）",
-        "initValue": "30"
+        "field": "wizard_interval_minutes",
+        "label": "自动测速间隔（分钟）",
+        "initValue": "60"
       },
       {
         "type": "tips",
-        "helpText": "检查间隔：多久看一次最优 IP 有没有变化，默认 30 秒。"
+        "helpText": "自动测速间隔：多久重新测一次并更新 IP，默认 60 分钟。填 0 表示不自动测，只在后台点「立即测速」时才跑。"
       },
       {
         "type": "password",

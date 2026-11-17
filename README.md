@@ -1,175 +1,111 @@
-# Cloudflare 优选 IP + DDNS（飞牛 fnOS）
+# Cloudflare 优选 IP + AdGuard Home + DDNS（飞牛 fnOS）
 
-在飞牛 NAS 上自动测出当前网络下最快的 Cloudflare 边缘 IP（综合访问速度/下载速度），并同时做两件事：
+在飞牛 NAS 上一键搞定三件事：**测出你家网络最快、真能连上的 Cloudflare 节点**，
+把它写进 **AdGuard Home** 的 DNS 重写，同时更新你**自有域名的解析记录**。
+一个容器、一个后台界面，装完点几下鼠标就能用。
 
-1. 写入你已装好的 **AdGuard Home** 的 DNS 重写规则 → 局域网设备走优选 IP；
-2. 更新到你自有域名的 **DNS 解析记录**（DDNS）→ 生成一个固定的"优选域名"。
+## 它能干什么
 
-三个功能共用**同一次测速结果**（全局测速一次、结果应用到所有域名），不重复测速。
+| 能力 | 说明 |
+|---|---|
+| 优选 IP | 从 Cloudflare 官方地址段随机采样 + 多源聚合，先 TCP 筛延迟，再做**反代验证**（确认这个 IP 真能承载 HTTPS 请求），最后跑真实带宽，排出最优 |
+| 写 AdGuard | 把最优 IP 写进 AdGuard Home 的 DNS 重写表，局域网设备自动走这条线路 |
+| DDNS | 把最优 IP 写到你自有域名的 A 记录，支持 Cloudflare / 阿里云 / 腾讯云 DNSPod / 华为云 |
+| 统一后台 | 一个界面管全部：状态、AdGuard、要加速的域名、测速参数、域名解析密钥、实时日志 |
 
-## 工作原理
+## 为什么测速换了引擎
 
-**一个容器里跑两个进程**（不再是两个容器）：飞牛应用中心里只看到一个 `cf-ddns-sidecar` 容器，
-一个数据目录、一个后台入口、一个桌面图标。
+早期的实现用的是「TCP 延迟 + 下载测速」，选出来的 IP 经常**TCP 能连、浏览器打不开**。
+现在改用 [xinyitang3/cfnb](https://github.com/xinyitang3/cfnb) 的测速引擎，
+它多了一道**反代验证**（对每个候选 IP 发真实 HTTPS 请求、验证 TLS 与响应，多轮采集延迟和抖动），
+能剔掉「通但不可用」的节点。
 
-```
-单容器 cf-ddns-sidecar
-├─ 主体 cf-dns-select（上游官方二进制，源码零改动）
-│     ├─ 测速 → 选出最优 IP → 写入 AdGuard Home DNS 重写
-│     ├─ 提供 Dashboard（:8080）
-│     └─ 最优 IP 持久化到 /app/data/config.json 的 last_result_ip
-│                        │（同一目录，直接读）
-│                        ▼
-└─ 旁路 ddns-sidecar（本项目）
-      └─ 轮询 last_result_ip → 变化时推送到所选 DNS 服务商的 A 记录
-```
+同时我们加了一层保底：**内置 Cloudflare 官方地址段快照**，在本地随机采样生成候选，
+所以即使所有第三方数据源都挂了，测速依然能跑出结果，不会卡在「拉不到节点」。
 
-- 主体：基于 [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) 测速内核，GPL-3.0。
-- 旁路：独立 Go 容器，MIT 许可（见 `LICENSE`）；四家 DNS 服务商签名算法移植自 [jeessy2/ddns-go](https://github.com/jeessy2/ddns-go)（MIT），已保留版权声明。
-- 合规：旁路通过数据文件与主体耦合（聚合而非衍生），不修改主体源码，规避 GPL 传染；个人家庭内部使用不触发分发义务。详见 `docs/adr/0001-bypass-container-over-fork.md`。
+## 关于代理
 
-## 一、安装到飞牛 NAS（推荐）
+**测速必须直连，不能走代理。** 原因很简单：测的是「你家宽带 → Cloudflare 边缘」这条路的快慢，
+走代理测出来的是代理服务器的线路，对你没用。
 
-1. 到本仓库 **Releases** 下载 `cf-ddns-sidecar-<版本>.fpk`。
-2. 飞牛桌面 → **应用中心** → 右上角 **设置** → **手动安装应用** → 选择该 `.fpk`。
-3. 安装完成即可——首次启动会自动生成示例配置文件，旁路容器在配置完成前会**安全等待**（不会崩溃），日志提示缺什么。
+本程序已经强制直连（给测速引擎设了 `FORCE_DIRECT`，会清掉所有 `*_PROXY` 变量）。所以：
 
-### 安装后配置（关键，两处）
+- 你在**电脑上**开代理 → 不影响 NAS 里的测速；
+- 你在**NAS 上**设置了全局代理环境变量 → 也会被清掉，不影响；
+- 但如果你的**路由器**做了全局透明代理（所有流量强制走代理），测速结果就会失真，
+  这种情况需要给 NAS 单独放行直连。
 
-**方式一（推荐，不用碰文件）**：飞牛「应用中心 → 本应用 → **设置**」，两步表单填完保存即可：
+## 安装（飞牛 fnOS）
 
-1. 第一步**基本信息**：选域名服务商（Cloudflare / 阿里云 / 腾讯云 / 华为云）、填优选域名（如 `cf.example.com`）；
-2. 第二步**服务商密钥**：只填你选的那一家，其余留空（表单里每一项都写了去哪申请）。
+1. 到本仓库 **Releases** 下载 `cf-ddns-sidecar-<版本>.fpk`；
+2. 飞牛桌面 → **应用中心** → 右上角 **设置** → **手动安装应用** → 选择该文件；
+3. 装完桌面会出现「优选IP DDNS」图标，点开即是后台（也可以浏览器访问 `http://飞牛IP:8080`）。
 
-保存后会自动写入配置并重启应用，不需要手工编辑任何文件。
-以后再改也是同一个入口：**留空的项表示保持原样**，不会被清掉。
+**后台密码**：安装后点「应用中心 → 本应用 → 设置」自己设一个；不设的话，
+安装时会自动生成一个随机密码，存在数据目录的 `dashboard-password` 文件里。
 
-**方式二（高级，直接改文件）**：飞牛「文件管理」→ `cf-ddns-sidecar` 共享文件夹 → `data/ddns.env`，按示例注释填写。适合想批量改或做版本管理的人。
+安装向导里可以直接填**优选域名、服务商、测速间隔、各家密钥**，装完就能跑；
+之后随时在「应用中心 → 本应用 → 设置」里改，保存后自动重启生效。
+更细的项（AdGuard 地址、要加速的域名列表）在后台界面里配。
 
-配置项含义：
+## 配置（全在后台界面里）
 
-- `CFDDNS_PROVIDER`：`cloudflare` / `aliyun` / `dnspod` / `huawei` 四选一；
-- `CFDDNS_DOMAIN`：你的目标域名，如 `cf.example.com`；
-- 对应服务商的密钥（示例文件里有四家的注释模板，取消注释并填写即可）。
+打开后台，从上往下填：
 
-**配主体 Dashboard**：浏览器打开 `http://飞牛IP:8080`：
-   - 在「AdGuard Home 实例」添加你已装好的 AdGuard Home（地址 + 账号密码）；
-   - 在「域名」里添加要加速的域名（即套了 Cloudflare 的网站域名，可随时增删）；
-   - 触发一次「立即测速并写入」。
+1. **AdGuard Home**：地址（`http://192.168.1.2:3000`）+ 用户名 + 密码；
+2. **要加速的域名**：点「+ 添加域名」，填套了 Cloudflare 的网站域名（如 `openai.com`）；
+3. **测速设置**：自动测速间隔（默认 60 分钟，填 0 表示只在手动点时才测）；
+4. **域名解析（DDNS）**：勾上启用 → 选服务商 → 填优选域名 → 填密钥；
+5. 点「保存全部设置」，再点「立即测速」。
 
-> **Dashboard 登录密码**：在同一个「应用设置」表单里有一个「管理后台登录密码」项，自己设一个即可（保存后立即生效）。
-> 不设的话，安装时会自动生成一个随机密码存在 `cf-ddns-sidecar/data/dashboard-password` 里。
-> 高级用户可选：在 `data/` 下放 `config.yaml`（参照 `config.yaml.example`）覆盖默认轮询间隔等；不创建则纯用 ddns.env。
+密钥留空表示「不修改已保存的值」，所以改域名时不用重新填一遍密钥。
 
-## 二、本地 docker compose 部署（非 FPK）
+数据目录（飞牛「文件管理」→ `cf-ddns-sidecar` → `data`）：
+`config.json`（配置与状态）、`ddns.env`（密钥）、`dashboard-password`（后台密码）。
 
-```bash
-mkdir -p data
-cp .env.example data/ddns.env            # 填所选服务商密钥（程序直接读该文件）
-printf 'YourPassword' > data/dashboard-password   # Dashboard 登录密码，自定
-# 编辑 docker-compose.yml 的 DSA_ALLOWED_CIDRS 为你的局域网网段
-docker compose up -d
-```
+## 常见问题
 
-镜像可以自己构建：`docker build -t yourname/cf-ddns-sidecar:latest .`，
-并用环境变量 `SIDECAR_IMAGE` 指定。仅想跑旁路（不装 Dashboard）时：
-`docker build --target sidecar -t cf-ddns-sidecar:sidecar .`。
+| 现象 | 原因 / 处理 |
+|---|---|
+| 测速报「没有产出可用 IP」 | 极少见（已内置官方段保底）。若出现，多半是 NAS 完全没有外网出口，检查网络 |
+| 写了 AdGuard 但设备还是走老 IP | AdGuard 客户端缓存。在该设备上重连网络，或在 AdGuard 里清一下缓存 |
+| 域名解析报 403 / 401 | 密钥权限不足。Cloudflare 令牌需要「编辑区域 DNS」权限，Zone ID 要填对 |
+| 后台打不开 | 检查 `DSA_ALLOWED_CIDRS` 是否覆盖你所在网段（默认已含 10/172/192.168 内网段） |
+| 卸载后想彻底清干净 | 直接卸载即可：容器、镜像、数据目录都会删掉（v3 起已实现） |
 
-## 三、配置参考
-
-| 项 | 位置 | 说明 |
-|----|------|------|
-| 服务商类型 | `CFDDNS_PROVIDER` 或 `config.yaml` 的 `provider` | 四选一 |
-| 目标域名 | `CFDDNS_DOMAIN` 或 `config.yaml` 的 `domain` | 要写入 A 记录的域名（**当前支持 1 个**，见下方限制） |
-| 轮询间隔 | `CFDDNS_POLL_INTERVAL` | 秒，默认 30；非整数会直接报配置错误 |
-| API 密钥 | 环境变量（见 `.env.example` / ddns.env） | 不落盘到配置文件 |
-| 根域覆盖 | `ALIYUN_ROOT_DOMAIN` / `DNSPOD_ROOT_DOMAIN` | 仅多级公共后缀需要（如 `example.com.cn`），一般留空 |
-| 要加速的域名 | 主体 Dashboard「域名」 | 套 Cloudflare 的网站域名，可随时增删 |
-
-配置优先级：**进程环境变量 > `ddns.env` 文件 > `config.yaml` > 默认值**。
-
-> 为什么不用 compose 的 `env_file`：飞牛在**安装阶段**就会校验 `env_file` 指向的文件是否存在，而该文件要等应用首次启动才生成，会导致安装直接失败。因此程序自身读取挂载目录内的 `ddns.env`，不依赖 compose 注入。
-
-### 已知限制
-
-- **目标域名当前仅支持 1 个**：DDNS 只维护单个优选域名的 A 记录；需要多个优选域名时，可用不同 `domain` 部署第二个旁路实例。
-- **同名多 A 记录只更新第一条**：若目标域名在服务商处已存在多条同名 A 记录（历史残留），仅第一条会被更新，建议手工清理只留一条。
-- **接缝字段**：旁路读取主体 `config.json` 的 `last_result_ip` 键（已对照 cf-dns-select 源码核实一致）；主体大版本升级若改动该字段，需同步适配。
-
-## 四、如何确认部署成功（验收口径）
-
-按顺序核对四步，全部通过即部署成功：
-
-1. **容器状态**：飞牛「应用中心 → 本应用 → 详情」，只有一个容器 `cf-ddns-sidecar`，状态为**运行中**；日志开头有 `cf-ddns-sidecar vX.Y.Z 启动中`（版本号）。
-2. **测速成功**：主体 Dashboard（`http://飞牛IP:8080`）能看到最新测速结果与最优 IP；或 `docker logs cf-ddns-sidecar` 查看测速日志。
-3. **DDNS 已更新**：`docker logs cf-ddns-sidecar` 出现 `[成功] cf.example.com 的 A 记录已更新为 x.x.x.x（服务商名）`；或到服务商 DNS 控制台确认 A 记录值。命令行验证：`nslookup cf.example.com`（或 `dig cf.example.com +short`）应返回最优 IP。
-4. **AdGuard 重写生效**：AdGuard Home 管理界面 → 「过滤器 → DNS 重写」能看到主体写入的优选规则（被加速域名 → 最优 IP）；局域网设备 `nslookup 被加速域名` 返回优选 IP 即生效。
-
-常见问题速查：
-
-| 现象 | 含义 | 处理 |
-|------|------|------|
-| 旁路日志反复 `[等待] 配置未就绪` | ddns.env 未填完 | 按提示补全后重启应用 |
-| 旁路日志 `[错误] 更新 ... 失败` 且 `（下一轮自动重试）` | 服务商 API 报错 | 看具体错误（密钥错误/权限不足），修正后自动恢复 |
-| 旁路日志 `[等待] 主体尚无最优 IP` | 主体还没完成第一次测速 | 到主体 Dashboard 触发测速，或等定时任务 |
-| 健康检查 `curl 飞牛IP:18080/healthz` 返回 503 | 上一轮推送失败 | 查旁路日志定位服务商报错 |
-| 桌面图标不见了 | 飞牛未注册到应用入口 | 确认装的是 v1.1.0 及以上（manifest 已补 `service_port`）；或直接浏览器访问 `http://飞牛IP:8080` |
-| 打不开 8080 后台 | 服务未起来 | 看容器日志：若提示「允许来源网段」，说明 `DSA_ALLOWED_CIDRS` 未覆盖你的网段 |
-
-## 五、开发者：构建与发布
-
-### 本地验证
+## 开发者
 
 ```bash
-go test ./...              # 单元测试（需 Go 1.22+）
-docker compose config      # 校验编排
+docker build -t cf-ddns-sidecar:dev .
+docker run --rm -p 8080:8080 -v $PWD/data:/app/data cf-ddns-sidecar:dev
 ```
 
-### 本地多架构构建（可选）
-
-```bash
-DOCKERHUB_REPO=yourname/cf-ddns-sidecar IMAGE_TAG=v1.0.0 ./scripts/build-multiarch.sh
-# 加 PUSH=1 同时推送到 DockerHub（需先 docker login）
-```
-
-### 发布流程（自动化）
-
-1. 在 GitHub 仓库 Settings → Secrets 添加：
-   - `DOCKERHUB_USERNAME`：DockerHub 用户名；
-   - `DOCKERHUB_TOKEN`：DockerHub Access Token。
-2. （可选）Settings → Variables 添加 `FNPACK_URL`：飞牛官方 `fnpack` 的 linux-amd64 直链（未设置时用内置默认地址，若 404 需设置此项）。
-3. 打 tag 并推送：`git tag v1.0.0 && git push origin v1.0.0`。
-4. GitHub Actions 自动：构建 amd64/arm64 镜像推 DockerHub → 用 fnpack 打 FPK → 创建 Release，**仅上传 `.fpk`**。
-   也可在 Actions 页面手动触发（workflow_dispatch），输入版本号即可。
-
-> 手动打 FPK：见 `scripts/build_fpk.py` 顶部注释。需先备好 `fnpack` 二进制（[飞牛开发者中心](https://developer.fnnas.com/)）。
-
-### 架构说明
-
-- Docker 镜像：`linux/amd64` + `linux/arm64` 双架构。
-- 飞牛 FPK：当前飞牛第三方应用仅支持 x86_64（manifest `arch=x86_64`）；ARM 设备可直接使用双架构 Docker 镜像通过 compose 部署。
-
-## 六、项目结构
+目录结构：
 
 ```
-cf-ddns-sidecar/
-├── main.go, config/, provider/, sidecar/   # Go 源码 + 测试
-├── entrypoint.sh                           # 单容器双进程启动入口
-├── Dockerfile, docker-compose.yml          # 容器构建与编排
-├── config.yaml.example, .env.example       # 配置示例
-├── fpk/template/                           # 飞牛 FPK 模板
-├── scripts/                                # FPK 打包 / 图标 / 多架构构建
-├── docs/adr/0001-*.md                      # 架构决策记录
-├── LICENSE                                 # MIT
-└── .github/workflows/release.yml           # CI/CD
+├── main.go              入口
+├── config/              统一配置（config.json + ddns.env）
+├── engine/              测速引擎调用（封装 cfnb）
+├── dns/                 AdGuard Home 写入
+├── ddns/                四家 DNS 服务商适配
+├── web/                 后台服务 + 单页前端（go:embed，无需 Node 构建）
+├── third_party/cfnb/    测速引擎（MIT，含一处本地补丁）
+└── fpk/                 飞牛 FPK 打包模板
 ```
 
-## 七、参考与致谢
+发布：打 tag 推送（`git tag v3.0.0 && git push origin v3.0.0`），
+GitHub Actions 自动构建 amd64/arm64 镜像推 DockerHub，并用 fnpack 打出 `.fpk` 传到 Release。
 
-- 测速内核：[XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)
-- 主体方案：[neon9809/cf-dns-select](https://github.com/neon9809/cf-dns-select)
-- 签名实现：[jeessy2/ddns-go](https://github.com/jeessy2/ddns-go)（MIT）
-- 测速思路参考：[xinyitang3/cfnb](https://github.com/xinyitang3/cfnb)（MIT，多源聚合与反代验证思路；因仅支持 Cloudflare DDNS、无 AdGuard 写入、非 Docker 部署，未作为主体采用）
-- FPK 打包参考：[jiaja0502/nowen-note](https://github.com/jiaja0502/nowen-note) 的 fpk 脚本结构
+## 许可证与致谢
 
-> 免责声明：本工具仅供个人学习与家庭内部使用，请遵守各服务商 API 条款与相关法律法规。
+本项目以 **GPL-3.0** 发布（见 `LICENSE`）。
+
+- AdGuard Home 写入能力取自 [neon9809/cf-dns-select](https://github.com/neon9809/cf-dns-select)（GPL-3.0），
+  其原始许可证保留在 `LICENSE.UPSTREAM`。本项目的界面、配置层、DDNS 集成与测速引擎封装为后加部分，
+  一并按 GPL-3.0 开源。
+- 测速引擎：[xinyitang3/cfnb](https://github.com/xinyitang3/cfnb)（MIT），原始许可证见 `third_party/cfnb/LICENSE`。
+  对其 `main.py` 打了一处补丁：支持只有纯 IP 列表的聚合源（见文件内注释）。
+- 测速思路参考：[XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest)。
+- DDNS 签名实现参考：[jeessy2/ddns-go](https://github.com/jeessy2/ddns-go)（MIT）。
+
+> 免责声明：本工具仅供个人学习与家庭内使用，请遵守各服务商 API 条款与相关法律法规。

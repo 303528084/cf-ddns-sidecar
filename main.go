@@ -1,53 +1,155 @@
+// cf-ddns-sidecar —— 一个容器搞定：Cloudflare 优选 IP + AdGuard Home 重写 + 域名解析（DDNS）
+//
+// 测速引擎复用 xinyitang3/cfnb（MIT），本程序负责统一配置、写入 AdGuard Home、
+// 推送四家 DNS 服务商，以及一个统一的后台界面。
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"time"
 
-	"github.com/stone/cf-ddns-sidecar/config"
-	"github.com/stone/cf-ddns-sidecar/provider"
-	"github.com/stone/cf-ddns-sidecar/sidecar"
+	"github.com/303528084/cf-ddns-sidecar/config"
+	"github.com/303528084/cf-ddns-sidecar/web"
 )
 
-// version 由构建时注入：-ldflags "-X main.version=v1.0.0"
 var version = "dev"
 
 func main() {
-	// 统一日志流：所有阶段（含下面的 Fatal 与 Runner 内日志）都走 stdout，
-	// 便于容器日志采集。
-	log.SetOutput(os.Stdout)
+	web.SetVersion(version)
 
-	configPath := flag.String("c", "/app/config.yaml", "配置文件路径")
+	var (
+		listen   string
+		printVer bool
+		runOnce  bool
+	)
+	flag.StringVar(&listen, "listen", ":8080", "后台监听地址")
+	flag.BoolVar(&runOnce, "once", false, "只跑一次测速并写入后退出（可用于 cron）")
+	flag.BoolVar(&printVer, "v", false, "打印版本")
 	flag.Parse()
 
-	log.Printf("cf-ddns-sidecar %s 启动中", version)
+	if printVer {
+		fmt.Println("cf-ddns-sidecar " + version)
+		return
+	}
 
-	// 配置未就绪（用户尚未填写 ddns.env / config.yaml）时等待重试，
-	// 而不是崩溃进入重启循环——首次安装体验：日志会持续提示缺什么。
-	var cfg *config.Config
-	for {
-		c, err := config.Load(*configPath)
-		if err == nil {
-			cfg = c
-			break
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("加载配置失败: %v", err)
+	}
+
+	// 用户在飞牛「应用设置」里改过域名/服务商/间隔：把一次性覆盖落盘并清标记，
+	// 之后仍以后台界面为准，避免两边互相覆盖。
+	if cfg.PendingSave {
+		if err := cfg.Save(); err != nil {
+			log.Printf("[警告] 保存安装向导配置失败: %v", err)
+		} else if err := config.UpdateEnvFile(config.EnvFilePath(),
+			map[string]string{"CFDDNS_APPLY_ENV": "0"}); err != nil {
+			log.Printf("[警告] 清理配置覆盖标记失败: %v", err)
 		}
-		log.Printf("[等待] 配置未就绪: %v（10 秒后重试；请填写 ddns.env 并重启应用）", err)
-		time.Sleep(10 * time.Second)
 	}
 
-	p, err := provider.New(cfg.Provider, cfg.Domain, cfg.Credentials)
+	// 配置文件路径：默认与 ddns.env 同目录的 config.json
+	configDir := filepath.Dir(config.EnvFilePath())
+	configPath := filepath.Join(configDir, "config.json")
+	if p := os.Getenv("CFDDNS_CONFIG"); p != "" {
+		configPath = p
+		configDir = filepath.Dir(p)
+	}
+
+	enginePath := os.Getenv("CFDDNS_ENGINE")
+	if enginePath == "" {
+		enginePath = "/app/cfnb/main.py"
+	}
+	workDir := os.Getenv("CFDDNS_WORKDIR")
+	if workDir == "" {
+		workDir = filepath.Join(configDir, "cfnb")
+	}
+
+	password := os.Getenv("DSA_PASSWORD")
+	if password == "" {
+		// 优先读安装时生成的固定密码，避免每次重启都换
+		if b, err := os.ReadFile(filepath.Join(configDir, "dashboard-password")); err == nil {
+			password = string(b)
+		}
+	}
+
+	srv := web.New(cfg, configPath, enginePath, workDir, password, selfURL(listen), mustCIDRs())
+
+	if runOnce {
+		if err := srv.RunOnce(); err != nil {
+			log.Fatalf("测速失败: %v", err)
+		}
+		return
+	}
+
+	if password == "" {
+		fmt.Println("[提示] 未设置后台密码，后台将不校验登录。可在「应用设置」里设置管理密码。")
+	}
+
+	srv.StartScheduler()
+
+	httpServer := &http.Server{
+		Addr:              listen,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	fmt.Printf("\n==============================================\n")
+	fmt.Printf("  cf-ddns-sidecar %s\n", version)
+	fmt.Printf("  后台地址: http://<本机IP>%s/\n", listen)
+	fmt.Printf("  允许来源网段: %s\n", os.Getenv("DSA_ALLOWED_CIDRS"))
+	fmt.Printf("==============================================\n\n")
+
+	done := make(chan struct{})
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		<-sig
+		fmt.Println("\n收到退出信号，正在关闭…")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(ctx)
+		close(done)
+	}()
+
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("后台服务启动失败: %v", err)
+	}
+	<-done
+	fmt.Println("已退出。")
+}
+
+// mustCIDRs 解析来源网段；配置非法时拒绝启动（避免后台意外暴露到公网）。
+func mustCIDRs() []*net.IPNet {
+	cidrs, err := web.ParseCIDRs(os.Getenv("DSA_ALLOWED_CIDRS"))
 	if err != nil {
-		log.Fatalf("初始化服务商失败: %v", err)
+		log.Fatalf("[安全门禁] %v", err)
 	}
+	return cidrs
+}
 
-	runner, err := sidecar.NewRunner(cfg, p)
+// selfURL 把监听地址转成本机可访问的 URL，供测速引擎拉候选列表。
+// ":8080" / "0.0.0.0:8080" 都转成 http://127.0.0.1:8080。
+func selfURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		log.Fatalf("初始化运行器失败: %v", err)
+		return "http://127.0.0.1:8080"
 	}
-
-	if err := runner.Run(); err != nil {
-		log.Fatalf("运行失败: %v", err)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
 	}
+	return "http://" + net.JoinHostPort(host, port)
 }

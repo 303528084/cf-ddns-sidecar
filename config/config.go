@@ -1,178 +1,231 @@
-// Package config 加载旁路容器的配置：config.yaml 提供非敏感项，
-// 密钥类信息从环境变量注入（名字由 config.yaml 的 env 字段指定），不落盘。
+// Package config 定义本应用的统一配置。
+//
+// 设计原则：用户只需要在一个界面里看到「AdGuard 在哪」「要加速哪些域名」
+// 「测速怎么跑」「域名解析推给谁」四件事，其余参数一概不暴露。
 package config
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
-
-	"gopkg.in/yaml.v3"
+	"sync"
 )
 
-// Config 是旁路容器的完整运行配置。
+// AdguardInstance 是 dns 包需要的实例描述（保留该类型以复用 AdGuard 客户端）。
+type AdguardInstance struct {
+	Name     string `json:"name"`
+	Type     string `json:"type,omitempty"`
+	URL      string `json:"url"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// AdGuardConfig 描述局域网里的 AdGuard Home（界面上只有一组）。
+type AdGuardConfig struct {
+	URL      string `json:"url"`      // 例如 http://192.168.1.2:3000
+	Username string `json:"username"` // 用户名
+	Password string `json:"password"` // 密码
+}
+
+// Instance 把界面上的单一 AdGuard 配置转成 dns 包需要的实例结构。
+func (a AdGuardConfig) Instance() AdguardInstance {
+	return AdguardInstance{
+		Name:     "AdGuard Home",
+		Type:     "adguard",
+		URL:      a.URL,
+		Username: a.Username,
+		Password: a.Password,
+	}
+}
+
+// SpeedConfig 描述测速行为（映射到测速引擎 cfnb 的参数）。
+type SpeedConfig struct {
+	IntervalMinutes     int `json:"interval_minutes"`     // 自动测速间隔（分钟），0 表示不自动测
+	TopN                int `json:"top_n"`                // 最终保留的候选 IP 数量
+	BandwidthCandidates int `json:"bandwidth_candidates"` // 进入带宽测速的候选数
+}
+
+// DDNSConfig 描述把最优 IP 写到自有域名解析记录的行为。
+// 密钥不在此结构中（单独存 ddns.env，便于用户用文本编辑器批量改）。
+type DDNSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"` // cloudflare / aliyun / dnspod / huawei
+	Domain   string `json:"domain"`   // 目标域名，如 cf.example.com
+}
+
+// Config 是全部配置，持久化为 config.json。
 type Config struct {
-	// Provider 服务商类型：cloudflare / aliyun / dnspod / huawei
-	Provider string `yaml:"provider"`
+	AdGuard AdGuardConfig `json:"adguard"`
+	Domains []string      `json:"domains"` // 要写入 AdGuard 重写的域名列表
+	Speed   SpeedConfig   `json:"speed"`
+	DDNS    DDNSConfig    `json:"ddns"`
 
-	// Domain 目标域名（可为子域名，如 cf.example.com）
-	Domain string `yaml:"domain"`
+	// 运行状态（持久化便于重启后回显）
+	LastIP   string `json:"last_ip,omitempty"`
+	LastTime string `json:"last_time,omitempty"`
 
-	// PollIntervalSeconds 轮询最优 IP 的间隔秒数，<=0 使用默认 30
-	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
-
-	// SubjectConfigPath 主体容器 config.json 在旁路容器内的挂载路径
-	SubjectConfigPath string `yaml:"subject_config_path"`
-
-	// StatePath 本容器状态文件路径（记录上次成功推送的 IP）
-	StatePath string `yaml:"state_path"`
-
-	// Listen 健康检查监听地址，如 :8080
-	Listen string `yaml:"listen"`
-
-	// Credentials 从环境变量读取的密钥（键名由各 Provider 决定）
-	Credentials map[string]string `yaml:"-"`
+	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
+	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
+	PendingSave bool `json:"-"`
 }
 
-// 各服务商需要的环境变量名。
-var requiredEnvByProvider = map[string][]string{
-	"cloudflare": {"CF_API_TOKEN", "CF_ZONE_ID"},
-	"aliyun":     {"ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET"},
-	"dnspod":     {"TENCENT_SECRET_ID", "TENCENT_SECRET_KEY"},
-	"huawei":     {"HUAWEI_AK", "HUAWEI_SK", "HUAWEI_ZONE_ID"},
+var (
+	cfgPath     = "/app/data/config.json"
+	cfgPathOnce sync.Once
+	mu          sync.Mutex
+)
+
+// resolvePath 返回配置文件路径，可用 CFDDNS_CONFIG 环境变量覆盖。
+func resolvePath() string {
+	cfgPathOnce.Do(func() {
+		if p := os.Getenv("CFDDNS_CONFIG"); p != "" {
+			cfgPath = p
+		}
+	})
+	return cfgPath
 }
 
-// 各服务商可选的环境变量名（设置则覆盖默认的根域推断）。
-var optionalEnvByProvider = map[string][]string{
-	"aliyun": {"ALIYUN_ROOT_DOMAIN"},
-	"dnspod": {"DNSPOD_ROOT_DOMAIN"},
+// Default 返回带合理默认值的配置。
+func Default() *Config {
+	return &Config{
+		Domains: []string{},
+		Speed: SpeedConfig{
+			IntervalMinutes:     60,
+			TopN:                5,
+			BandwidthCandidates: 100,
+		},
+		DDNS: DDNSConfig{Enabled: false, Provider: "cloudflare"},
+	}
 }
 
-// DefaultEnvFile 是容器内默认的 KEY=VALUE 配置文件路径。
-// 由宿主机共享目录挂载而来（见 docker-compose），用户直接编辑该文件即可配置。
-const DefaultEnvFile = "/app/data/ddns.env"
+// Load 从磁盘加载配置；文件不存在时返回默认配置（不报错，首次启动即如此）。
+//
+// 两种情况下会从 ddns.env / 进程环境取值：
+//  1. 首次启动（config.json 还不存在）——用安装向导填的域名、服务商、间隔打底；
+//  2. ddns.env 里带 CFDDNS_APPLY_ENV=1——表示用户在「应用设置」里刚改过，
+//     需要一次性覆盖已有配置（应用后由调用方清掉标记）。
+//
+// 除此之外 config.json 就是唯一真相，后台界面改了就以它为准。
+func Load() (*Config, error) {
+	c := Default()
+	data, err := os.ReadFile(resolvePath())
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, c); err != nil {
+			return nil, err
+		}
+		// 用户在飞牛「应用设置」里保存过：一次性覆盖
+		if kv := LoadEnvFile(EnvFilePath()); envOrFile(kv, "CFDDNS_APPLY_ENV") == "1" {
+			seedFromEnvFile(c, kv)
+			c.PendingSave = true
+		}
+	case os.IsNotExist(err):
+		seedFromEnvFile(c, LoadEnvFile(EnvFilePath()))
+	default:
+		return nil, err
+	}
+	if c.Domains == nil {
+		c.Domains = []string{}
+	}
+	// 校正非法值，避免用户手改配置后行为诡异
+	if c.Speed.IntervalMinutes < 0 {
+		c.Speed.IntervalMinutes = 0
+	}
+	if c.Speed.TopN <= 0 {
+		c.Speed.TopN = 5
+	}
+	if c.Speed.BandwidthCandidates <= 0 {
+		c.Speed.BandwidthCandidates = 100
+	}
+	if c.DDNS.Provider == "" {
+		c.DDNS.Provider = "cloudflare"
+	}
+	return c, nil
+}
 
-// LoadEnvFile 读取 KEY=VALUE 形式的配置文件（如 ddns.env）。
-// 支持 # 注释、空行、值两侧引号与 CRLF；文件不存在时返回空表而不报错，
-// 因为 compose 挂载目录在首次启动前可能还没有该文件。
-func LoadEnvFile(path string) map[string]string {
-	kv := make(map[string]string)
-	data, err := os.ReadFile(path)
+// seedFromEnvFile 用安装向导写进 ddns.env 的值给配置打底。
+func seedFromEnvFile(c *Config, kv map[string]string) {
+	if p := envOrFile(kv, "CFDDNS_PROVIDER"); p != "" {
+		p = strings.ToLower(p)
+		if _, ok := RequiredEnvByProvider[p]; ok {
+			c.DDNS.Provider = p
+		}
+	}
+	if d := envOrFile(kv, "CFDDNS_DOMAIN"); d != "" {
+		if v := NormalizeDomain(d); v != "" {
+			c.DDNS.Domain = v
+			c.DDNS.Enabled = true
+		}
+	}
+	if n := envOrFile(kv, "CFDDNS_INTERVAL_MINUTES"); n != "" {
+		if v, err := strconv.Atoi(n); err == nil && v >= 0 {
+			c.Speed.IntervalMinutes = v
+		}
+	}
+}
+
+// envOrFile 读一个值：进程环境变量优先，其次 ddns.env 文件。
+func envOrFile(kv map[string]string, name string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(kv[name])
+}
+
+// NormalizeDomain 把用户可能粘贴进来的 "https://a.com/x" 归一化成 "a.com"。
+func NormalizeDomain(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSuffix(s, ".")
+	return s
+}
+
+// Save 原子写回磁盘。
+func (c *Config) Save() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return kv
+		return err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		val = strings.Trim(strings.TrimSpace(val), `"'`)
-		if key != "" {
-			kv[key] = val
-		}
+	p := resolvePath()
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
 	}
-	return kv
-}
-
-// Load 从 YAML 文件读取配置（文件不存在时允许纯环境变量配置），
-// 补齐默认值、用环境变量覆盖关键项、并注入密钥。
-// 优先级：进程环境变量 > ddns.env 文件 > config.yaml > 默认值。
-// 之所以不依赖 compose 的 env_file：飞牛在安装阶段就会校验 env_file 是否存在，
-// 而该文件要等应用首次启动才生成，会导致安装直接失败。
-func Load(path string) (*Config, error) {
-	var c Config
-	data, err := os.ReadFile(path)
+	tmp, err := os.CreateTemp(dir, ".cfddns-*")
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
-		}
-	} else if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
+		return err
 	}
-
-	envFile := strings.TrimSpace(os.Getenv("CFDDNS_ENV_FILE"))
-	if envFile == "" {
-		envFile = DefaultEnvFile
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
 	}
-	fileEnv := LoadEnvFile(envFile)
-	// getenv：进程环境优先，其次读 ddns.env，缺省返回空串。
-	getenv := func(name string) string {
-		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-			return v
-		}
-		return fileEnv[name]
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
 	}
-
-	// 环境变量/配置文件覆盖（CFDDNS_ 前缀避免与其它工具冲突）
-	if v := getenv("CFDDNS_PROVIDER"); v != "" {
-		c.Provider = v
+	if err := tmp.Close(); err != nil {
+		return err
 	}
-	if v := getenv("CFDDNS_DOMAIN"); v != "" {
-		c.Domain = v
+	if err := os.Chmod(name, 0o600); err != nil {
+		return err
 	}
-	if v := getenv("CFDDNS_SUBJECT_CONFIG_PATH"); v != "" {
-		c.SubjectConfigPath = v
-	}
-	if v := getenv("CFDDNS_STATE_PATH"); v != "" {
-		c.StatePath = v
-	}
-	if v := getenv("CFDDNS_LISTEN"); v != "" {
-		c.Listen = v
-	}
-	if v := getenv("CFDDNS_POLL_INTERVAL"); v != "" {
-		n, e := strconv.Atoi(v)
-		if e != nil {
-			return nil, fmt.Errorf("CFDDNS_POLL_INTERVAL=%q 不是整数: %w", v, e)
-		}
-		c.PollIntervalSeconds = n
-	}
-
-	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
-	if _, ok := requiredEnvByProvider[c.Provider]; !ok {
-		return nil, fmt.Errorf("不支持的 provider %q（可选: cloudflare/aliyun/dnspod/huawei）", c.Provider)
-	}
-	c.Domain = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(c.Domain), ".")))
-	if c.Domain == "" {
-		return nil, fmt.Errorf("domain 不能为空")
-	}
-	if c.PollIntervalSeconds <= 0 {
-		c.PollIntervalSeconds = 30
-	}
-	if strings.TrimSpace(c.SubjectConfigPath) == "" {
-		c.SubjectConfigPath = "/app/subject/config.json"
-	}
-	if strings.TrimSpace(c.StatePath) == "" {
-		c.StatePath = "/app/data/state.json"
-	}
-	if strings.TrimSpace(c.Listen) == "" {
-		c.Listen = ":8080"
-	}
-
-	c.Credentials = make(map[string]string)
-	for _, name := range requiredEnvByProvider[c.Provider] {
-		val := getenv(name)
-		if strings.TrimSpace(val) == "" {
-			return nil, fmt.Errorf("缺少配置项 %s（provider=%s）：请在 %s 中填写，或检查该文件是否存在",
-				name, c.Provider, envFile)
-		}
-		c.Credentials[name] = val
-	}
-	for _, name := range optionalEnvByProvider[c.Provider] {
-		if val := getenv(name); val != "" {
-			c.Credentials[name] = val
-		}
-	}
-	return &c, nil
+	return os.Rename(name, p)
 }
 
-// PollInterval 返回轮询间隔的 time.Duration。
-func (c *Config) PollInterval() time.Duration {
-	return time.Duration(c.PollIntervalSeconds) * time.Second
+// Clone 深拷贝，供并发读快照。
+func (c *Config) Clone() Config {
+	cp := *c
+	cp.Domains = append([]string(nil), c.Domains...)
+	return cp
 }

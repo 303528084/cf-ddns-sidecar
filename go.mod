@@ -1,5 +1,3 @@
-module github.com/stone/cf-ddns-sidecar
+module github.com/303528084/cf-ddns-sidecar
 
 go 1.22
-
-require gopkg.in/yaml.v3 v3.0.1

@@ -1,22 +1,27 @@
 # 本地开发 / 自定义部署用编排（非飞牛）
 # 飞牛用户推荐直接用 .fpk 安装（内部已内置等价 compose）。
 #
-# 单容器架构：主体（测速 + AdGuard Home + Dashboard）与旁路（推送 DDNS）
-# 在同一容器内并行运行，共用一个数据目录。
+# v3.0.0 起是单容器单体程序：测速（cfnb 引擎）+ 写入 AdGuard Home
+# + 推送四家 DNS 服务商 + 统一后台界面，全部在一个进程、一个端口、一个数据目录里。
+#
+# 首次启动后浏览器打开 http://<本机IP>:8080 ，所有配置都在界面里填，
+# 不需要手工编辑任何文件。
 services:
   cf-ddns-sidecar:
     # 自建镜像：docker build -t yourname/cf-ddns-sidecar:latest .
     image: ${SIDECAR_IMAGE:-your-dockerhub-username/cf-ddns-sidecar:latest}
     container_name: cf-ddns-sidecar
     restart: unless-stopped
-    # 用 host 网络：Dashboard 的来源 IP 才是真实局域网 IP，CIDR 白名单才能生效
+    # 用 host 网络：后台看到的来源 IP 才是真实局域网 IP，CIDR 白名单才能生效；
+    # 同时避免测速引擎受 NAT 影响。
     network_mode: host
     environment:
-      DSA_ALLOWED_CIDRS: "192.168.0.0/23"   # 改成你的局域网网段
-      DSA_COLO_IP_DB: /app/data/colo_ip_db.json
       TZ: Asia/Shanghai
-      CFDDNS_LISTEN: ":18080"               # 旁路健康检查端口，避开主体的 8080
+      # 允许访问后台的来源网段，逗号分隔。默认放开三段内网。
+      DSA_ALLOWED_CIDRS: "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
+      # 后台登录密码。留空则读数据目录下的 dashboard-password 文件；
+      # 两者都没有就不校验登录（仅适合完全可信的内网）。
+      # DSA_PASSWORD: "改成你自己的密码"
     volumes:
-      # 一个目录装下所有数据：主体的 config.json / colo_ip_db.json、
-      # 旁路的 ddns.env / state.json / dashboard-password
+      # 一个目录装下全部：config.json、ddns.env、dashboard-password、测速工作目录
       - ./data:/app/data
