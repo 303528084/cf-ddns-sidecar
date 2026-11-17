@@ -106,6 +106,82 @@ func TestWriteCfnbConfigBuiltinSources(t *testing.T) {
 	})
 }
 
+// TestWriteCfnbConfigOutputsQuality 输出开关必须是打开的。
+//
+// 界面上的「速度 15.09 Mbps / 延迟 84.71 ms」全部来自 ip.txt 这两列。
+// 一旦有人把开关改回 false，界面不会报错、也不会变空白——它会显示一排「—」，
+// 看起来像「这次测速没量到」，实际上是我们自己把数据扔了。这种「静默降级」
+// 只能靠测试挡住。
+func TestWriteCfnbConfigOutputsQuality(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := writeCfnbConfig(p, Options{UseBuiltinSources: true}); err != nil {
+		t.Fatalf("写配置失败: %v", err)
+	}
+	raw, _ := os.ReadFile(p)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("配置不是合法 JSON: %v", err)
+	}
+	for _, k := range []string{"IP_TXT_SHOW_BANDWIDTH", "IP_TXT_SHOW_LATENCY"} {
+		if v, _ := m[k].(bool); !v {
+			t.Errorf("%s 必须为 true，否则界面拿不到速度/延迟", k)
+		}
+	}
+	// HTTP 延迟要额外开 HTTP_LATENCY_ENABLED（多一轮请求、还会改变排序），
+	// 本产品不开，所以这两项必须保持 false——打开就是白让引擎多跑一遍。
+	for _, k := range []string{"IP_TXT_SHOW_HTTP_LATENCY", "IP_TXT_SHOW_HTTP_JITTER"} {
+		if v, _ := m[k].(bool); v {
+			t.Errorf("%s 必须为 false", k)
+		}
+	}
+}
+
+// TestParseOutputQuality 解析 ip.txt 的各种行形。
+//
+// 行形由 cfnb 的 write_ip_txt 决定，随着「哪些开关打开」而变：
+// 带宽测速整轮失败时它会降级成按 TCP 排序，那时行里只有延迟没有速度。
+// 解析器必须容忍这几种，否则一次降级就会让整批 IP 都读不出来。
+func TestParseOutputQuality(t *testing.T) {
+	const content = `
+# 这是注释，要跳过
+172.64.229.246:443#US 15.09 Mbps 45.23 ms
+104.16.0.87:443#US 45.23 ms
+162.159.5.114:443#US
+172.64.229.246:443#US 9.99 Mbps 1.11 ms
+不是IP的一行 12.5 Mbps
+`
+	p := filepath.Join(t.TempDir(), "ip.txt")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("写文件失败: %v", err)
+	}
+
+	ips, nodes, err := parseOutput(p)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	wantIPs := []string{"172.64.229.246", "104.16.0.87", "162.159.5.114"}
+	if !eq(ips, wantIPs) {
+		t.Fatalf("IP 列表应为 %v，实际 %v", wantIPs, ips)
+	}
+	if len(nodes) != len(ips) {
+		t.Fatalf("节点数应与 IP 数一致：%d vs %d", len(nodes), len(ips))
+	}
+
+	if nodes[0].Speed != 15.09 || nodes[0].Delay != 45.23 {
+		t.Errorf("第 1 条应为 15.09Mbps/45.23ms，实际 %+v", nodes[0])
+	}
+	if nodes[1].Speed != 0 || nodes[1].Delay != 45.23 {
+		t.Errorf("第 2 条只该有延迟 45.23，实际 %+v", nodes[1])
+	}
+	if nodes[2].Speed != 0 || nodes[2].Delay != 0 {
+		t.Errorf("第 3 条什么都没有，不该凭空补数，实际 %+v", nodes[2])
+	}
+	// 重复的 IP 只保留第一次出现的那条（速度 15.09，不是后面那行 9.99）。
+	if nodes[0].IP != "172.64.229.246" {
+		t.Errorf("重复 IP 应保留第一条，实际 %+v", nodes[0])
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

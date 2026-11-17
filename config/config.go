@@ -86,6 +86,22 @@ func (d DDNSConfig) EffectiveIPCount() int {
 	return d.IPCount
 }
 
+// NodeStat 是「上次测速里每个 IP 的质量数据」，只用于界面展示。
+//
+// 为什么要落盘：这几个数字是测速现算的，不在任何接口里，重启就没了。
+// 而用户升级 App、重启容器的频率远高于他跑测速的频率——不存下来，
+// 打开页面看到的就是一排「—」，反而像坏了。
+//
+// 全部字段都可省略：老配置文件里没有这一项，读进来是空切片，
+// 界面就按「只有 IP、没有质量数据」渲染，和以前一样。
+type NodeStat struct {
+	IP    string  `json:"ip"`
+	Speed float64 `json:"speed,omitempty"` // Mbps，0 表示这轮没测到
+	Delay float64 `json:"delay,omitempty"` // 毫秒，0 表示这轮没测到
+	Colo  string  `json:"colo,omitempty"`  // 真实机房代码，如 NRT
+	Place string  `json:"place,omitempty"` // 「日本·东京(NRT)」，查不到机房时为空
+}
+
 // Config 是全部配置，持久化为 config.json。
 type Config struct {
 	AdGuard AdGuardConfig `json:"adguard"`
@@ -100,6 +116,9 @@ type Config struct {
 	// 重启之后点「立即更新一次」还能把同一组推回去，不用重新测速；
 	// 只存 LastIP 的话，重启后那一下会把多出来的几条悄悄删掉。
 	LastIPs []string `json:"last_ips,omitempty"`
+	// LastNodes 与 LastIPs 一一对应，多带速度、延迟、机房。
+	// 只给界面看，不参与任何推送逻辑——推送认的仍然是 LastIPs。
+	LastNodes []NodeStat `json:"last_nodes,omitempty"`
 
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
 	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
@@ -337,6 +356,10 @@ func (c *Config) Clone() Config {
 	// 就意味着一个 goroutine 在读、另一个在改，属于最难查的那种问题。
 	if len(c.LastIPs) > 0 {
 		cp.LastIPs = append(make([]string, 0, len(c.LastIPs)), c.LastIPs...)
+	}
+	// LastNodes 和 LastIPs 一样是「测速线程写、状态接口读」，必须各存一份。
+	if len(c.LastNodes) > 0 {
+		cp.LastNodes = append(make([]NodeStat, 0, len(c.LastNodes)), c.LastNodes...)
 	}
 	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
 	if len(c.Speed.ExtraSources) > 0 {

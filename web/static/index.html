@@ -11,353 +11,672 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzI1NjNlYicvPjxwYXRoIGQ9J00xOC40IDQgOCAxOC42aDYuMkwxMi44IDI4IDI0IDEzLjJoLTYuNHonIGZpbGw9JyNmZmYnLz48L3N2Zz4=">
 <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzI1NjNlYicvPjxwYXRoIGQ9J00xOC40IDQgOCAxOC42aDYuMkwxMi44IDI4IDI0IDEzLjJoLTYuNHonIGZpbGw9JyNmZmYnLz48L3N2Zz4=">
 <style>
-  :root {
-    --bg: #f5f6f8;
-    --card: #ffffff;
-    --text: #1c1f23;
-    --muted: #6b7280;
-    --line: #e5e7eb;
-    --accent: #2563eb;
-    --accent-soft: #eff4ff;
-    --ok: #16a34a;
-    --warn: #d97706;
-    --err: #dc2626;
+  :root{
+    --bg:#f7f8fa; --card:#fff; --text:#14181f; --muted:#6a7482; --dim:#98a2b0;
+    --line:#e7eaef; --line2:#eef1f5;
+    --accent:#3b5bdb; --accent-soft:#eef1ff;
+    --ok:#12a150; --ok-soft:#e9f8ef; --warn:#c77700; --warn-soft:#fff5e6; --err:#d92d20;
+    --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px -12px rgba(16,24,40,.12);
+    /* IP、速度、延迟这些数字一律用等宽字体：位数一变不会左右跳，
+       一列数字上下对齐才看得出一行比一行差多少。 */
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #15181d;
-      --card: #1d2127;
-      --text: #e8eaed;
-      --muted: #9aa3af;
-      --line: #2c313a;
-      --accent: #5b93ff;
-      --accent-soft: #1e2a42;
-      --ok: #4ade80;
-      --warn: #fbbf24;
-      --err: #f87171;
+    :root{
+      --bg:#0f1319; --card:#171c24; --text:#e7ecf3; --muted:#9aa5b4; --dim:#6d7889;
+      --line:#242c38; --line2:#1e252f;
+      --accent:#7d9bff; --accent-soft:#1b2438;
+      --ok:#4ade80; --ok-soft:#14261c; --warn:#fbbf24; --warn-soft:#2a2113; --err:#f87171;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
     }
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 20px 16px 60px;
-    background: var(--bg); color: var(--text);
-    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
-  .wrap { max-width: 760px; margin: 0 auto; }
-  h1 { font-size: 19px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
-  .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; padding: 16px 18px; margin-bottom: 14px;
+  .hidden{display:none !important}
+  a{color:var(--accent);text-decoration:none}
+
+  /* ---------- 登录 ---------- */
+  .login{
+    position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:var(--bg);padding:20px;
   }
-  .card h2 { font-size: 14.5px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  .card h2 .tag { font-size: 11px; font-weight: 400; color: var(--muted); }
-  /* 卡片标题右侧的工具条：只有「运行日志」这张卡用得上，但做成通用样式，
-     以后再放别的按钮不用重新写一遍。 */
-  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-  .card-head h2 { margin-bottom: 12px; }
-  .btn-mini { padding: 4px 11px; font-size: 12px; border-radius: 7px; flex: none; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
-  .row > * { flex: 1 1 200px; }
-  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
-  input[type=text], input[type=password], input[type=number], select, textarea {
-    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
-    border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13.5px;
-    font-family: inherit;
+  .login .box{
+    width:100%;max-width:340px;background:var(--card);border:1px solid var(--line);
+    border-radius:16px;padding:26px 24px;box-shadow:var(--shadow);
   }
-  textarea { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
-  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
-  .field { margin-bottom: 12px; }
-  .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
-  button {
-    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--card); color: var(--text); font-size: 13.5px; cursor: pointer;
-    font-family: inherit;
+  .login .mark{
+    width:38px;height:38px;border-radius:11px;background:linear-gradient(140deg,#4c6ef5,#7048e8);
+    display:grid;place-items:center;margin-bottom:14px;box-shadow:0 6px 16px -6px rgba(76,110,245,.6);
   }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.primary:hover { filter: brightness(1.08); color: #fff; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  .actions { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
-  .stat .k { font-size: 11.5px; color: var(--muted); }
-  .stat .v { font-size: 15px; font-weight: 600; margin-top: 2px; word-break: break-all; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-  .dot.ok { background: var(--ok); } .dot.idle { background: var(--muted); }
-  .dot.busy { background: var(--warn); animation: pulse 1.2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
-  .domains { display: flex; flex-direction: column; gap: 8px; }
-  .domain-row { display: flex; gap: 8px; align-items: center; }
-  .domain-row input { flex: 1; }
-  .domain-row button { padding: 6px 10px; font-size: 12.5px; }
-  .logs {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-    padding: 10px 12px; height: 320px; overflow: auto;
-    font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    white-space: pre-wrap; word-break: break-all; color: var(--muted);
-    /* 这块的主要用途就是「选中、复制出去问人」，所以光标明确提示可选。
-       高度固定 + overflow:auto 是为了不让日志把整页顶长；320px 约 15 行，
-       比原来的 190px（约 9 行）多看几条，又不会把下面的滚动条拉得太远。 */
-    cursor: text; user-select: text;
+  .login h1{font-size:18px;margin:0 0 4px;font-weight:650}
+  .login .sub{font-size:12.5px;color:var(--muted);margin-bottom:18px}
+  .login input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;
+    font-size:14px;font-family:inherit;background:var(--card);color:var(--text);margin-bottom:14px}
+  .login input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,91,219,.12)}
+  .login button{width:100%}
+
+  /* ---------- 布局 ---------- */
+  .shell{display:flex;min-height:100vh}
+
+  .side{
+    width:236px;flex:none;background:var(--card);border-right:1px solid var(--line);
+    padding:20px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   }
-  .toast {
-    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-    background: var(--text); color: var(--bg); padding: 9px 18px;
-    border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none;
-    transition: opacity .2s; z-index: 99; max-width: 90vw; text-align: center;
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px 20px}
+  .brand .mark{
+    width:32px;height:32px;border-radius:9px;flex:none;background:linear-gradient(140deg,#4c6ef5,#7048e8);
+    display:grid;place-items:center;box-shadow:0 4px 12px -4px rgba(76,110,245,.55);
   }
-  .toast.show { opacity: 1; }
-  .login {
-    position: fixed; inset: 0; background: var(--bg); display: flex;
-    align-items: center; justify-content: center; z-index: 50; padding: 20px;
+  .brand b{display:block;font-size:13.5px;line-height:1.35}
+  .brand span{font-size:11px;color:var(--dim)}
+  .side-label{font-size:10.5px;letter-spacing:.9px;color:var(--dim);padding:0 10px 8px}
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav a{
+    display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
+    color:#4a5462;font-size:13px;cursor:pointer;white-space:nowrap;
   }
-  .login .box { width: 100%; max-width: 320px; }
-  .hidden { display: none !important; }
-  .banner {
-    border-radius: 8px; padding: 10px 12px; font-size: 12.5px;
-    background: var(--accent-soft); color: var(--accent); margin-bottom: 12px;
+  .nav a:hover{background:var(--line2)}
+  .nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+  .nav a svg{flex:none;opacity:.9}
+  .side-foot{margin-top:auto;padding:10px;border-top:1px solid var(--line2);font-size:11.5px;color:var(--dim)}
+  .side-foot .row{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14);flex:none}
+
+  .content{flex:1;min-width:0;padding:0 32px 90px}
+  .head{
+    display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;
+    padding:22px 0 18px;position:sticky;top:0;z-index:20;
+    background:var(--bg);
   }
-  .banner.warn { background: rgba(217,119,6,.12); color: var(--warn); }
-  .banner.err { background: rgba(220,38,38,.1); color: var(--err); }
-  .switch { display: flex; align-items: center; gap: 8px; }
-  .switch input { width: auto; }
-  /* 重写表预览：「现在 AdGuard 里到底写了什么」，一行一条 */
-  .rw-list {
-    margin-top: 10px; border: 1px solid var(--line); border-radius: 8px;
-    max-height: 220px; overflow: auto; font-size: 12.5px;
+  .head h1{font-size:21px;margin:0 0 3px;font-weight:650;letter-spacing:-.2px}
+  .head p{margin:0;font-size:12.5px;color:var(--muted)}
+  .head .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+  /* ---------- 按钮 ---------- */
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 15px;border-radius:9px;
+    border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px;cursor:pointer;
+    font-family:inherit;transition:.15s;box-shadow:0 1px 1px rgba(16,24,40,.03);white-space:nowrap;
   }
-  .rw-item {
-    display: flex; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px; word-break: break-all; align-items: baseline;
+  .btn:hover{border-color:#cfd6e2;background:var(--line2)}
+  .btn:disabled{opacity:.6;cursor:default}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500;
+    box-shadow:0 2px 6px -1px rgba(59,91,219,.4)}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.sm{padding:6px 11px;font-size:12.5px;border-radius:8px}
+  .btn.flat{box-shadow:none;background:transparent;border-color:transparent}
+  .btn.flat:hover{background:var(--line2)}
+
+  /* ---------- Hero ---------- */
+  .hero{
+    background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;
+    box-shadow:var(--shadow);margin-bottom:16px;position:relative;overflow:hidden;
   }
-  .rw-item:last-child { border-bottom: none; }
-  .rw-item .d { flex: 1 1 55%; }
-  .rw-item .i { flex: 0 0 auto; color: var(--muted); }
-  .rw-item .mark { flex: 0 0 auto; font-family: inherit; font-size: 11px; }
-  .rw-item.stale .d { color: var(--warn); }
-  .rw-item .mark.keep { color: var(--ok); }
-  .rw-item .mark.drop { color: var(--warn); }
-  .rw-empty { padding: 10px; color: var(--muted); font-size: 12.5px; }
-  .kv { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
-  .kv .line { display: flex; gap: 8px; }
-  .kv .line .k2 { color: var(--muted); flex: 0 0 74px; }
-  .kv .line .v2 { flex: 1; word-break: break-all; }
+  .hero::before{
+    content:"";position:absolute;inset:0 0 auto 0;height:3px;
+    background:linear-gradient(90deg,#4c6ef5,#7048e8 45%,#12b886);
+  }
+  .hero-top{display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap}
+  .hero .big{font:600 30px/1.15 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:-.5px}
+  .hero .cap{font-size:11.5px;color:var(--dim);letter-spacing:.4px;margin-bottom:7px}
+  .hero .under{font-size:12.5px;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .hero .split{display:flex;gap:26px;margin-left:auto;flex-wrap:wrap}
+  .metric .k{font-size:11.5px;color:var(--dim);margin-bottom:4px}
+  .metric .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
+  .hero-actions{display:flex;gap:8px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line2);align-items:center;flex-wrap:wrap}
+  .hero-actions .hint{margin:0}
+
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;flex:none}
+  .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14)}
+  .dot.busy{background:var(--warn);box-shadow:0 0 0 3px rgba(199,119,0,.16);animation:pulse 1.4s infinite}
+  .dot.idle{background:var(--dim)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+  /* ---------- 卡片 ---------- */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin-bottom:16px}
+  .card-h{padding:15px 20px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card-h h2{margin:0;font-size:14px;font-weight:600}
+  .card-h .sub{font-size:12px;color:var(--dim)}
+  .card-h .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .card-b{padding:20px}
+
+  /* 可用 IP 列表：一行 = 序号 / 位置+IP / 速度条 / 延迟 / 状态
+     这几列就是用户判断「该不该换一个 IP」的全部依据，所以速度和延迟
+     必须和 IP 并排显示，而不是只躺在右下角的运行日志里。 */
+  .iplist{display:flex;flex-direction:column}
+  .iprow{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line2)}
+  .iprow:last-child{border-bottom:none}
+  .iprow .idx{
+    width:24px;height:24px;flex:none;border-radius:7px;display:grid;place-items:center;
+    font-size:11.5px;font-weight:600;background:var(--line2);color:var(--muted);
+  }
+  .iprow.write{background:linear-gradient(90deg,rgba(18,161,80,.05),transparent 62%)}
+  .iprow.write .idx{background:var(--ok-soft);color:var(--ok)}
+  .iprow .who{flex:1;min-width:0}
+  .iprow .who b{
+    display:block;font-size:13px;font-weight:600;margin-bottom:2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .iprow .who b em{font-style:normal;font-weight:400;color:var(--dim);font-family:var(--mono)}
+  .iprow .who span{
+    font-size:11.5px;color:var(--dim);font-family:var(--mono);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;
+  }
+  /* 速度条吃掉多余宽度：内容区在大屏上有 1000px 宽，固定 150px 的话
+     IP 和速度之间会留一大片空白，看着像两列数据没对上。上限 300px，
+     再宽就不像「相对快慢」而像进度条了。 */
+  .iprow .spd{flex:1 1 150px;max-width:300px;margin-left:6px}
+  .iprow .spd .n{font:12.5px/1.4 var(--mono);font-variant-numeric:tabular-nums;margin-bottom:5px}
+  .iprow .spd .b{height:4px;border-radius:2px;background:var(--line2);overflow:hidden}
+  .iprow .spd .b i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+  .iprow.write .spd .b i{background:var(--ok)}
+  .iprow .lat{
+    width:76px;flex:none;text-align:right;font-size:12.5px;color:var(--muted);
+    font-variant-numeric:tabular-nums;font-family:var(--mono);
+  }
+  /* 「没测到」统一走这个颜色。绝不为了好看补一个数字——用户会拿它选 IP。 */
+  .iprow .miss{color:var(--dim)}
+  .tag{font-size:11px;padding:2px 8px;border-radius:6px;white-space:nowrap;background:var(--line2);color:var(--muted)}
+  .tag.ok{background:var(--ok-soft);color:var(--ok)}
+  .empty{padding:22px 20px;font-size:13px;color:var(--dim);text-align:center}
+
+  /* 测速状态那一句：「空闲 · 成功 · 用时 38 秒」 */
+  .runmeta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .runmeta .sep{color:var(--line)}
+
+  /* ---------- 表单 ---------- */
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .field{margin-bottom:16px}
+  .field:last-child{margin-bottom:0}
+  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:500}
+  input[type=text],input[type=password],input[type=number],select,textarea{
+    width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--card);
+    color:var(--text);font-size:13.5px;font-family:inherit;transition:.15s;
+  }
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,91,219,.12)}
+  textarea{font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical}
+  .hint{font-size:11.5px;color:var(--dim);margin-top:6px;line-height:1.6}
+  .hint b{color:var(--muted);font-weight:500}
+  code{background:var(--line2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+
+  .switch{display:flex;align-items:center;gap:9px}
+  .switch input{width:auto;accent-color:var(--accent)}
+  .switch label{margin:0;color:var(--text);font-size:13px;font-weight:400}
+
+  .domain-row{display:flex;gap:9px;margin-bottom:9px;align-items:center}
+  .domain-row input{flex:1}
+  .domain-row button{
+    border:none;background:transparent;color:var(--dim);cursor:pointer;padding:8px;border-radius:8px;flex:none;
+  }
+  .domain-row button:hover{color:var(--err);background:#fef3f2}
+
+  /* 告警条 */
+  .banner{
+    padding:12px 15px;border-radius:11px;font-size:12.5px;line-height:1.65;margin-bottom:12px;
+    background:var(--line2);border:1px solid var(--line);
+  }
+  .banner b{font-weight:600}
+  .banner.warn{background:var(--warn-soft);border-color:#f6e0bb;color:#8a5300}
+  .banner.warn b{color:#7a4900}
+  .banner.err{background:#fef3f2;border-color:#fbd5d2;color:#a01f16}
+  .banner.err b{color:#8a1a12}
+  @media (prefers-color-scheme: dark){
+    .banner.warn{background:#2a2113;border-color:#4a3a18;color:#e8c98a}
+    .banner.err{background:#2b1717;border-color:#5a2a26;color:#f3a9a4}
+  }
+
+  /* DDNS 结果 */
+  .kv{display:flex;flex-direction:column;gap:2px;margin:10px 0}
+  .kv .line{display:flex;gap:10px;font-size:12.5px;padding:3px 0;border-bottom:1px dashed var(--line2)}
+  .kv .line:last-child{border-bottom:none}
+  .kv .k2{color:var(--dim);width:96px;flex:none}
+  .kv .v2{word-break:break-all}
+
+  /* AdGuard 重写表 */
+  .rw-list{margin-top:10px;border:1px solid var(--line2);border-radius:11px;overflow:hidden}
+  .rw-item{display:flex;align-items:center;gap:10px;padding:9px 13px;font-size:12.5px;
+    border-bottom:1px solid var(--line2);background:var(--ok-soft)}
+  .rw-item:last-child{border-bottom:none}
+  .rw-item.stale{background:var(--warn-soft)}
+  .rw-item .d{font-weight:500;min-width:0;word-break:break-all}
+  .rw-item .i{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;word-break:break-all}
+  .rw-item .mark{margin-left:auto;font-size:11px;white-space:nowrap;flex:none}
+  .rw-item .mark.keep{color:var(--ok)}
+  .rw-item .mark.drop{color:var(--warn)}
+  .rw-empty{padding:16px;font-size:12.5px;color:var(--dim);text-align:center}
+
+  /* ---------- 分页 ---------- */
+  .page{display:none}
+  .page.on{display:block}
+
+  /* ---------- 日志抽屉 ---------- */
+  .drawer{
+    position:fixed;right:20px;bottom:20px;width:560px;max-width:calc(100vw - 40px);
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 20px 50px -16px rgba(16,24,40,.32);z-index:60;overflow:hidden;
+  }
+  .drawer.collapsed{width:300px}
+  .drawer.collapsed .drawer-b{display:none}
+  .drawer-h{display:flex;align-items:center;gap:9px;padding:11px 14px;cursor:pointer;
+    border-bottom:1px solid var(--line2);background:var(--line2)}
+  .drawer.collapsed .drawer-h{border-bottom:none}
+  .drawer-h b{font-size:12.5px;font-weight:600}
+  .drawer-h .live{font-size:10.5px;color:var(--ok);background:var(--ok-soft);padding:1px 7px;
+    border-radius:999px;display:inline-flex;align-items:center;gap:4px}
+  .drawer-h .live i{width:5px;height:5px;border-radius:50%;background:var(--ok);display:block}
+  .drawer-h .grow{flex:1}
+  .drawer-h .chev{transition:.2s;color:var(--dim)}
+  .drawer.collapsed .drawer-h .chev{transform:rotate(180deg)}
+
+  .logs{
+    height:320px;overflow:auto;padding:12px 14px;
+    font:11.5px/1.85 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);
+    /* 必须 pre-wrap：日志是用 textContent 一次性写进来的纯文本，行与行之间
+       只有 \n。改成 normal 会把所有行挤成一整段（试过，真的会）。 */
+    white-space:pre-wrap;word-break:break-all;cursor:text;user-select:text;
+  }
+  /* 日志框下面是滚动区边界，正文可能正好被切在半行上；加一条分隔线，
+     让「被切掉」看起来是「这里还能往下滚」，而不是排版坏了。 */
+  .drawer .hint{padding:8px 14px 12px;margin:0;border-top:1px solid var(--line2)}
+
+  /* ---------- toast ---------- */
+  .toast{
+    position:fixed;left:50%;bottom:26px;transform:translate(-50%,16px);z-index:300;
+    background:#1b2230;color:#fff;padding:10px 18px;border-radius:11px;font-size:13px;
+    opacity:0;pointer-events:none;transition:.22s;max-width:calc(100vw - 40px);
+    box-shadow:0 12px 30px -10px rgba(0,0,0,.4);
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  /* ---------- 窄屏 ---------- */
+  @media(max-width:1080px){
+    .shell{flex-direction:column}
+    .side{
+      width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid var(--line);
+      padding:12px 14px;
+    }
+    .brand{padding:0 4px 10px}
+    .side-label,.side-foot{display:none}
+    /* 手机上导航换行铺开，而不是横向滚动——滚动会把「测速设置」这种
+       后面的项藏在屏幕外，看着像少了一半菜单。 */
+    .nav{flex-direction:row;flex-wrap:wrap;gap:4px;padding-bottom:2px}
+    .nav a{padding:7px 11px;font-size:12.5px}
+    .content{padding:0 16px 90px}
+    .head{padding:16px 0 14px;position:static}
+    .form-grid{grid-template-columns:1fr}
+    .hero .split{margin-left:0;gap:22px;width:100%}
+    .iprow{padding:11px 14px;gap:10px}
+    .iprow .spd{max-width:140px}
+    .iprow .lat{width:64px;font-size:11.5px}
+    .drawer{right:10px;left:10px;bottom:10px;width:auto;max-width:none}
+    .drawer.collapsed{width:auto;right:auto}
+    /* 日志条贴在底部，提示条得往上让一让，否则压在一起 */
+    .toast{bottom:76px}
+  }
+  /* 手机竖屏（<=700）：一行塞不下「序号 + 位置 + IP + 速度 + 延迟 + 状态」。
+     硬塞的结果是 IP 被截成「172.64.22…」——那等于把最重要的信息弄丢了。
+     改成两行：上面 序号/位置+IP/状态，下面 速度/延迟。 */
+  @media(max-width:700px){
+    /* 四个指标在窄屏上原本是 3 个一行、第 4 个孤零零掉到下一行。
+       改成 2×2 网格，看着是「设计成这样」而不是「没排下」。 */
+    .hero .split{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px}
+    .iprow{flex-wrap:wrap;row-gap:6px}
+    .iprow .who{flex:1 1 60%}
+    .iprow .tag{order:3}
+    .iprow .spd{order:4;flex:0 0 auto;max-width:none;margin-left:34px}
+    .iprow .spd .n{margin-bottom:0}
+    .iprow .spd .b{display:none}
+    .iprow .lat{order:5;width:auto;margin-left:auto}
+    .iprow .who b em{display:none}
+  }
 </style>
 </head>
 <body>
 
+<!-- 登录 -->
 <div class="login" id="login">
-  <div class="box card">
+  <div class="box">
+    <div class="mark"><svg width="19" height="19" viewBox="0 0 24 24" fill="#fff"><path d="M14 2 6 14h5l-1.6 8L18 10h-5.4z"/></svg></div>
     <h1>登录</h1>
     <div class="sub">请输入管理密码</div>
-    <div class="field">
-      <input type="password" id="pw" placeholder="管理密码" autocomplete="current-password">
-    </div>
-    <button class="primary" style="width:100%" onclick="doLogin()">登录</button>
+    <input type="password" id="pw" placeholder="管理密码" autocomplete="current-password">
+    <button class="btn primary" onclick="doLogin()">登录</button>
   </div>
 </div>
 
-<div class="wrap hidden" id="app">
-  <h1>Cloudflare 优选 IP · DDNS</h1>
-  <div class="sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。<span id="ver"></span></div>
-
-  <!-- 全局告警：配置被自动恢复。放在最顶上，不滚动就看得见 -->
-  <div id="banners"></div>
-
-  <!-- 概览 -->
-  <div class="card">
-    <h2>当前状态</h2>
-    <div class="stat-grid">
-      <div class="stat"><div class="k">最优 IP</div><div class="v" id="s-ip">—</div><div class="hint" id="s-iphint"></div></div>
-      <div class="stat"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
-      <div class="stat"><div class="k">下次测速</div><div class="v" id="s-next">—</div></div>
-      <div class="stat"><div class="k">上次结果</div><div class="v" id="s-lastok">—</div></div>
-      <div class="stat"><div class="k">运行状态</div><div class="v"><span class="dot idle" id="s-dot"></span> <span id="s-state">空闲</span></div></div>
+<!-- 后台 -->
+<div class="shell hidden" id="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="#fff"><path d="M14 2 6 14h5l-1.6 8L18 10h-5.4z"/></svg></div>
+      <div><b>优选 IP · DDNS</b><span>Cloudflare 加速</span></div>
     </div>
-    <div class="actions">
-      <button class="primary" id="btn-run" onclick="doRun()">立即测速</button>
-      <span class="hint" id="s-runhint"></span>
+
+    <div class="side-label">工作台</div>
+    <nav class="nav">
+      <a class="on" data-page="page-overview" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>
+        概览
+      </a>
+      <a data-page="page-domains" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.8 2.4 14.2 0 17M12 3.5c-2.4 2.8-2.4 14.2 0 17"/></svg>
+        要加速的域名
+      </a>
+      <a data-page="page-adguard" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3.5 3.8 7l8.2 3.6L20.2 7 12 3.5Z"/><path d="M3.8 12l8.2 3.6L20.2 12M3.8 16.6 12 20.2l8.2-3.6"/></svg>
+        AdGuard 重写
+      </a>
+      <a data-page="page-ddns" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6.5h16M4 12h9M4 17.5h6"/><circle cx="18" cy="15" r="3.2"/></svg>
+        域名解析 DDNS
+      </a>
+      <a data-page="page-speed" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M13 2.5 4.5 14h5.7l-1 7.5L18.5 10h-5.8l.3-7.5Z"/></svg>
+        测速设置
+      </a>
+    </nav>
+
+    <div class="side-label" style="margin-top:14px">系统</div>
+    <nav class="nav">
+      <a data-page="page-backup" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20.5 12a8.5 8.5 0 1 1-2.8-6.3"/><path d="M20.5 3.5v5h-5"/></svg>
+        备份与恢复
+      </a>
+      <a data-page="page-password" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4.5" y="10" width="15" height="10.5" rx="2.5"/><path d="M8 10V7.2a4 4 0 0 1 8 0V10"/></svg>
+        登录密码
+      </a>
+    </nav>
+
+    <div class="side-foot">
+      <div class="row"><span class="pulse"></span> 服务运行中</div>
+      <div id="ver"></div>
     </div>
+  </aside>
+
+  <div class="content">
+    <div class="head">
+      <div>
+        <h1 id="page-title">概览</h1>
+        <p id="page-sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。</p>
+      </div>
+      <div class="right">
+        <button class="btn sm flat" onclick="logout()">退出登录</button>
+        <button class="btn primary sm" onclick="saveAll()">保存全部设置</button>
+      </div>
+    </div>
+
+    <!-- 全局告警：配置被自动恢复。放在最顶上，不滚动就看得见 -->
+    <div id="banners"></div>
+    <!-- 测速失败 / DDNS 没配好。放在分页外面，切到哪一页都看得见 -->
     <div id="s-err"></div>
-  </div>
 
-  <!-- AdGuard -->
-  <div class="card">
-    <h2>AdGuard Home <span class="tag">把最优 IP 写进它的 DNS 重写</span></h2>
-    <div class="field">
-      <label>地址</label>
-      <input type="text" id="ag-url" placeholder="http://192.168.1.2:3000">
-    </div>
-    <div class="row">
-      <div class="field"><label>用户名</label><input type="text" id="ag-user" placeholder="admin"></div>
-      <div class="field"><label>密码</label><input type="password" id="ag-pass" placeholder="留空表示不修改"></div>
-    </div>
-    <div class="hint">在 AdGuard Home 的「设置 → 常规设置」里可以看到管理界面地址和登录账号。</div>
-    <div class="actions">
-      <button onclick="loadRewrites()">看看现在写了哪几条</button>
-      <a href="#" id="rw-toggle" class="hint hidden" onclick="toggleRewrites();return false" style="text-decoration:none">收起</a>
-    </div>
-    <div id="rw-box" class="hidden">
-      <div class="hint" style="margin-top:8px">
-        这就是 AdGuard Home 里当前的 DNS 重写表（原文，不经任何加工）。
-        绿色的行是下次测速后会保留的；<span style="color:var(--warn)">黄色的行是下次测速会被清掉的</span>——
-        因为每次测速都是「清空整张表，再按「要加速的域名」重新写一遍」，你自己手工加的其他记录也会被清掉。
-      </div>
-      <div class="rw-list" id="rw-list"></div>
-    </div>
-  </div>
-
-  <!-- 域名 -->
-  <div class="card">
-    <h2>要加速的域名 <span class="tag">这些域名会指向最优 IP</span></h2>
-    <div class="domains" id="domains"></div>
-    <div class="actions">
-      <button onclick="addDomain()">+ 添加域名</button>
-    </div>
-    <div class="hint">填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。改完保存后，下次测速即生效。</div>
-  </div>
-
-  <!-- 测速 -->
-  <div class="card">
-    <h2>测速设置</h2>
-    <div class="row">
-      <div class="field"><label>自动测速间隔（分钟）</label><input type="number" id="sp-interval" min="0" step="10" placeholder="60"></div>
-      <div class="field"><label>保留候选 IP 数</label><input type="number" id="sp-topn" min="1" placeholder="5"></div>
-    </div>
-    <div class="hint">间隔填 0 表示不自动测速，只在点「立即测速」时执行。候选数越大，失败时可切换的备选越多。</div>
-
-    <div class="field" style="margin-top:14px">
-      <label>优选 IP 段（留空 = 使用 Cloudflare 官方 15 个段）</label>
-      <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
-    </div>
-    <div class="hint">
-      每行一条，三种写法都认：<b>IP 段</b>（104.16.0.0/13）、<b>单个 IP</b>（1.2.3.4）、<b>链接</b>（https://…）。
-      填了之后就<b>只用这些</b>——不再叠加 Cloudflare 官方段，也不再拉内置的两个外部聚合源；想恢复原来的行为，把这里清空保存即可。<br>
-      为什么需要它：官方那 15 个段里 104.16 / 104.24 / 172.64 三块占绝大多数，优选结果会明显往这几段集中。
-    </div>
-  </div>
-
-  <!-- DDNS -->
-  <div class="card">
-    <h2>域名解析（DDNS） <span class="tag">把最优 IP 写到你的域名</span></h2>
-    <div class="field switch">
-      <input type="checkbox" id="dd-enabled" onchange="renderProvider()">
-      <label for="dd-enabled" style="margin:0">启用（测速后自动更新 A 记录）</label>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label>服务商</label>
-        <select id="dd-provider" onchange="renderProvider()">
-          <option value="cloudflare">Cloudflare</option>
-          <option value="aliyun">阿里云 DNS</option>
-          <option value="dnspod">腾讯云 DNSPod</option>
-          <option value="huawei">华为云 DNS</option>
-        </select>
-      </div>
-      <div class="field"><label>优选域名</label><input type="text" id="dd-domain" placeholder="cf.example.com"></div>
-    </div>
-    <div id="cred-fields"></div>
-    <div class="hint">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
-
-    <div class="row">
-      <div class="field">
-        <label>同步几条 IP</label>
-        <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
-        <div class="hint">
-          按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。
+    <!-- ========== 概览 ========== -->
+    <section class="page on" id="page-overview">
+      <div class="hero">
+        <div class="hero-top">
+          <div>
+            <div class="cap">当前最优 IP</div>
+            <div class="big" id="s-ip">—</div>
+            <div class="under">
+              <!-- 真实机房：由 web/exitgeo.go 穿这个 IP 去问 Cloudflare 出口拿到。
+                   查不到时这里说「位置未知」——绝不按 IP 段猜国家。 -->
+              <span class="tag ok" id="s-place">位置未知</span>
+              <span class="hint" id="s-iphint" style="margin:0"></span>
+            </div>
+          </div>
+          <div class="split">
+            <div class="metric"><div class="k">速度</div><div class="v" id="s-speed">—</div></div>
+            <div class="metric"><div class="k">延迟</div><div class="v" id="s-delay">—</div></div>
+            <div class="metric"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
+            <div class="metric"><div class="k">下次测速</div><div class="v" id="s-next">—</div></div>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button class="btn primary" id="btn-run" onclick="doRun()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg>
+            <span id="btn-run-label">立即测速</span>
+          </button>
+          <span class="runmeta">
+            <span class="dot ok" id="s-dot"></span>
+            <span id="s-state">空闲</span>
+            <span class="sep">·</span>
+            <span id="s-lastok">还没跑过</span>
+            <span class="sep hidden" id="s-dursep">·</span>
+            <span class="hidden" id="s-dur"></span>
+          </span>
+          <span class="hint" id="s-runhint" style="margin:0 0 0 auto"></span>
         </div>
       </div>
-      <div class="field">
-        <label>记录缓存时间（TTL，秒）</label>
-        <input type="number" id="dd-ttl" min="0" max="86400" step="60" placeholder="0">
-        <div class="hint">
-          留 0 = 用各家的默认值（Cloudflare 自动、DNSPod 600、华为云 300、阿里云账号默认）。
-          填了之后，改了 IP 别人要等这么久才拿到新的；填太小有些免费版会直接拒绝（阿里云免费版要求 ≥600）。
+
+      <div class="card">
+        <div class="card-h">
+          <h2>本次可用 IP</h2>
+          <span class="sub">按速度排名，前面的写进域名解析</span>
+        </div>
+        <div class="iplist" id="ip-list">
+          <div class="empty">还没有结果。点上面的「立即测速」跑一次。</div>
+        </div>
+        <div class="hint" style="padding:0 20px 16px">
+          速度是这次测速实际跑出来的下行带宽，延迟是握手往返时间；
+          「位置」是拿这个 IP 真去问一次 Cloudflare 出口得到的机房，不是猜的。
+          任何一项没测到就显示「—」，不会补数字。
         </div>
       </div>
-    </div>
-    <div style="margin-top:12px">
-      <div class="banner warn">
-        <b>填几条，这个域名下就只留几条。</b>其他同名的 A 记录（包括你以前手工加的）会被删掉，
-        否则会一直留着已经失效的旧 IP。测不出 IP 的时候一条都不会删。
-        <br>
-        另外，多条 A 记录不是「都用最快那条」，访问者是随机挑一条。所以 2～3 条是「一条挂了还有备胎」，
-        填到 5 条以上，大部分访问反而会落到不是最快的那些上面。
-      </div>
-    </div>
-    <div class="field" id="dd-proxied-box">
-      <div class="switch">
-        <input type="checkbox" id="dd-proxied">
-        <label for="dd-proxied" style="margin:0">开启 Cloudflare 云朵（代理）</label>
-      </div>
-      <div class="hint">
-        <b style="color:var(--warn)">一般不要开。</b>开了之后域名会解析到 Cloudflare 的节点，不再指向你测出来的最优 IP，
-        DDNS 就白做了——只有在你想隐藏源站、并且不需要优选 IP 的时候才开。
-      </div>
-    </div>
-    <div class="actions">
-      <button onclick="checkDDNS()">测试密钥</button>
-      <button onclick="pushDDNS()">立即更新一次</button>
-    </div>
-    <div class="hint">
-      这两个按钮用的是<b>已经保存的</b>设置——刚改完的密钥请先点上方的「保存全部设置」，否则测的还是旧的。<br>
-      「测试密钥」只读：只确认密钥能不能用、能不能查到这个域名、现在指向哪里，<b>不会改动你的解析</b>。<br>
-      「立即更新一次」才会真的把当前最优 IP 写进去，不用等下一个测速周期。
-    </div>
-    <div id="dd-result" style="margin-top:10px"></div>
-  </div>
+    </section>
 
-  <!-- 备份与恢复 -->
-  <div class="card">
-    <h2>备份与恢复 <span class="tag">把全部设置存成一个文件</span></h2>
-    <div class="actions" style="margin-top:0">
-      <button onclick="exportConfig()">导出配置文件</button>
-      <button onclick="pickImport()">从文件恢复…</button>
-      <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importConfig(this)">
-    </div>
-    <div class="hint">
-      导出文件里带着 AdGuard 密码和各家的 DNS 密钥——请当密码一样保管，不要发到群里。<br>
-      「从文件恢复」会用文件里的内容覆盖当前全部设置（后台登录密码不受影响，也不会被改）。<br>
-      什么时候用得上：重装应用、换一台 NAS、或者哪天数据目录又被清空了。
-    </div>
-    <div id="export-manual" class="hidden">
-      <div class="hint" style="color:var(--warn)">
-        下面这段就是备份文件的内容。如果刚才浏览器没弹出下载（飞牛桌面把后台嵌在 iframe 里时个别浏览器会拦下载），
-        点一下框里全选复制，粘贴到记事本里存成 <code>.json</code> 文件即可。
+    <!-- ========== 域名 ========== -->
+    <section class="page" id="page-domains">
+      <div class="card">
+        <div class="card-h"><h2>要加速的域名</h2><span class="sub">这些域名会指向最优 IP</span></div>
+        <div class="card-b">
+          <div class="domains" id="domains"></div>
+          <div class="hero-actions" style="border-top:none;padding-top:6px;margin-top:0">
+            <button class="btn sm" onclick="addDomain()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+              添加域名
+            </button>
+          </div>
+          <div class="hint">填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。改完保存后，下次测速即生效。</div>
+        </div>
       </div>
-      <textarea id="export-text" readonly rows="8" onclick="this.select()"></textarea>
-    </div>
-  </div>
+    </section>
 
-  <!-- 登录密码 -->
-  <div class="card">
-    <h2>登录密码 <span class="tag">这个后台唯一的门</span></h2>
-    <div class="field">
-      <label>当前密码</label>
-      <input type="password" id="pw-old" autocomplete="current-password" placeholder="先验证现在的密码">
-    </div>
-    <div class="row">
-      <div class="field"><label>新密码</label><input type="password" id="pw-new" autocomplete="new-password"></div>
-      <div class="field"><label>再输一次</label><input type="password" id="pw-new2" autocomplete="new-password"></div>
-    </div>
-    <div class="hint">至少 8 位；别用 12345678、aaaaaaaa 这类连续或重复的，也别用 password、admin123 这类最常见的。改完立即生效，不用重启，也不用再去「应用设置」里改。</div>
-    <div class="actions">
-      <button class="primary" onclick="savePassword()">修改密码</button>
-    </div>
-  </div>
+    <!-- ========== AdGuard ========== -->
+    <section class="page" id="page-adguard">
+      <div class="card">
+        <div class="card-h"><h2>AdGuard Home</h2><span class="sub">把最优 IP 写进它的 DNS 重写</span></div>
+        <div class="card-b">
+          <div class="field">
+            <label>地址</label>
+            <input type="text" id="ag-url" placeholder="http://192.168.1.2:3000">
+            <div class="hint">在 AdGuard Home 的「设置 → 常规设置」里可以看到管理界面地址和登录账号。</div>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>用户名</label><input type="text" id="ag-user" placeholder="admin"></div>
+            <div class="field"><label>密码</label><input type="password" id="ag-pass" placeholder="留空表示不修改"></div>
+          </div>
+          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+            <button class="btn sm" onclick="loadRewrites()">看看现在写了哪几条</button>
+            <a href="#" id="rw-toggle" class="hint hidden" onclick="toggleRewrites();return false">收起</a>
+          </div>
+          <div id="rw-box" class="hidden">
+            <div class="hint" style="margin-top:8px">
+              这就是 AdGuard Home 里当前的 DNS 重写表（原文，不经任何加工）。
+              绿色的行是下次测速后会保留的；<span style="color:var(--warn)">黄色的行是下次测速会被清掉的</span>——
+              因为每次测速都是「清空整张表，再按「要加速的域名」重新写一遍」，你自己手工加的其他记录也会被清掉。
+            </div>
+            <div class="rw-list" id="rw-list"></div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-  <div class="actions" style="margin-bottom:18px">
-    <button class="primary" onclick="saveAll()">保存全部设置</button>
-    <button onclick="logout()">退出登录</button>
-  </div>
+    <!-- ========== DDNS ========== -->
+    <section class="page" id="page-ddns">
+      <div class="card">
+        <div class="card-h"><h2>域名解析（DDNS）</h2><span class="sub">把最优 IP 写到你的域名</span></div>
+        <div class="card-b">
+          <div class="field switch">
+            <input type="checkbox" id="dd-enabled" onchange="renderProvider()">
+            <label for="dd-enabled">启用（测速后自动更新 A 记录）</label>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>服务商</label>
+              <select id="dd-provider" onchange="renderProvider()">
+                <option value="cloudflare">Cloudflare</option>
+                <option value="aliyun">阿里云 DNS</option>
+                <option value="dnspod">腾讯云 DNSPod</option>
+                <option value="huawei">华为云 DNS</option>
+              </select>
+            </div>
+            <div class="field"><label>优选域名</label><input type="text" id="dd-domain" placeholder="cf.example.com"></div>
+          </div>
+          <div id="cred-fields"></div>
+          <div class="hint" style="margin-bottom:16px">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
 
-  <!-- 日志 -->
-  <div class="card">
-    <div class="card-head">
-      <h2>运行日志</h2>
-      <button class="btn-mini" id="btn-copy-log" onclick="copyLogs()">复制全部</button>
-    </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>同步几条 IP</label>
+              <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
+              <div class="hint">按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。</div>
+            </div>
+            <div class="field">
+              <label>记录缓存时间（TTL，秒）</label>
+              <input type="number" id="dd-ttl" min="0" max="86400" step="60" placeholder="0">
+              <div class="hint">
+                留 0 = 用各家的默认值（Cloudflare 自动、DNSPod 600、华为云 300、阿里云账号默认）。
+                填了之后，改了 IP 别人要等这么久才拿到新的；填太小有些免费版会直接拒绝（阿里云免费版要求 ≥600）。
+              </div>
+            </div>
+          </div>
+
+          <div class="banner warn">
+            <b>填几条，这个域名下就只留几条。</b>其他同名的 A 记录（包括你以前手工加的）会被删掉，
+            否则会一直留着已经失效的旧 IP。测不出 IP 的时候一条都不会删。
+            <br>
+            另外，多条 A 记录不是「都用最快那条」，访问者是随机挑一条。所以 2～3 条是「一条挂了还有备胎」，
+            填到 5 条以上，大部分访问反而会落到不是最快的那些上面。
+          </div>
+
+          <div class="field" id="dd-proxied-box">
+            <div class="switch">
+              <input type="checkbox" id="dd-proxied">
+              <label for="dd-proxied">开启 Cloudflare 云朵（代理）</label>
+            </div>
+            <div class="hint">
+              <b style="color:var(--warn)">一般不要开。</b>开了之后域名会解析到 Cloudflare 的节点，不再指向你测出来的最优 IP，
+              DDNS 就白做了——只有在你想隐藏源站、并且不需要优选 IP 的时候才开。
+            </div>
+          </div>
+
+          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+            <button class="btn sm" onclick="checkDDNS()">测试密钥</button>
+            <button class="btn sm" onclick="pushDDNS()">立即更新一次</button>
+          </div>
+          <div class="hint">
+            这两个按钮用的是<b>已经保存的</b>设置——刚改完的密钥请先点上方的「保存全部设置」，否则测的还是旧的。<br>
+            「测试密钥」只读：只确认密钥能不能用、能不能查到这个域名、现在指向哪里，<b>不会改动你的解析</b>。<br>
+            「立即更新一次」才会真的把当前最优 IP 写进去，不用等下一个测速周期。
+          </div>
+          <div id="dd-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 测速 ========== -->
+    <section class="page" id="page-speed">
+      <div class="card">
+        <div class="card-h"><h2>测速设置</h2><span class="sub">多久跑一次、跑多少候选、从哪些来源取 IP</span></div>
+        <div class="card-b">
+          <div class="form-grid">
+            <div class="field">
+              <label>自动测速间隔（分钟）</label>
+              <input type="number" id="sp-interval" min="0" step="10" placeholder="60">
+              <div class="hint">间隔填 0 表示不自动测速，只在点「立即测速」时执行。</div>
+            </div>
+            <div class="field">
+              <label>保留候选 IP 数</label>
+              <input type="number" id="sp-topn" min="1" placeholder="5">
+              <div class="hint">候选数越大，失败时可切换的备选越多。</div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>优选 IP 段（留空 = 使用 Cloudflare 官方 15 个段）</label>
+            <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
+            <div class="hint">
+              每行一条，三种写法都认：<b>IP 段</b>（104.16.0.0/13）、<b>单个 IP</b>（1.2.3.4）、<b>链接</b>（https://…）。
+              填了之后就<b>只用这些</b>——不再叠加 Cloudflare 官方段，也不再拉内置的两个外部聚合源；想恢复原来的行为，把这里清空保存即可。<br>
+              为什么需要它：官方那 15 个段里 104.16 / 104.24 / 172.64 三块占绝大多数，优选结果会明显往这几段集中。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 备份 ========== -->
+    <section class="page" id="page-backup">
+      <div class="card">
+        <div class="card-h"><h2>备份与恢复</h2><span class="sub">把全部设置存成一个文件</span></div>
+        <div class="card-b">
+          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+            <button class="btn sm" onclick="exportConfig()">导出配置文件</button>
+            <button class="btn sm" onclick="pickImport()">从文件恢复…</button>
+            <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importConfig(this)">
+          </div>
+          <div class="hint">
+            导出文件里带着 AdGuard 密码和各家的 DNS 密钥——请当密码一样保管，不要发到群里。<br>
+            「从文件恢复」会用文件里的内容覆盖当前全部设置（后台登录密码不受影响，也不会被改）。<br>
+            什么时候用得上：重装应用、换一台 NAS、或者哪天数据目录又被清空了。
+          </div>
+          <div id="export-manual" class="hidden">
+            <div class="hint" style="color:var(--warn)">
+              下面这段就是备份文件的内容。如果刚才浏览器没弹出下载（飞牛桌面把后台嵌在 iframe 里时个别浏览器会拦下载），
+              点一下框里全选复制，粘贴到记事本里存成 <code>.json</code> 文件即可。
+            </div>
+            <textarea id="export-text" readonly rows="8" onclick="this.select()"></textarea>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 密码 ========== -->
+    <section class="page" id="page-password">
+      <div class="card">
+        <div class="card-h"><h2>登录密码</h2><span class="sub">这个后台唯一的门</span></div>
+        <div class="card-b" style="max-width:560px">
+          <div class="field">
+            <label>当前密码</label>
+            <input type="password" id="pw-old" autocomplete="current-password" placeholder="先验证现在的密码">
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>新密码</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+            <div class="field"><label>再输一次</label><input type="password" id="pw-new2" autocomplete="new-password"></div>
+          </div>
+          <div class="hint" style="margin-bottom:16px">至少 8 位；别用 12345678、aaaaaaaa 这类连续或重复的，也别用 password、admin123 这类最常见的。改完立即生效，不用重启，也不用再去「应用设置」里改。</div>
+          <button class="btn primary" onclick="savePassword()">修改密码</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- 日志抽屉 -->
+<div class="drawer collapsed" id="drawer">
+  <div class="drawer-h" onclick="toggleDrawer()">
+    <b>运行日志</b>
+    <span class="live"><i></i>实时</span>
+    <div class="grow"></div>
+    <button class="btn sm flat" id="btn-copy-log" style="padding:3px 9px;font-size:11.5px"
+            onclick="event.stopPropagation();copyLogs()">复制全部</button>
+    <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6"/></svg>
+  </div>
+  <div class="drawer-b">
     <div class="logs" id="logs">暂无日志</div>
     <div class="hint" id="log-hint">最新的在最上面；点「复制全部」整段带走，也可以直接拖选——拖着选字的时候这里会暂停刷新，免得选到一半文字被换掉。</div>
   </div>
@@ -388,11 +707,23 @@ const PROVIDERS = {
   ]}
 };
 
-// LOG_HINT_TAIL 是日志卡下面那行提示的固定后半句。
+// LOG_HINT_TAIL 是日志框下面那行提示的固定后半句。
 // 单独抽出来是因为前半句要拼运行时的日志文件名，两处必须一致——否则
 // 「日志插到哪里去了」和「怎么复制」这两句话里总有一句会丢。
 const LOG_HINT_TAIL = "最新的在最上面；点「复制全部」整段带走，也可以直接拖选——" +
   "拖着选字的时候这里会暂停刷新，免得选到一半文字被换掉。";
+
+// 每个分页的标题和副标题。放在这里而不是写在 HTML 上，
+// 是因为「保存全部设置」按钮和标题栏是共用的，切页时要一起换。
+const PAGE_META = {
+  "page-overview": ["概览", "自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。"],
+  "page-domains":  ["要加速的域名", "这些域名会被指向最优 IP，写进 AdGuard Home 的 DNS 重写。"],
+  "page-adguard":  ["AdGuard Home", "把最优 IP 写进它的 DNS 重写表。"],
+  "page-ddns":     ["域名解析（DDNS）", "把最优 IP 写到你的域名，访问者直接连到最快的节点。"],
+  "page-speed":    ["测速设置", "多久跑一次、跑多少候选、从哪些来源取 IP。"],
+  "page-backup":   ["备份与恢复", "把全部设置存成一个文件。"],
+  "page-password": ["登录密码", "这个后台唯一的门。"]
+};
 
 let credState = {};
 let pollTimer = null;
@@ -409,6 +740,21 @@ function toast(msg) {
   t.classList.add("show");
   clearTimeout(t._h);
   t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+// ---- 分页切换 ----
+function goPage(el) {
+  const id = el.dataset.page;
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a === el));
+  const meta = PAGE_META[id] || ["", ""];
+  $("page-title").textContent = meta[0];
+  $("page-sub").textContent = meta[1];
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function toggleDrawer() {
+  $("drawer").classList.toggle("collapsed");
 }
 
 const TOKEN_KEY = "cfddns_token";
@@ -487,7 +833,9 @@ function addDomain(value = "") {
   const row = document.createElement("div");
   row.className = "domain-row";
   row.innerHTML = `<input type="text" placeholder="例如 openai.com" value="${value.replace(/"/g, '&quot;')}">
-    <button onclick="this.parentElement.remove()">删除</button>`;
+    <button onclick="this.parentElement.remove()" title="删除">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>`;
   $("domains").appendChild(row);
 }
 
@@ -536,13 +884,44 @@ async function loadConfig() {
 
 async function loadStatus() {
   const s = await api("/api/status");
-  $("ver").textContent = s.version ? " v" + s.version : "";
+  // 开发构建的版本号就是 "dev"，拼上 v 会变成「vdev」这种四不像。
+  $("ver").textContent = !s.version ? "" : (s.version === "dev" ? "开发版" : "v" + s.version);
   renderBanners(s);
   $("s-ip").textContent = s.last_ip || "—";
+
+  // 节点列表先算出来：下面的「最优节点的位置/速度/延迟」都从它取，
+  // 保证 Hero 和表格说的是同一件事（两处各算一次迟早会打架）。
+  const nodes = renderIPList(s);
+  const top = nodes.length ? nodes[0] : null;
+
+  // 最优节点的位置。查不到就说「位置未知」，不留空、不猜国家。
+  const place = $("s-place");
+  if (top && top.place) {
+    place.textContent = top.place;
+    place.className = "tag ok";
+  } else if (top && top.colo) {
+    place.textContent = "机房 " + top.colo;
+    place.className = "tag ok";
+  } else if (top) {
+    place.textContent = "位置未知";
+    place.className = "tag";
+  } else {
+    place.textContent = "";
+    place.className = "tag hidden";
+  }
+
+  // 速度 / 延迟：单位单独用小字，跟数字分开——「15.09」扫一眼就够，
+  // 「Mbps」只是注脚。
+  setMetric("s-speed", top && top.speed ? fmt2(top.speed) : "", "Mbps");
+  setMetric("s-delay", top && top.delay ? fmt2(top.delay) : "", "ms");
+
   // 有备选的时候把条数说出来，否则用户看不出「同步 5 条」到底生效没有。
   const alt = Array.isArray(s.last_ips) ? s.last_ips.length : 0;
-  $("s-iphint").textContent = alt > 1 ? `本次可用 ${alt} 条，按设置写前 ${Math.min(alt, parseInt($("dd-count").value || "1", 10) || 1)} 条` : "";
-  $("s-time").textContent = s.last_time || "—";
+  const iphint = $("s-iphint");
+  iphint.textContent = alt > 1 ? `本次可用 ${alt} 条，按设置写前 ${Math.min(alt, parseInt($("dd-count").value || "1", 10) || 1)} 条` : "";
+  // 没话可说时连那句提示一起藏掉，否则 IP 底下会留一小截空白。
+  iphint.classList.toggle("hidden", !iphint.textContent);
+  $("s-time").textContent = shortTime(s.last_time);
 
   // 下次测速：后端给的是「15:04」这种已经排好版的时间，为空就是没开定时。
   if (s.next_run_at) {
@@ -573,11 +952,26 @@ async function loadStatus() {
     setStat("s-lastok", "还没跑过", "muted");
   }
 
+  // 「用时 N 秒」只在这次启动跑成功过的时候才说。
+  // 它是从内存里来的（重启就没了），配上「成功」两个字才有意义——
+  // 单说一句「用时 38 秒」而不知道成没成，反而让人以为这是本次的进度。
+  const dur = $("s-dur"), dursep = $("s-dursep");
+  if (s.last_ok && s.last_duration_sec > 0) {
+    dur.textContent = "用时 " + s.last_duration_sec + " 秒";
+    dur.classList.remove("hidden");
+    dursep.classList.remove("hidden");
+  } else {
+    dur.textContent = "";
+    dur.classList.add("hidden");
+    dursep.classList.add("hidden");
+  }
+
   const dot = $("s-dot"), state = $("s-state");
   if (s.running) { dot.className = "dot busy"; state.textContent = "测速中"; }
   else { dot.className = "dot ok"; state.textContent = "空闲"; }
   $("btn-run").disabled = s.running;
-  $("btn-run").textContent = s.running ? "测速中…" : "立即测速";
+  // 只换文字那一半：按钮里还有个小闪电图标，直接写 textContent 会把图标一起抹掉。
+  $("btn-run-label").textContent = s.running ? "测速中…" : "立即测速";
 
   renderLogs(s.logs);
 
@@ -589,6 +983,123 @@ async function loadStatus() {
   if (s.ddns_enabled && s.ddns_missing && s.ddns_missing.length) {
     err.innerHTML += `<div class="banner warn">域名解析还没配好，缺少：${s.ddns_missing.join("、")}</div>`;
   }
+}
+
+// renderIPList 画「本次可用 IP」这张表，并把用到的节点数组返回给调用方。
+//
+// 数据全部来自后端 /api/status 的 nodes（与 last_ips 一一对应）：
+//   ip    —— 节点地址
+//   speed —— 这次测速实际跑出来的下行带宽（Mbps）
+//   delay —— TCP 握手往返（毫秒）
+//   colo  —— 真实机房代码，如 NRT
+//   place —— 「日本·东京(NRT)」，查不到机房时为空
+//
+// 缺哪一项就显示「—」。这三个数字是用户判断「该不该换 IP」的唯一依据，
+// 为了「和设计稿一样好看」而补一个数，是最坏的一种错。
+//
+// 返回值给 loadStatus 用：Hero 上的位置/速度/延迟必须和表格第一行一致，
+// 所以让它们共用同一份数据，而不是各自再取一次。
+function renderIPList(s) {
+  const box = $("ip-list");
+  if (!box) return [];
+
+  // 以 nodes 为准；老版本后端只给 last_ips，那就退化成「只有 IP」，
+  // 照样能显示，只是没有质量数据（页面不会因为少个字段就白掉）。
+  let nodes = Array.isArray(s.nodes) ? s.nodes.slice() : [];
+  const ips = Array.isArray(s.last_ips) ? s.last_ips : [];
+  if (!nodes.length) {
+    nodes = ips.map(ip => ({ ip: ip }));
+  }
+
+  if (!nodes.length) {
+    box.innerHTML = `<div class="empty">还没有结果。点上面的「立即测速」跑一次。</div>`;
+    return [];
+  }
+
+  const want = parseInt($("dd-count").value || "1", 10) || 1;
+  const n = Math.min(nodes.length, want);
+  // 速度条的满格取「本批最快那条」。用固定刻度（比如 100Mbps）的话，
+  // 一批 10Mbps 的节点会全变成看不见的短条，反而看不出彼此差距。
+  const fastest = nodes.reduce((m, x) => Math.max(m, x.speed || 0), 0);
+
+  box.innerHTML = nodes.map((node, i) => {
+    const write = i < n;
+    const speed = node.speed || 0;
+    const delay = node.delay || 0;
+
+    // 位置那行的三种情况：有完整地名 / 只有机房代码 / 什么都没探到。
+    // 后端给的是「日本·东京(NRT)」这种一整个字符串，这里把机房代码拆出来
+    // 单独用浅色小字排——一眼看到的是「日本·东京」，代码是查证用的。
+    let title = "位置未知";
+    let code = "";
+    if (node.place) {
+      const m = /^(.*?)\s*\(([A-Z0-9]{2,4})\)$/.exec(node.place);
+      if (m) {
+        title = escapeHtml(m[1]);
+        code = `<em>${escapeHtml(m[2])}</em>`;
+      } else {
+        title = escapeHtml(node.place);
+      }
+    } else if (node.colo) {
+      title = "机房 " + escapeHtml(node.colo);
+    }
+
+    const spd = speed
+      ? `<div class="n">${fmt2(speed)} <span class="miss">Mbps</span></div>
+         <div class="b"><i style="width:${fastest ? Math.max(6, Math.round(speed / fastest * 100)) : 0}%"></i></div>`
+      : `<div class="n miss">— <span>Mbps</span></div>`;
+
+    const lat = delay ? `${fmt2(delay)} ms` : "—";
+
+    return `<div class="iprow${write ? " write" : ""}">
+      <span class="idx">${i + 1}</span>
+      <div class="who">
+        <b>${title} ${code}</b>
+        <span>${escapeHtml(node.ip || "")}</span>
+      </div>
+      <div class="spd">${spd}</div>
+      <div class="lat${delay ? "" : " miss"}">${lat}</div>
+      <span class="tag${write ? " ok" : ""}">${write ? "已写入" : "备选"}</span>
+    </div>`;
+  }).join("");
+
+  return nodes;
+}
+
+// shortTime 把后端存的「2026-11-17 23:20:05」压成「今天 23:20」。
+//
+// 为什么压：这一格旁边还有「下次测速」，完整时间戳会把那一列挤到换行，
+// 而用户看这一格要判断的只是「多久以前跑的」，秒和年份都没用。
+// 认不出来的格式原样返回——宁可显示得丑，也不能显示错的日期。
+function shortTime(s) {
+  if (!s) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s);
+  if (!m) return s;
+  const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  if (isNaN(t.getTime())) return s;
+  const dayOf = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayOf(new Date()) - dayOf(t)) / 86400000);
+  const hm = m[4] + ":" + m[5];
+  if (days === 0) return "今天 " + hm;
+  if (days === 1) return "昨天 " + hm;
+  if (days > 1 && days < 7) return days + " 天前";
+  return m[2] + "-" + m[3] + " " + hm;
+}
+
+// fmt2 把数字固定成两位小数，和运行日志里的写法完全一致
+// （cfnb 打印的是「速度 15.09 Mbps 延迟 84.71 ms」）。
+// 两处数字对得上，用户拿页面和日志互相印证时不会以为哪一个错了。
+function fmt2(v) {
+  return Number(v).toFixed(2);
+}
+
+// setMetric 画 Hero 上的一个大指标：数字 + 小字单位。没有数字就显示「—」。
+function setMetric(id, num, unit) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = num
+    ? `${escapeHtml(num)} <small style="font-size:11.5px;font-weight:400;color:var(--dim)">${escapeHtml(unit)}</small>`
+    : `<span class="miss" style="color:var(--dim)">—</span>`;
 }
 
 // setStat 改一个指标格子的文字和颜色。color 传 ok/err/warn/muted，空串表示跟随主题。
@@ -978,7 +1489,10 @@ async function saveAll() {
 async function doRun() {
   try {
     await api("/api/run", { method: "POST" });
-    toast("已开始测速，进度见下方日志");
+    toast("已开始测速，进度见右下角日志");
+    // 顺手把日志抽屉展开：点了「立即测速」却看不到任何动静，
+    // 会让人以为没点成功。
+    $("drawer").classList.remove("collapsed");
     setTimeout(loadStatus, 600);
   } catch (e) { toast(e.message); }
 }

@@ -98,6 +98,12 @@ type Server struct {
 	nextRunAt time.Time
 	lastOK    bool
 	failCount int
+	// lastDurSec 是上一次测速实际花了几秒。
+	// 界面用它回答「跑一轮要多久」——用户点完「立即测速」最想知道的就是
+	// 「还要等多久」，而这是唯一能给他一个具体数字的依据（同一台机器、
+	// 同一个网络，上次多久这次大致就多久）。
+	// 不落盘：它是「这一进程跑的那一次」，重启后说「不知道」才对。
+	lastDurSec int
 	// restored 表示这次启动时 config.json 不见了、是从 .bak 恢复的。
 	// 单独存一份而不是每次去读 cfg.RestoredFromBackup：cfg 会被 Clone 和
 	// 覆盖，标志容易在某个保存路径上被顺手清掉，而这个提示一旦消失，
@@ -604,6 +610,14 @@ type statusResp struct {
 	// 上次测速排好序的完整 IP 列表。界面用它显示「已写入前 N 条」，
 	// 也让用户在改条数之前就能看到有哪些备选。
 	LastIPs []string `json:"last_ips"`
+
+	// Nodes 与 last_ips 一一对应，多带速度、延迟、机房。
+	// 以前界面只有一个光秃秃的 IP，用户看不出「为什么这条排第一」，
+	// 也没法判断换个 IP 是不是更好——这三个数就是答案。
+	Nodes []config.NodeStat `json:"nodes"`
+
+	// 上次测速花了多少秒。0 表示没记录（刚重启、还没跑过）。
+	LastDurationSec int `json:"last_duration_sec"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -628,6 +642,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastOK:          s.lastOK,
 		FailCount:       s.failCount,
 		LastIPs:         append([]string{}, cfg.LastIPs...),
+		Nodes:           append([]config.NodeStat{}, cfg.LastNodes...),
+		LastDurationSec: s.lastDurSec,
 	}
 	s.mu.Unlock()
 
@@ -945,7 +961,43 @@ func delayText(d time.Duration) string {
 	}
 }
 
+// buildNodeStats 把「引擎结果 + 机房探测结果」拼成界面要的节点列表。
+//
+// 以 res.IPs 为准逐条遍历，而不是遍历 res.Nodes：res.IPs 才是真正会被写进
+// 解析、也是 cfg.LastIPs 存下来的那份。两者顺序一致（parseOutput 同时追加），
+// 但一旦哪天不一致，界面显示的条数和实际写进域名条数就对不上——那是最容易
+// 让用户怀疑「程序到底做了没做」的一种不一致。
+//
+// 查不到机房的节点，Colo/Place 留空，界面显示「位置未知」。
+// 这里绝不按 IP 段去猜国家：Cloudflare 的 anycast IP 跟地理位置没有对应关系，
+// 猜出来的国家和真实出口可以相差半个地球。
+func buildNodeStats(res *engine.Result, colos map[string]string) []config.NodeStat {
+	if res == nil || len(res.IPs) == 0 {
+		return nil
+	}
+	byIP := make(map[string]engine.Node, len(res.Nodes))
+	for _, n := range res.Nodes {
+		byIP[n.IP] = n
+	}
+
+	out := make([]config.NodeStat, 0, len(res.IPs))
+	for _, ip := range res.IPs {
+		st := config.NodeStat{IP: ip}
+		if n, ok := byIP[ip]; ok {
+			st.Speed = n.Speed
+			st.Delay = n.Delay
+		}
+		if colo := colos[ip]; colo != "" {
+			st.Colo = colo
+			st.Place = exitInfo(colo)
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
 func (s *Server) runOnce(cfg config.Config) error {
+	startedAt := time.Now()
 	defer func() {
 		s.mu.Lock()
 		s.running = false
@@ -1073,8 +1125,11 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 用独立于测速的 ctx：测速的预算已经快用完时，沿用它会一条都探不出去，
 	// 那这行日志就成了「探测不到」，反而误导。
 	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitBudget)
-	s.logExitCountries(exitCtx, res.IPs)
+	colos := s.logExitCountries(exitCtx, res.IPs)
 	exitCancel()
+
+	// 每个 IP 一行「质量数据」，界面直接渲染，不用再算。
+	nodes := buildNodeStats(res, colos)
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 
@@ -1131,7 +1186,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 	s.mu.Lock()
 	s.cfg.LastIP = best
 	s.cfg.LastIPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
+	s.cfg.LastNodes = nodes
 	s.cfg.LastTime = now
+	s.lastDurSec = int(time.Since(startedAt).Seconds())
 	toSave := s.cfg.Clone()
 	s.mu.Unlock()
 

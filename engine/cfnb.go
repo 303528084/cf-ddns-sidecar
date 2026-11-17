@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,10 +43,30 @@ type Options struct {
 	UseBuiltinSources bool
 }
 
+// Node 是一个优选节点，连同它的质量数据。
+//
+// 速度和延迟本来就在 cfnb 的产出里，只是以前我们让配置把它们关掉了
+// （IP_TXT_SHOW_BANDWIDTH / IP_TXT_SHOW_LATENCY 都写死成 false），
+// 于是界面只能显示一串光秃秃的 IP，用户看不出「为什么第一条排第一」。
+// 打开之后 ip.txt 的行变成这样：
+//
+//	172.64.229.246:443#US 15.09 Mbps 45.23 ms
+//
+// 这两个数字是**那次测速量出来的真实值**，不是估算也不是补的。
+// 界面要拿它们让用户判断哪个更快，编一个是最坏的一种错。
+// 带宽测速整轮失败时 cfnb 会降级成「按 TCP 延迟排序」，那时候行里
+// 只有延迟没有速度——这里就老实留 0，界面显示「—」。
+type Node struct {
+	IP    string  `json:"ip"`
+	Speed float64 `json:"speed,omitempty"` // 下行带宽，Mbps
+	Delay float64 `json:"delay,omitempty"` // TCP 握手往返，毫秒
+}
+
 // Result 是一次测速的结果。
 type Result struct {
-	IPs  []string // 按质量从优到劣排序的可用 IP
-	Logs []string // 测速过程的日志行（供界面展示）
+	IPs   []string // 按质量从优到劣排序的可用 IP
+	Nodes []Node   // 与 IPs 一一对应，带速度/延迟
+	Logs  []string // 测速过程的日志行（供界面展示）
 }
 
 // Best 返回最优 IP（没有结果时返回空串）。
@@ -114,11 +135,12 @@ func Run(ctx context.Context, scriptPath, workDir string, opt Options, onProgres
 		return res, fmt.Errorf("测速引擎退出异常: %w", waitErr)
 	}
 
-	ips, err := parseOutput(outFile)
+	ips, nodes, err := parseOutput(outFile)
 	if err != nil {
 		return res, err
 	}
 	res.IPs = ips
+	res.Nodes = nodes
 	if len(ips) == 0 {
 		return res, fmt.Errorf("测速没有产出可用 IP（可能是数据源暂时不可达，稍后重试）")
 	}
@@ -203,11 +225,20 @@ func writeCfnbConfig(path string, opt Options) error {
 		"IP_CALIBRATION_ENABLED": false,
 		"ENABLE_LOGGING":         false,
 
-		// 输出内容：只要 IP，不要附加信息
-		"IP_TXT_SHOW_BANDWIDTH":    false,
+		// 输出内容：IP 后面跟上速度与延迟。
+		//
+		// 这两行以前是 false——当时界面只显示 IP，多出来反而要在解析时丢掉。
+		// 现在界面要显示「速度 15.09 Mbps / 延迟 84.71 ms」，而这是唯一
+		// 能拿到它们的地方：cfnb 不吐 JSON，只吐这个文本文件。
+		//
+		// 打开后每行形如 `172.64.229.246:443#US 15.09 Mbps 45.23 ms`，
+		// parseOutput 按「数值+单位」成对读，顺序变了也不会读错。
+		// 注意 TCP 延迟那一项（IP_TXT_SHOW_LATENCY）始终有值，
+		// HTTP 延迟/抖动（另外两个）需要 HTTP_LATENCY_ENABLED，本产品不开。
+		"IP_TXT_SHOW_BANDWIDTH":    true,
+		"IP_TXT_SHOW_LATENCY":      true,
 		"IP_TXT_SHOW_HTTP_LATENCY": false,
 		"IP_TXT_SHOW_HTTP_JITTER":  false,
-		"IP_TXT_SHOW_LATENCY":      false,
 		"AD_HEADER_ENABLED":        false,
 		"AD_FOOTER_ENABLED":        false,
 		"AD_PERLINE_ENABLED":       false,
@@ -220,20 +251,28 @@ func writeCfnbConfig(path string, opt Options) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-// parseOutput 解析 cfnb 输出的 ip.txt。
-// 每行通常是 `IP:端口#地区`，也可能是纯 IP 或带附加信息（速度/延迟），
-// 这里统一取出其中的 IP 部分。
-func parseOutput(path string) ([]string, error) {
+// parseOutput 解析 cfnb 输出的 ip.txt，返回 IP 列表与带质量数据的节点列表。
+//
+// 每行的格式由 cfnb 的 write_ip_txt 决定：
+//
+//	172.64.229.246:443#US 15.09 Mbps 45.23 ms
+//	172.64.229.246:443#US 45.23 ms          ← 带宽测速整轮失败、降级排序时
+//	104.16.0.87:443#US                      ← 两个开关都没命中时（老配置兜底）
+//
+// 所以不能按固定列号取值：一律「取第一个字段当节点，剩下按『数值 单位』成对扫」。
+// 单位只认 Mbps 和 ms；认不出来的词直接跳过，绝不让一个没见过的字段把整行读崩。
+func parseOutput(path string) ([]string, []Node, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
 	var ips []string
+	var nodes []Node
 	seen := make(map[string]bool)
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -241,8 +280,11 @@ func parseOutput(path string) ([]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// 取第一个字段，然后剥掉 "#地区" 与 ":端口"
-		token := strings.Fields(line)[0]
+		fields := strings.Fields(line)
+		// 取第一个字段，然后剥掉 "#地区" 与 ":端口"。
+		// 那个 #地区 是**占位值**（我们补的 #US），不是真实位置，
+		// 真实位置由 web 层去问 Cloudflare 出口（见 web/exitgeo.go）。
+		token := fields[0]
 		if i := strings.IndexByte(token, '#'); i > 0 {
 			token = token[:i]
 		}
@@ -255,9 +297,32 @@ func parseOutput(path string) ([]string, error) {
 			continue
 		}
 		seen[ip] = true
+
+		n := Node{IP: ip}
+		// 从第 2 个字段起，两两一对：数值 + 单位。
+		for i := 1; i+1 < len(fields); i += 2 {
+			v, err := strconv.ParseFloat(fields[i], 64)
+			if err != nil {
+				// 不是「数值 单位」的排布，往后挪一个再看，
+				// 不 break —— 少读一个数字总比整行丢掉好。
+				continue
+			}
+			switch strings.ToLower(fields[i+1]) {
+			case "mbps":
+				n.Speed = v
+			case "ms":
+				// 可能有多段 ms（HTTP 延迟、抖动、TCP 延迟），
+				// 取第一个：那是离用户感知最近的那个数。
+				if n.Delay == 0 {
+					n.Delay = v
+				}
+			}
+		}
+
 		ips = append(ips, ip)
+		nodes = append(nodes, n)
 	}
-	return ips, scanner.Err()
+	return ips, nodes, scanner.Err()
 }
 
 // looksLikeIP 做轻量格式校验（不引入 net.ParseIP 的开销与 IPv6 括号差异）。

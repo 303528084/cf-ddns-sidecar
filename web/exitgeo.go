@@ -191,15 +191,23 @@ var coloGeo = map[string]place{
 	"LIM": {"秘鲁", "利马"}, "BOG": {"哥伦比亚", "波哥大"},
 }
 
-// logExitCountries 探测这一轮选出来的 IP 实际落在哪个机房，并写一行日志。
+// logExitCountries 探测这一轮选出来的 IP 实际落在哪个机房，写一行日志，
+// 并把「IP → 机房代码」的结果返回给调用方。
+//
+// 返回值是这次改造新加的：位置信息以前只写进日志（用户得自己去那一长行里
+// 对序号），现在界面每个节点要显示「日本·东京 NRT」。同一次探测的结果
+// 两处都要用，不能各探一遍——那是两倍的外部请求，还可能给出两个答案。
 //
 // 只探前 exitProbes 个：这一行的用途是让用户对「这些 IP 到底在哪儿」有个
 // 可信的说法，不是做全量地理库。这些正是日志里排在最前面的那几条，所以
 // 输出的序号和上面的列表一一对应（1 对 1、2 对 2）。
-func (s *Server) logExitCountries(ctx context.Context, ips []string) {
+//
+// 探不到的 IP 不会出现在返回的 map 里——查不到就说查不到，不编。
+func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]string {
+	colos := make(map[string]string, len(ips))
 	n := len(ips)
 	if n == 0 {
-		return
+		return colos
 	}
 	if n > exitProbes {
 		n = exitProbes
@@ -208,6 +216,8 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 
 	results := make([]string, n)
 	okCount := make([]bool, n)
+	// 每个 goroutine 只写自己那个下标，所以不用加锁。
+	probed := make([]string, n)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, traceWorkers)
 	for i, ip := range head {
@@ -225,10 +235,17 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 				return
 			}
 			okCount[i] = true
+			probed[i] = colo
 			results[i] = fmt.Sprintf("%d. %s→%s", i+1, ip, exitInfo(colo))
 		}(i, ip)
 	}
 	wg.Wait()
+
+	for i, ip := range head {
+		if probed[i] != "" {
+			colos[ip] = probed[i]
+		}
+	}
 
 	known := 0
 	for _, ok := range okCount {
@@ -240,7 +257,8 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) {
 	// 又像是出了问题（其实只是这个网络到那个域名不通，和测速结果无关）。
 	if known == 0 {
 		s.appendLog("各节点实际出口：探测不到（连不上 " + traceHost + "，与测速结果无关）")
-		return
+		return colos
 	}
 	s.appendLog("各节点实际出口（对应上面同样序号那一条）：" + strings.Join(results, "、"))
+	return colos
 }
