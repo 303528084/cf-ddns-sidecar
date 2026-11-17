@@ -200,12 +200,23 @@
   .switch input{width:auto;accent-color:var(--accent)}
   .switch label{margin:0;color:var(--text);font-size:13px;font-weight:400}
 
-  .domain-row{display:flex;gap:9px;margin-bottom:9px;align-items:center}
-  .domain-row input{flex:1}
+  /* 域名行：输入框 + 下面一条「保存后的检查结果」。
+     用 align-items:flex-start 而不是 center，否则下面那条说明一出现，
+     删除按钮就会被拉到整块的正中间，看着像错位。 */
+  .domain-row{display:flex;gap:9px;margin-bottom:9px;align-items:flex-start}
+  .domain-row .dwrap{flex:1;min-width:0}
+  .domain-row input{width:100%}
   .domain-row button{
     border:none;background:transparent;color:var(--dim);cursor:pointer;padding:8px;border-radius:8px;flex:none;
   }
   .domain-row button:hover{color:var(--err);background:#fef3f2}
+  /* 检查结果的颜色只改字和边框，不改底色：底色的深浅两套主题差别很大，
+     写死一个浅红在深色模式下会变成一块刺眼的白斑。 */
+  .domain-row.bad input{border-color:var(--err)}
+  .domain-row .dmsg{font-size:11.5px;line-height:1.65;margin-top:5px}
+  .domain-row .dmsg.err{color:var(--err)}
+  .domain-row .dmsg.warn{color:var(--warn)}
+  .domain-row .dmsg.ok{color:var(--ok)}
 
   /* 告警条 */
   .banner{
@@ -220,6 +231,11 @@
   @media (prefers-color-scheme: dark){
     .banner.warn{background:#2a2113;border-color:#4a3a18;color:#e8c98a}
     .banner.err{background:#2b1717;border-color:#5a2a26;color:#f3a9a4}
+    /* 加粗那句要单独再提亮一次：上面只改了 .banner 的颜色，而
+       `.banner.err b{color:#8a1a12}` 是深红——深红压在深红底上几乎看不见。
+       （2026-11-17 截图核对时发现的，量出来是 rgb(138,26,18) 压 rgb(43,23,23)。）*/
+    .banner.warn b{color:#f3d9a4}
+    .banner.err b{color:#ffc4bf}
   }
 
   /* DDNS 结果 */
@@ -647,6 +663,7 @@
       <div class="card">
         <div class="card-h"><h2>要加速的域名</h2><span class="sub">这些域名会指向最优 IP</span></div>
         <div class="card-b">
+          <div id="dom-alert" class="hidden"></div>
           <div class="domains" id="domains"></div>
           <div class="hero-actions" style="border-top:none;padding-top:6px;margin-top:0">
             <button class="btn sm" onclick="addDomain()">
@@ -654,7 +671,12 @@
               添加域名
             </button>
           </div>
-          <div class="hint">填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。改完保存后，下次测速即生效。</div>
+          <div class="hint">
+            填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。
+            <b>点「保存全部设置」时会逐个检查它是不是真的走 Cloudflare 的边缘</b>——
+            不是的不会保存，下面会写明它解析到了哪个 IP。为什么要拦：本程序会把这个域名
+            指向 Cloudflare 的边缘 IP，域名本身没接 Cloudflare 的话，改完网页是打不开的。
+          </div>
         </div>
       </div>
     </section>
@@ -1067,11 +1089,72 @@ async function logout() {
 function addDomain(value = "") {
   const row = document.createElement("div");
   row.className = "domain-row";
-  row.innerHTML = `<input type="text" placeholder="例如 openai.com" value="${value.replace(/"/g, '&quot;')}">
+  // 输入框和它下面那条检查结果放在同一个 wrap 里，删除按钮留在外面——
+  // 这样说明文字换行时不会把按钮挤到奇怪的位置。
+  row.innerHTML = `<div class="dwrap">
+      <input type="text" placeholder="例如 openai.com" value="${value.replace(/"/g, '&quot;')}">
+      <div class="dmsg"></div>
+    </div>
     <button onclick="this.parentElement.remove()" title="删除">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>
     </button>`;
   $("domains").appendChild(row);
+}
+
+// setDomainMsg 往某一行下面写一条检查结果。kind: "" | "ok" | "warn" | "err"
+function setDomainMsg(row, text, kind) {
+  const box = row.querySelector(".dmsg");
+  if (!box) return;
+  box.className = "dmsg" + (kind ? " " + kind : "");
+  box.textContent = text || "";
+  row.classList.toggle("bad", kind === "err");
+}
+
+// clearDomainMsgs 清掉所有行的检查结果。重新检测之前必须清，否则上一轮
+// 的红字会留在这一轮的输入下面，看起来像「刚检测的结论」。
+function clearDomainMsgs() {
+  document.querySelectorAll("#domains .domain-row").forEach(r => setDomainMsg(r, "", ""));
+}
+
+// showDomainResults 把保存接口返回的检查结果贴回每一行。
+//
+// 后端返回三类：
+//   domains_rejected —— 确认不是走 Cloudflare 的，**没保存**（这就是用户要的
+//                       「不让添加」），标红并说明解析到了哪个 IP；
+//   domains_unknown  —— 查不了（DNS 超时/不通），**照样保存了**，标黄提醒；
+//   domains_kept     —— 通过的，不打扰。
+function showDomainResults(res) {
+  const rejected = (res && res.domains_rejected) || [];
+  const unknown = (res && res.domains_unknown) || [];
+  const byDomain = {};
+  rejected.forEach(r => { byDomain[r.domain] = { r, kind: "err" }; });
+  unknown.forEach(r => { byDomain[r.domain] = { r, kind: "warn" }; });
+
+  document.querySelectorAll("#domains .domain-row").forEach(row => {
+    const input = row.querySelector("input");
+    const d = (input.value || "").trim().toLowerCase();
+    const hit = byDomain[d];
+    if (hit) setDomainMsg(row, hit.r.reason, hit.kind);
+  });
+
+  if (rejected.length) {
+    // 用常驻横幅而不是 toast：toast 三秒就没了，而这条信息要陪着用户
+    // 去改域名，消失得太快等于没说过。
+    $("dom-alert").classList.remove("hidden");
+    $("dom-alert").innerHTML = '<div class="banner err"><b>有 ' + rejected.length +
+      ' 个域名没保存：它们没走 Cloudflare。</b>' +
+      '本程序会把这个域名指向 Cloudflare 的边缘 IP，域名本身没接 Cloudflare 的话，' +
+      '改完之后网页是打不开的。请改成确实用 Cloudflare 的域名，或者把这几行删掉再保存。' +
+      '</div>';
+  } else if (unknown.length) {
+    $("dom-alert").classList.remove("hidden");
+    $("dom-alert").innerHTML = '<div class="banner warn"><b>有 ' + unknown.length +
+      ' 个域名这次没验成（查不到它的 IP）。</b>已经照原样保存了，' +
+      '等 DNS 恢复后重新保存一次就能确认。</div>';
+  } else {
+    $("dom-alert").classList.add("hidden");
+    $("dom-alert").innerHTML = "";
+  }
 }
 
 // ---- 服务商密钥渲染 ----
@@ -1105,6 +1188,9 @@ async function loadConfig() {
   $("domains").innerHTML = "";
   (c.domains || []).forEach(addDomain);
   if (!(c.domains || []).length) addDomain();
+  // 刚加载出来的域名是「上次保存时验过的」，不该带着上一轮的红字。
+  clearDomainMsgs();
+  $("dom-alert").classList.add("hidden");
   $("sp-interval").value = c.interval_minutes;
   $("sp-topn").value = c.top_n;
   $("sp-bw").value = c.bandwidth_candidates || 100;
@@ -1787,8 +1873,9 @@ async function saveAll() {
     .map(i => i.value.trim()).filter(Boolean);
 
   // 1) 保存主配置
+  let res = null;
   try {
-    await api("/api/config", {
+    res = await api("/api/config", {
       method: "POST",
       body: JSON.stringify({
         adguard_url: $("ag-url").value.trim(),
@@ -1835,8 +1922,24 @@ async function saveAll() {
     } catch (e) { toast("密钥保存失败：" + e.message); return; }
   }
 
-  toast("已保存");
+  // 保存结果里带着「哪些域名没通过 Cloudflare 检查」。这几个**没存进去**，
+  // 所以下面 loadConfig 重建列表时它们不会出现——那正是用户要的「不让添加」，
+  // 但如果列表直接少了几行，用户会以为自己刚才那几行根本没输进去。
+  // 所以重建之后把它们补回列表并标红，让人能就地改。
+  const rejected = (res && res.domains_rejected) || [];
+
+  // 有域名被拒时不弹 toast：顶部那条红色横幅已经把「有几个没保存、为什么」
+  // 说得更清楚，而这个 toast 在手机上正好浮在被拒那一行的红字上面，把最该
+  // 看的那句话挡住三秒。重复一遍信息，还挡住正主，不如不弹。
+  if (!rejected.length) toast("已保存");
+
   await loadConfig();
+  if (rejected.length) {
+    const have = new Set([...document.querySelectorAll("#domains input")]
+      .map(i => i.value.trim().toLowerCase()));
+    rejected.forEach(r => { if (!have.has(r.domain)) addDomain(r.domain); });
+  }
+  showDomainResults(res);
   credState = await api("/api/credentials");
   renderProvider();
   await loadStatus();

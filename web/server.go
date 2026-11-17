@@ -792,7 +792,20 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if body.AdGuardPassword != "" {
 		cfg.AdGuard.Password = body.AdGuardPassword
 	}
-	cfg.Domains = normalizeDomains(body.Domains)
+	// 域名：先规范化，再逐个确认「这个域名是不是真的走 Cloudflare 边缘」。
+	//
+	// 为什么要拦：本产品把这个域名在局域网里改指向一个 Cloudflare 边缘 IP。
+	// 域名如果压根没接 Cloudflare，改完之后浏览器连到的是一个不认识这个站点
+	// 的边缘节点，页面直接打不开，而用户几乎不可能自己想到是这个原因。
+	// 详见 web/cfcheck.go 顶部那段（为什么用「解析结果在不在 CF 段里」判断，
+	// 而不是查 NS）。
+	//
+	// 三类结果分开处理：确认走 CF 的保存；确认不走的**不保存**（这就是用户
+	// 要的「不让添加」）；查不了的（DNS 超时/不通）**照样保存**，只是在响应
+	// 里标出来——因为当时网络抖了一下就把人家的域名删掉，比放过去糟得多。
+	submitted := normalizeDomains(body.Domains)
+	keptDomains, rejectedDomains, unknownDomains := screenDomains(r.Context(), submitted)
+	cfg.Domains = keptDomains
 	if body.TopN > 0 {
 		cfg.Speed.TopN = body.TopN
 	}
@@ -859,7 +872,21 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		s.appendLog("注意：Cloudflare 云朵（代理）已开启，域名会解析到 Cloudflare 的边缘节点，不再直接指向优选 IP")
 	}
 
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	// 被拦下的域名要进日志。用户过几天发现「我明明加了这个域名，怎么没生效」，
+	// 翻日志能直接看到是哪一条、解析到了哪个 IP——比只在界面上弹一下有用。
+	for _, r := range rejectedDomains {
+		s.appendLog("域名未保存：" + r.Domain + " —— " + r.Reason)
+	}
+	for _, u := range unknownDomains {
+		s.appendLog("域名已保存但没验成：" + u.Domain + " —— " + u.Reason)
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"ok":               true,
+		"domains_kept":     keptDomains,
+		"domains_rejected": rejectedDomains,
+		"domains_unknown":  unknownDomains,
+	})
 }
 
 // ---------- DDNS 密钥 ----------
