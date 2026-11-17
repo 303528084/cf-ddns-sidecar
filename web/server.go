@@ -678,6 +678,15 @@ type configResp struct {
 	DDNSTTL         int      `json:"ddns_ttl"`
 	DDNSProxied     bool     `json:"ddns_proxied"`
 	DDNSIPCount     int      `json:"ddns_ip_count"`
+
+	// 高级设置：引擎参数表 + 用户改过的值 + 没给开关的那些及原因。
+	//
+	// 表跟着配置一起发，不单开一个接口：它和「当前值」必须成对出现，
+	// 分成两个请求就有中间态——界面拿着旧表去渲染新值，那个参数会静默丢失。
+	EngineGroups    []engine.OptGroup    `json:"engine_groups"`
+	EngineOptions   []engine.OptSpec     `json:"engine_options"`
+	EngineExcluded  []engine.ExcludedOpt `json:"engine_excluded"`
+	EngineOverrides map[string]any       `json:"engine_overrides"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -701,6 +710,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSTTL:         c.DDNS.TTL,
 			DDNSProxied:     c.DDNS.Proxied,
 			DDNSIPCount:     c.DDNS.EffectiveIPCount(),
+			EngineGroups:    engine.Groups,
+			EngineOptions:   engine.Schema,
+			EngineExcluded:  engine.ExcludedReasons(),
+			EngineOverrides: c.Speed.EngineOverrides,
 		})
 	case http.MethodPost:
 		s.saveConfig(w, r)
@@ -729,6 +742,9 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSTTL      int       `json:"ddns_ttl"`
 		DDNSProxied  bool      `json:"ddns_proxied"`
 		DDNSIPCount  int       `json:"ddns_ip_count"`
+		// 高级设置。同样用指针：没传 = 不动（旧客户端、老导入文件），
+		// 传了空对象 = 用户点了「恢复默认」，要真的清空。
+		EngineOverrides *map[string]any `json:"engine_overrides"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -788,6 +804,13 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 此时保留原值，不能顺手清空——那会把用户辛苦填的段默默删掉。
 	if body.ExtraSources != nil {
 		cfg.Speed.ExtraSources = extraLines
+	}
+	// 引擎参数：同样「没传就不动」。NormalizeOverrides 会丢掉未知键、把
+	// 类型转成 cfnb 认识的（"443,8443" → []int{443,8443}）、把越界值钳住，
+	// 并丢掉「和默认值一样」的项——所以用户点「恢复默认」传空对象时，
+	// 结果就是 nil，config.json 里那条不会留下一个空壳。
+	if body.EngineOverrides != nil {
+		cfg.Speed.EngineOverrides = engine.NormalizeOverrides(*body.EngineOverrides)
 	}
 	cfg.DDNS.Enabled = body.DDNSEnabled
 	cfg.DDNS.Provider = strings.ToLower(strings.TrimSpace(body.DDNSProvider))
@@ -1065,6 +1088,11 @@ func (s *Server) runOnce(cfg config.Config) error {
 	var fallbackURLs []string
 
 	s.appendLog("开始测速…")
+	// 只打「用户改过的」那些。四十个参数全打会把日志淹掉，而用户改了开关
+	// 过几天忘了、行为和预期不符时，这一行是唯一的线索。
+	if d := engine.DescribeOverrides(cfg.Speed.EngineOverrides); d != "" {
+		s.appendLog("高级设置已生效：" + d)
+	}
 
 	if custom {
 		// 先交代「你配的是什么」，再交代「解析成了什么」。顺序不能反：
@@ -1146,6 +1174,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			CandidatesURL:       localCandidates,
 			ExtraURLs:           fallbackURLs,
 			UseBuiltinSources:   !custom,
+			Overrides:           cfg.Speed.EngineOverrides,
 		}, s.appendLog)
 	}
 

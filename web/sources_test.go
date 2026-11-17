@@ -77,9 +77,9 @@ func TestParseSourceTextFormats(t *testing.T) {
 			ips:  4,
 		},
 		{
-			name: "混合",
-			text: "104.16.0.0/13\n1.2.3.4\n1.2.3.5:8443#JP",
-			ips:  1,
+			name:  "混合",
+			text:  "104.16.0.0/13\n1.2.3.4\n1.2.3.5:8443#JP",
+			ips:   1,
 			nodes: 1,
 			cidrs: 1,
 		},

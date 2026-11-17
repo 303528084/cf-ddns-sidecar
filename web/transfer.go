@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
+	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
 const (
@@ -49,9 +50,15 @@ type bundleConfig struct {
 	TopN            int      `json:"top_n"`
 	Candidates      int      `json:"bandwidth_candidates"`
 	IntervalMinutes int      `json:"interval_minutes"`
-	DDNSEnabled     bool     `json:"ddns_enabled"`
-	DDNSProvider    string   `json:"ddns_provider"`
-	DDNSDomain      string   `json:"ddns_domain"`
+	// ExtraSources 以前漏了：用户辛苦填的「优选 IP 段」不在备份里，
+	// 换台机器恢复之后会悄悄退回官方段，而界面看起来「恢复成功」。
+	ExtraSources []string `json:"extra_sources,omitempty"`
+	// EngineOverrides 是高级设置里改过的引擎参数。同样是「不存就丢」的东西，
+	// 而且丢了以后表现是「测速行为变了但界面全是默认值」，最难查。
+	EngineOverrides map[string]any `json:"engine_overrides,omitempty"`
+	DDNSEnabled     bool           `json:"ddns_enabled"`
+	DDNSProvider    string         `json:"ddns_provider"`
+	DDNSDomain      string         `json:"ddns_domain"`
 }
 
 // bundle 是可导出、也可导入的文件格式。
@@ -106,6 +113,8 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 			TopN:            cfg.Speed.TopN,
 			Candidates:      cfg.Speed.BandwidthCandidates,
 			IntervalMinutes: cfg.Speed.IntervalMinutes,
+			ExtraSources:    append([]string{}, cfg.Speed.ExtraSources...),
+			EngineOverrides: cfg.Speed.EngineOverrides,
 			DDNSEnabled:     cfg.DDNS.Enabled,
 			DDNSProvider:    cfg.DDNS.Provider,
 			DDNSDomain:      cfg.DDNS.Domain,
@@ -255,6 +264,14 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	cfg.Speed.TopN = b.Config.TopN
 	cfg.Speed.BandwidthCandidates = b.Config.Candidates
 	cfg.Speed.IntervalMinutes = b.Config.IntervalMinutes
+	// ExtraSources / EngineOverrides 用 nil 判断「文件里没有这一项」：
+	// 老版本导出的文件里没有这两个字段，此时保留当前值，不能顺手清空。
+	if b.Config.ExtraSources != nil {
+		cfg.Speed.ExtraSources = b.Config.ExtraSources
+	}
+	if b.Config.EngineOverrides != nil {
+		cfg.Speed.EngineOverrides = engine.NormalizeOverrides(b.Config.EngineOverrides)
+	}
 	cfg.DDNS.Enabled = b.Config.DDNSEnabled
 	cfg.DDNS.Provider = b.Config.DDNSProvider
 	cfg.DDNS.Domain = b.Config.DDNSDomain

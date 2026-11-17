@@ -359,6 +359,69 @@
     table.nodes tbody tr:hover{background:#1b212b}
     .pill.ok{border-color:#1f4430}
   }
+  /* ---------- 高级设置（引擎参数） ----------
+     四十来个开关不能平铺：一屏塞不下，而且「不确定就别动」这句话必须
+     出现在每一行旁边，而不是只在页面顶上喊一次。所以每个参数后面跟一个
+     圆形问号，悬停出说明、移开就消失——纯 CSS，不用 JS 管状态，也就不会
+     出现「点了别处气泡还挂着」那种粘滞。
+
+     气泡的定位挂在整行（.adv-row）上，不是挂在问号上：问号在长标签后面
+     会跑到行尾，气泡再从那儿往下展开就顶出卡片右边了。挂整行 + 左右各
+     留 14px，多窄的屏都不会横向溢出。 */
+  .adv-note{font-size:12px;color:var(--muted);background:var(--accent-soft);
+    border:1px solid var(--line2);border-radius:9px;padding:10px 13px;line-height:1.7;margin-bottom:14px}
+  .adv-note b{color:var(--text);font-weight:600}
+  .adv-group{border:1px solid var(--line2);border-radius:10px;margin-bottom:10px}
+  .adv-group>summary{list-style:none;cursor:pointer;padding:11px 14px;display:flex;
+    align-items:baseline;gap:9px;flex-wrap:wrap;border-radius:10px}
+  .adv-group>summary::-webkit-details-marker{display:none}
+  .adv-group>summary:hover{background:var(--line2)}
+  .adv-group>summary .adv-t{font-size:13px;font-weight:600}
+  .adv-group>summary .adv-s{font-size:11.5px;color:var(--dim)}
+  .adv-group>summary .adv-n{margin-left:auto;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .adv-row{position:relative;display:grid;grid-template-columns:1fr auto;
+    gap:14px;align-items:center;padding:11px 14px;border-top:1px solid var(--line2)}
+  .adv-row .lab{display:flex;align-items:center;gap:7px;font-size:13px;min-width:0}
+  .adv-row .lab .chg{font-size:10px;color:var(--accent);background:var(--accent-soft);
+    border-radius:4px;padding:1px 5px;flex:0 0 auto}
+  .adv-row input[type=text],.adv-row input[type=number],.adv-row select{width:152px;margin:0}
+  .adv-row input[type=checkbox]{width:auto;margin:0;accent-color:var(--accent)}
+  .q{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;flex:0 0 auto;
+    border-radius:50%;border:1px solid var(--line);background:var(--line2);color:var(--dim);
+    font-size:10px;font-weight:700;cursor:help;user-select:none}
+  .q:hover,.q:focus{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none}
+  .q .tip{display:none;position:absolute;left:14px;right:14px;top:calc(100% - 6px);z-index:80;
+    padding:10px 12px;border-radius:9px;background:var(--card);border:1px solid var(--line);
+    box-shadow:var(--shadow);color:var(--muted);font-size:11.5px;font-weight:400;
+    line-height:1.75;text-align:left;white-space:normal}
+  .q:hover .tip,.q:focus .tip{display:block}
+  /* 「不给开关」的说明：默认展开。收起时只剩一行灰字，看上去像无关紧要的
+     注脚，而它恰恰是用户最想问的「为什么 CF_API_TOKEN 没有」。所以给它做成
+     和分组一样的带边框折叠块，并且一进来就是展开的。 */
+  .adv-ex{margin-top:14px;border:1px solid var(--line2);border-radius:10px;
+    font-size:11.5px;color:var(--dim);line-height:1.8}
+  .adv-ex>summary{list-style:none;cursor:pointer;padding:11px 14px;display:flex;
+    align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--muted);
+    background:var(--line2);border-radius:9px}
+  .adv-ex[open]>summary{border-radius:9px 9px 0 0}
+  .adv-ex>summary::-webkit-details-marker{display:none}
+  /* 三角用 border 拼，不用字符：字符在不同字体下宽窄不一，会把标题顶歪 */
+  .adv-ex>summary::before{content:"";flex:0 0 auto;width:0;height:0;
+    border-left:5px solid currentColor;border-top:4px solid transparent;
+    border-bottom:4px solid transparent;transition:transform .15s}
+  .adv-ex[open]>summary::before{transform:rotate(90deg)}
+  .adv-ex ul{margin:0;padding:11px 16px 12px 32px}
+  .adv-ex li{margin-bottom:7px}
+  .adv-ex li:last-child{margin-bottom:0}
+  .adv-ex code{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--line2);
+    border-radius:4px;padding:1px 4px}
+  @media(max-width:700px){
+    .adv-row{grid-template-columns:1fr;gap:8px}
+    /* 单列之后复选框会被 grid 拉到中间（默认 stretch/居中），看着像没对齐；
+       靠左放，和上面的标签对齐。数字框本来就是 100% 宽，不受影响。 */
+    .adv-row{justify-items:start}
+    .adv-row input[type=text],.adv-row input[type=number],.adv-row select{width:100%}
+  }
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -715,6 +778,14 @@
               <input type="number" id="sp-topn" min="1" placeholder="5">
               <div class="hint">候选数越大，失败时可切换的备选越多。</div>
             </div>
+            <div class="field">
+              <label>进入带宽测速的候选数</label>
+              <input type="number" id="sp-bw" min="1" placeholder="100">
+              <div class="hint">
+                先按延迟筛出这么多条，再去真下载测速。数字越大结果越准，但整轮越慢——
+                每一条都要真的下载一次。默认 100。
+              </div>
+            </div>
           </div>
 
           <div class="field">
@@ -728,8 +799,28 @@
           </div>
         </div>
       </div>
-    </section>
 
+      <!-- 高级设置：测速引擎的全部开关。参数表由后端 engine.Schema 提供，
+           这里只负责渲染——加参数不用改这段 HTML。 -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-h">
+          <h2>高级设置</h2>
+          <span class="sub">测速引擎的全部开关</span>
+          <div class="right">
+            <button class="btn sm" onclick="resetAdvanced()">全部恢复默认</button>
+          </div>
+        </div>
+        <div class="card-b">
+          <div class="adv-note">
+            每一项后面都有一个问号，<b>鼠标移上去</b>就能看到「这是什么、动了会怎样」。
+            这些默认值都是反复试出来的，<b>不确定就别动</b>；想试随时可以点右上角「全部恢复默认」。
+            改过之后，下一次测速的日志里会多一行「高级设置已生效：…」，方便你事后核对。
+          </div>
+          <div id="adv-panel"></div>
+          <div id="adv-excluded"></div>
+        </div>
+      </div>
+    </section>
     <!-- ========== 备份 ========== -->
     <section class="page" id="page-backup">
       <div class="card">
@@ -1016,7 +1107,9 @@ async function loadConfig() {
   if (!(c.domains || []).length) addDomain();
   $("sp-interval").value = c.interval_minutes;
   $("sp-topn").value = c.top_n;
+  $("sp-bw").value = c.bandwidth_candidates || 100;
   $("sp-sources").value = (c.extra_sources || []).join("\n");
+  renderAdvanced(c);
   $("dd-enabled").checked = !!c.ddns_enabled;
   $("dd-provider").value = c.ddns_provider || "cloudflare";
   $("dd-domain").value = c.ddns_domain || "";
@@ -1024,6 +1117,143 @@ async function loadConfig() {
   $("dd-count").value = c.ddns_ip_count || 1;
   $("dd-proxied").checked = !!c.ddns_proxied;
   renderProvider();
+}
+
+// ---------- 高级设置（引擎参数） ----------
+//
+// 参数表由后端 engine.Schema 提供，这里只负责画出来。为什么不在前端写死
+// 一份：参数有四十个，前后端各维护一份必然走散——后端加了参数前端不显示，
+// 或者前端显示了一个后端根本不认的开关，用户改了没反应还查不出原因。
+// 问号里的说明文字同样来自后端，只写一处。
+let ADV = { specs: [], values: {} };
+
+function advIsSet(key) {
+  return Object.prototype.hasOwnProperty.call(ADV.values, key);
+}
+
+function advText(v) {
+  if (Array.isArray(v)) return v.join(",");
+  if (v === null || v === undefined) return "";
+  return String(v);
+}
+
+// advRow 画一行：标签 + 问号 + 控件。
+function advRow(s) {
+  const cur = advIsSet(s.key) ? ADV.values[s.key] : s.def;
+  const row = document.createElement("div");
+  row.className = "adv-row";
+
+  const lab = document.createElement("div");
+  lab.className = "lab";
+  // 说明文字直接拼进 DOM：它来自后端常量，不含用户输入。
+  lab.innerHTML = '<span>' + s.label + '</span>' +
+    '<span class="q" tabindex="0">?<span class="tip">' + s.help + '</span></span>' +
+    (advIsSet(s.key) ? '<span class="chg">已改</span>' : "");
+  row.appendChild(lab);
+
+  let ctl;
+  if (s.kind === "bool") {
+    ctl = document.createElement("input");
+    ctl.type = "checkbox";
+    ctl.checked = !!cur;
+  } else if (s.kind === "level") {
+    ctl = document.createElement("select");
+    (s.options || []).forEach(function (o) {
+      const op = document.createElement("option");
+      op.value = o;
+      op.textContent = o;
+      ctl.appendChild(op);
+    });
+    ctl.value = cur;
+  } else if (s.kind === "int" || s.kind === "float") {
+    ctl = document.createElement("input");
+    ctl.type = "number";
+    ctl.step = s.kind === "int" ? "1" : "0.1";
+    if (s.min) ctl.min = s.min;
+    if (s.max) ctl.max = s.max;
+    ctl.value = cur;
+  } else {
+    ctl = document.createElement("input");
+    ctl.type = "text";
+    ctl.value = advText(cur);
+  }
+  ctl.dataset.opt = s.key;
+  row.appendChild(ctl);
+  return row;
+}
+
+function renderAdvanced(c) {
+  ADV.specs = c.engine_options || [];
+  ADV.values = c.engine_overrides || {};
+  const panel = $("adv-panel");
+  panel.innerHTML = "";
+  (c.engine_groups || []).forEach(function (g) {
+    const items = ADV.specs.filter(function (s) { return s.group === g.key; });
+    if (!items.length) return;
+    const changed = items.filter(function (s) { return advIsSet(s.key); }).length;
+    const box = document.createElement("details");
+    box.className = "adv-group";
+    // 默认全部收起：四十行平铺会把「测速设置」挤到看不见的地方。
+    // 但改过的那一组自动展开，否则用户找不回自己动过什么。
+    box.open = changed > 0;
+    box.innerHTML = '<summary><span class="adv-t">' + g.title + '</span>' +
+      '<span class="adv-s">' + g.sub + '</span>' +
+      '<span class="adv-n">' + items.length + ' 项' +
+      (changed ? ' · 已改 ' + changed : '') + '</span></summary>';
+    const body = document.createElement("div");
+    items.forEach(function (s) { body.appendChild(advRow(s)); });
+    box.appendChild(body);
+    panel.appendChild(box);
+  });
+
+  const ex = $("adv-excluded");
+  const list = c.engine_excluded || [];
+  if (!list.length) { ex.innerHTML = ""; return; }
+  // open：默认展开。收起时这一块只有一行灰字，用户会以为「没什么可看的」，
+  // 而它回答的正是「我明明在日志里看到 CF_* 参数，界面为什么没有」。
+  ex.innerHTML = '<details class="adv-ex" open><summary>有 ' + list.length +
+    ' 组参数故意没给开关，为什么？</summary><ul>' +
+    list.map(function (e) {
+      return '<li><code>' + e.key + '</code><br>' + e.why + '</li>';
+    }).join("") + '</ul></details>';
+}
+
+// collectAdvanced 读回界面上所有值。
+//
+// 数字框空着或填了非数字时**跳过这一项**（不是当 0 交上去）：当成 0 会被
+// 后端钳到最小值，用户清空一个框的后果变成「悄悄改成 1」，比不动更糟。
+function collectAdvanced() {
+  const out = {};
+  document.querySelectorAll("#adv-panel [data-opt]").forEach(function (el) {
+    const key = el.dataset.opt;
+    const spec = ADV.specs.filter(function (s) { return s.key === key; })[0];
+    if (!spec) return;
+    if (spec.kind === "bool") {
+      out[key] = !!el.checked;
+    } else if (spec.kind === "int") {
+      const n = parseInt(el.value, 10);
+      if (!isNaN(n)) out[key] = n;
+    } else if (spec.kind === "float") {
+      const n = parseFloat(el.value);
+      if (!isNaN(n)) out[key] = n;
+    } else if (el.value.trim() !== "") {
+      out[key] = el.value.trim();
+    }
+  });
+  return out;
+}
+
+// resetAdvanced 只把界面改回默认值，不直接提交——用户还得点「保存」。
+// 直接提交会让「点错了」变成一次不可撤销的线上变更。
+function resetAdvanced() {
+  document.querySelectorAll("#adv-panel [data-opt]").forEach(function (el) {
+    const key = el.dataset.opt;
+    const spec = ADV.specs.filter(function (s) { return s.key === key; })[0];
+    if (!spec) return;
+    if (spec.kind === "bool") el.checked = !!spec.def;
+    else el.value = advText(spec.def);
+  });
+  toast("已改回默认值，点「保存全部设置」才生效");
 }
 
 async function loadStatus() {
@@ -1566,7 +1796,8 @@ async function saveAll() {
         adguard_password: $("ag-pass").value,
         domains,
         top_n: parseInt($("sp-topn").value || "5", 10),
-        bandwidth_candidates: 100,
+        // 以前这里写死 100，等于每次保存都把用户改过的值按回 100。
+        bandwidth_candidates: parseInt($("sp-bw").value || "100", 10) || 100,
         interval_minutes: parseInt($("sp-interval").value || "0", 10),
         // 必须**总是**带上这个字段（哪怕是空数组）：后端用「有没有这个字段」
         // 区分「没传 = 保持原值」和「传空 = 用户主动清空」。少了它，用户
@@ -1585,7 +1816,10 @@ async function saveAll() {
         ddns_ip_count: parseInt($("dd-count").value || "1", 10) || 1,
         // 非 Cloudflare 时这个框是藏着的，读出来可能是勾着的旧值——
         // 服务商不是 Cloudflare 就一定按 false 交，免得存进去一个用不上的标记。
-        ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked
+        ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked,
+        // 高级设置里所有开关的当前值。后端只保留「和默认值不同」的项，
+        // 所以全默认时这里是个空对象，config.json 里不会多出一坨东西。
+        engine_overrides: collectAdvanced()
       })
     });
   } catch (e) { toast("保存失败：" + e.message); return; }

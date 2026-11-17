@@ -56,6 +56,19 @@ type SpeedConfig struct {
 	// 为什么必须是「只用」而不是「叠加」：实测 zip.cm.edu.kg 一个源就能给
 	// 12757 个 IP，叠加进来等于用户填的段被彻底淹没，设了跟没设一样。
 	ExtraSources []string `json:"extra_sources,omitempty"`
+
+	// EngineOverrides 是用户在「高级设置」里改过的测速引擎参数，
+	// 键名与 engine.Schema 一一对应（比如 "HTTP_LATENCY_ENABLED": true）。
+	//
+	// 为什么用 map 而不是四十多个具名字段：cfnb 有 99 个参数、24 个布尔开关，
+	// 全做成字段会让这个结构体变成一个没人看得懂的参数垃圾桶，而每加一个
+	// 参数要动 config / engine / web / 前端四处，漏一处就静默失效。
+	// 用一张表（engine.Schema）+ 一个 map，只有一处需要改。
+	//
+	// 只存「和默认值不同」的项（见 engine.NormalizeOverrides）：全是默认值时
+	// 这里是 nil，config.json 里不会多出一个空对象，也不会因为以后改默认值
+	// 而让老配置「被用户设定过」。
+	EngineOverrides map[string]any `json:"engine_overrides,omitempty"`
 }
 
 // DDNSConfig 描述把最优 IP 写到自有域名解析记录的行为。
@@ -364,6 +377,15 @@ func (c *Config) Clone() Config {
 	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
 	if len(c.Speed.ExtraSources) > 0 {
 		cp.Speed.ExtraSources = append(make([]string, 0, len(c.Speed.ExtraSources)), c.Speed.ExtraSources...)
+	}
+	// EngineOverrides 是 map，浅拷贝只会拷到同一个底层哈希表——保存配置时
+	// 一边删键一边被测速线程读，是 Go 里会直接 panic 的那种并发写。
+	if len(c.Speed.EngineOverrides) > 0 {
+		m := make(map[string]any, len(c.Speed.EngineOverrides))
+		for k, v := range c.Speed.EngineOverrides {
+			m[k] = v
+		}
+		cp.Speed.EngineOverrides = m
 	}
 	return cp
 }

@@ -41,6 +41,12 @@ type Options struct {
 	// 吐 12757 个 IP，叠加进来会把用户划定的范围整个淹没，
 	// 表现为「我明明填了段，优选出来还是原来那些」。
 	UseBuiltinSources bool
+	// Overrides 是用户在「高级设置」里改过的引擎参数，键名见 engine.Schema。
+	//
+	// 它盖在下面 writeCfnbConfig 拼好的基础配置**之后**：基础配置里的那些值
+	// 是我们替用户做的决定（端口只留 443、强制直连、关掉广告行……），
+	// 用户明确改过的才算数。不在这张表里的键一律丢弃，见 ApplyOverrides。
+	Overrides map[string]any
 }
 
 // Node 是一个优选节点，连同它的质量数据。
@@ -243,6 +249,13 @@ func writeCfnbConfig(path string, opt Options) error {
 		"AD_FOOTER_ENABLED":        false,
 		"AD_PERLINE_ENABLED":       false,
 	}
+
+	// 用户「高级设置」里改过的参数盖在最上面。
+	//
+	// 放在这里而不是逐个字段判断，是因为基础配置是「我们替用户做的决定」，
+	// 而用户明确改过的值优先级更高。ApplyOverrides 只认 engine.Schema 里的键，
+	// 手改 config.json 塞进来的奇怪参数会被丢掉。
+	ApplyOverrides(cfg, opt.Overrides)
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
