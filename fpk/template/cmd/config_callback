@@ -1,6 +1,90 @@
 #!/bin/bash
+#
+# 飞牛生命周期脚本：config_callback（用户在「应用设置」里保存后执行）。
+#
+# 把向导表单里填的值写进 ddns.env，然后重启容器让旁路重新读取配置，
+# 这样用户不用自己去文件管理里编辑文本文件。
+#
+# 规则：字段留空 = 保持原样。这样用户只改域名时，不会被空白的密钥框
+# 把原来的密钥覆盖掉（表单不回显密码，这是飞牛的行为）。
 
-# 飞牛生命周期脚本：config_callback。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+DATA_ROOT="${CFDDNS_DATA_DIR:-/var/apps/${APP_NAME}/share/${APP_NAME}/data}"
+ENV_FILE="${DATA_ROOT}/ddns.env"
+CONTAINER_NAME="cf-ddns-sidecar"
+
+log() {
+    echo "[cf-ddns-sidecar] $*"
+}
+
+fail() {
+    echo "$1" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    exit 1
+}
+
+# 写入/更新一个 KEY=VALUE（值为空则跳过；同时处理被注释掉的 "#KEY=" 行）
+set_kv() {
+    local key="$1" val="$2" file="$3"
+
+    [ -z "$val" ] && return 0
+    [ -f "$file" ] || : > "$file"
+
+    local tmp
+    tmp="$(mktemp "${file}.tmpXXXXXX")" || return 1
+
+    local found=0 line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "${key}="*|"#${key}="*)
+                printf '%s=%s\n' "$key" "$val" >> "$tmp"
+                found=1
+                ;;
+            *)
+                printf '%s\n' "$line" >> "$tmp"
+                ;;
+        esac
+    done < "$file"
+
+    if [ "$found" -eq 0 ]; then
+        printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    fi
+
+    mv "$tmp" "$file" || return 1
+    chmod 0644 "$file" 2>/dev/null
+    return 0
+}
+
+mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
+
+# —— 基本项 ——
+set_kv "CFDDNS_PROVIDER"      "${wizard_provider:-}"   "$ENV_FILE" || fail "写入服务商失败"
+set_kv "CFDDNS_DOMAIN"        "${wizard_domain:-}"     "$ENV_FILE" || fail "写入域名失败"
+set_kv "CFDDNS_POLL_INTERVAL" "${wizard_poll:-}"       "$ENV_FILE" || fail "写入检查间隔失败"
+
+# —— Cloudflare ——
+set_kv "CF_API_TOKEN"   "${wizard_cf_token:-}"    "$ENV_FILE"
+set_kv "CF_ZONE_ID"     "${wizard_cf_zone_id:-}"  "$ENV_FILE"
+
+# —— 阿里云 ——
+set_kv "ALIYUN_ACCESS_KEY_ID"     "${wizard_aliyun_ak:-}" "$ENV_FILE"
+set_kv "ALIYUN_ACCESS_KEY_SECRET" "${wizard_aliyun_sk:-}" "$ENV_FILE"
+
+# —— 腾讯云 DNSPod ——
+set_kv "TENCENT_SECRET_ID"  "${wizard_tencent_id:-}"  "$ENV_FILE"
+set_kv "TENCENT_SECRET_KEY" "${wizard_tencent_key:-}" "$ENV_FILE"
+
+# —— 华为云 ——
+set_kv "HUAWEI_AK"      "${wizard_huawei_ak:-}"      "$ENV_FILE"
+set_kv "HUAWEI_SK"      "${wizard_huawei_sk:-}"      "$ENV_FILE"
+set_kv "HUAWEI_ZONE_ID" "${wizard_huawei_zone_id:-}" "$ENV_FILE"
+
+log "配置已保存到 ${ENV_FILE}"
+
+# 重启容器让新配置生效（失败不阻断，用户也可以在应用中心手动重启）
+if docker restart "$CONTAINER_NAME" >/dev/null 2>&1; then
+    log "已重启容器使配置生效"
+else
+    log "容器重启失败，请在应用中心手动停止再启动一次"
+fi
+
 exit 0
