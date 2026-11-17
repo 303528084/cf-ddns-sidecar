@@ -23,6 +23,7 @@ type aliyun struct {
 type aliyunRecord struct {
 	RecordID string `json:"RecordID"`
 	Value    string `json:"Value"`
+	TTL      int    `json:"TTL"`
 }
 
 type aliyunRecordsResp struct {
@@ -60,65 +61,113 @@ func inferRoot(domain string) string {
 
 func (a *aliyun) Name() string { return "阿里云" }
 
-// queryA 查这条域名的 A 记录（查询与校验共用）。
-func (a *aliyun) queryA(domain string) (aliyunRecord, bool, error) {
+// queryAllA 查这条域名下全部的 A 记录（查询与校验共用）。
+func (a *aliyun) queryAllA(domain string) ([]aliyunRecord, error) {
 	q := url.Values{}
 	q.Set("Action", "DescribeSubDomainRecords")
 	q.Set("SubDomain", domain)
 	q.Set("Type", "A")
 	var list aliyunRecordsResp
 	if err := a.request(q, &list); err != nil {
-		return aliyunRecord{}, false, fmt.Errorf("查询记录失败: %w", err)
+		return nil, fmt.Errorf("查询记录失败: %w", err)
 	}
-	if list.TotalCount > 0 && len(list.DomainRecords.Record) > 0 {
-		return list.DomainRecords.Record[0], true, nil
-	}
-	return aliyunRecord{}, false, nil
+	return list.DomainRecords.Record, nil
 }
 
 func (a *aliyun) Verify(domain string) (RecordState, error) {
-	rec, found, err := a.queryA(domain)
+	recs, err := a.queryAllA(domain)
 	if err != nil {
 		return RecordState{}, err
 	}
-	if !found {
-		return RecordState{}, nil
+	var state RecordState
+	for _, r := range recs {
+		state.Found = true
+		state.CurrentIPs = append(state.CurrentIPs, r.Value)
 	}
-	return RecordState{Found: true, CurrentIP: rec.Value}, nil
+	if len(state.CurrentIPs) > 0 {
+		state.CurrentIP = state.CurrentIPs[0]
+	}
+	return state, nil
 }
 
-func (a *aliyun) EnsureARecord(domain, ip string, opt RecordOptions) error {
-	rec, found, err := a.queryA(domain)
+func (a *aliyun) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
+	ips = normalizeIPs(ips)
+	if len(ips) == 0 {
+		return nil
+	}
+	recs, err := a.queryAllA(domain)
 	if err != nil {
 		return err
 	}
-	if found {
-		if rec.Value == ip {
-			return nil
+
+	// 先补齐、再删多余：顺序反了的话中间有一瞬间这域名没有任何 A 记录。
+	have := make(map[string]aliyunRecord, len(recs))
+	for _, r := range recs {
+		have[r.Value] = r
+	}
+	for _, ip := range ips {
+		if rec, ok := have[ip]; ok {
+			// 值已经对了，只差 TTL 就顺手改掉。opt.TTL 为 0 表示
+			// 「用账号默认」，那就不去动它——我们并不知道默认值是多少。
+			if opt.TTL > 0 && rec.TTL != opt.TTL {
+				if err := a.updateRecord(domain, rec.RecordID, ip, opt.TTL); err != nil {
+					return err
+				}
+			}
+			continue
 		}
-		u := url.Values{}
-		u.Set("Action", "UpdateDomainRecord")
-		u.Set("RecordId", rec.RecordID)
-		u.Set("RR", a.rr(domain))
-		u.Set("Type", "A")
-		u.Set("Value", ip)
-		// TTL 没填就一个字都不传：阿里云这时用账号默认值，也就是升级前的行为。
-		if opt.TTL > 0 {
-			u.Set("TTL", strconv.Itoa(opt.TTL))
+		if err := a.addRecord(domain, ip, opt.TTL); err != nil {
+			return err
 		}
-		return a.request(u, &struct{}{})
 	}
 
-	c := url.Values{}
-	c.Set("Action", "AddDomainRecord")
-	c.Set("DomainName", a.root)
-	c.Set("RR", a.rr(domain))
-	c.Set("Type", "A")
-	c.Set("Value", ip)
-	if opt.TTL > 0 {
-		c.Set("TTL", strconv.Itoa(opt.TTL))
+	want := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		want[ip] = true
 	}
-	return a.request(c, &struct{}{})
+	for _, r := range recs {
+		if want[r.Value] {
+			continue
+		}
+		if err := a.deleteRecord(r.RecordID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *aliyun) addRecord(domain, ip string, ttl int) error {
+	q := url.Values{}
+	q.Set("Action", "AddDomainRecord")
+	q.Set("DomainName", a.root)
+	q.Set("RR", a.rr(domain))
+	q.Set("Type", "A")
+	q.Set("Value", ip)
+	// TTL 没填就一个字都不传：阿里云这时用账号默认值，也就是升级前的行为。
+	if ttl > 0 {
+		q.Set("TTL", strconv.Itoa(ttl))
+	}
+	return a.request(q, &struct{}{})
+}
+
+func (a *aliyun) updateRecord(domain, recordID, ip string, ttl int) error {
+	q := url.Values{}
+	q.Set("Action", "UpdateDomainRecord")
+	q.Set("RecordId", recordID)
+	q.Set("RR", a.rr(domain))
+	q.Set("Type", "A")
+	q.Set("Value", ip)
+	if ttl > 0 {
+		q.Set("TTL", strconv.Itoa(ttl))
+	}
+	return a.request(q, &struct{}{})
+}
+
+func (a *aliyun) deleteRecord(recordID string) error {
+	q := url.Values{}
+	q.Set("Action", "DeleteDomainRecord")
+	q.Set("RecordId", recordID)
+	return a.request(q, &struct{}{})
 }
 
 func (a *aliyun) rr(domain string) string {

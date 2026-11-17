@@ -48,6 +48,25 @@ func recordOptions(d config.DDNSConfig) ddns.RecordOptions {
 	return ddns.RecordOptions{TTL: d.TTL, Proxied: d.Proxied}
 }
 
+// pickIPs 按排名取前 n 条，不足 n 条时有多少给多少。
+//
+// 顺序有意义：res.IPs 是从优到劣排好的，截断只能从头截。
+func pickIPs(ips []string, n int) []string {
+	if n <= 0 {
+		n = 1
+	}
+	if len(ips) > n {
+		ips = ips[:n]
+	}
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if strings.TrimSpace(ip) != "" {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
 // handleDDNSCheck 只读校验密钥：确认能用、能查到这条域名，并报出当前指向。
 func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -69,20 +88,29 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	bestIP := s.cfg.LastIP
+	allIPs := pickIPs(append([]string(nil), s.cfg.LastIPs...), cfg.DDNS.EffectiveIPCount())
 	s.mu.Unlock()
+	if len(allIPs) == 0 && bestIP != "" {
+		// 老配置里只有 last_ip（升级前存的），没有列表。
+		allIPs = []string{bestIP}
+	}
 
 	if state.Found {
-		s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 现在指向 %s", cfg.DDNS.Domain, state.CurrentIP))
+		s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 现在指向 %s（共 %d 条）",
+			cfg.DDNS.Domain, strings.Join(state.CurrentIPs, "、"), len(state.CurrentIPs)))
 	} else {
 		s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 还没有 A 记录，下次成功后会创建", cfg.DDNS.Domain))
 	}
 	writeJSON(w, 200, map[string]any{
-		"ok":         true,
-		"provider":   cfg.DDNS.Provider,
-		"domain":     cfg.DDNS.Domain,
-		"found":      state.Found,
-		"current_ip": state.CurrentIP,
-		"best_ip":    bestIP,
+		"ok":          true,
+		"provider":    cfg.DDNS.Provider,
+		"domain":      cfg.DDNS.Domain,
+		"found":       state.Found,
+		"current_ip":  state.CurrentIP,
+		"current_ips": state.CurrentIPs,
+		"best_ip":     bestIP,
+		// 界面上要说清「点立即更新会写几条」，否则用户以为只写最优那条。
+		"will_write": allIPs,
 	})
 }
 
@@ -99,11 +127,18 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	ip := s.cfg.LastIP
+	lastIP := s.cfg.LastIP
+	stored := append([]string(nil), s.cfg.LastIPs...)
 	busy := s.running
 	s.mu.Unlock()
 
-	if ip == "" {
+	// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速——
+	// 直接从这一份里截前 5 条就行。
+	ips := pickIPs(stored, cfg.DDNS.EffectiveIPCount())
+	if len(ips) == 0 && lastIP != "" {
+		ips = []string{lastIP} // 升级前存的配置只有单条
+	}
+	if len(ips) == 0 {
 		writeJSON(w, 400, map[string]string{
 			"error": "还没有测出最优 IP。先点「立即测速」；只想验证密钥对不对，用「测试密钥」就够了",
 		})
@@ -115,14 +150,15 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := p.EnsureARecord(cfg.DDNS.Domain, ip, recordOptions(cfg.DDNS)); err != nil {
+	if err := p.EnsureARecords(cfg.DDNS.Domain, ips, recordOptions(cfg.DDNS)); err != nil {
 		s.appendLog("手动推送域名解析失败: " + err.Error())
 		writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
 		return
 	}
 
-	s.appendLog(fmt.Sprintf("域名解析已手动更新：%s → %s", cfg.DDNS.Domain, ip))
-	writeJSON(w, 200, map[string]any{"ok": true, "domain": cfg.DDNS.Domain, "ip": ip})
+	s.appendLog(fmt.Sprintf("域名解析已手动更新：%s → %s（共 %d 条）",
+		cfg.DDNS.Domain, strings.Join(ips, "、"), len(ips)))
+	writeJSON(w, 200, map[string]any{"ok": true, "domain": cfg.DDNS.Domain, "ips": ips, "ip": ips[0]})
 }
 
 // handleAdguardRewrites 把 AdGuard 里现在的重写表读出来，并标出「下次测速会被清掉」

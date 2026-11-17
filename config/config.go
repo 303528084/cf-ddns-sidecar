@@ -61,6 +61,18 @@ type DDNSConfig struct {
 	TTL int `json:"ttl,omitempty"`
 	// Proxied 只对 Cloudflare 有效：true 表示开橙色云朵（走 Cloudflare 代理）。
 	Proxied bool `json:"proxied,omitempty"`
+
+	// IPCount 是一次往域名里写几条 A 记录：按测速排名从优到劣取前 N 条。
+	// 0 表示 1 条——老配置文件没有这个字段，行为必须和以前一模一样。
+	IPCount int `json:"ip_count,omitempty"`
+}
+
+// EffectiveIPCount 返回实际要写几条 A 记录。零值和负数都按 1 条处理。
+func (d DDNSConfig) EffectiveIPCount() int {
+	if d.IPCount <= 0 {
+		return 1
+	}
+	return d.IPCount
 }
 
 // Config 是全部配置，持久化为 config.json。
@@ -73,6 +85,10 @@ type Config struct {
 	// 运行状态（持久化便于重启后回显）
 	LastIP   string `json:"last_ip,omitempty"`
 	LastTime string `json:"last_time,omitempty"`
+	// LastIPs 是上次测速里真正写进解析的那几条（按排名）。存下来是为了
+	// 重启之后点「立即更新一次」还能把同一组推回去，不用重新测速；
+	// 只存 LastIP 的话，重启后那一下会把多出来的几条悄悄删掉。
+	LastIPs []string `json:"last_ips,omitempty"`
 
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
 	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
@@ -276,6 +292,11 @@ func (c *Config) Clone() Config {
 		cp.Domains = []string{}
 	} else {
 		cp.Domains = append(make([]string, 0, len(c.Domains)), c.Domains...)
+	}
+	// LastIPs 同样要拷一份：它是会被写进解析的列表，共享底层数组
+	// 就意味着一个 goroutine 在读、另一个在改，属于最难查的那种问题。
+	if len(c.LastIPs) > 0 {
+		cp.LastIPs = append(make([]string, 0, len(c.LastIPs)), c.LastIPs...)
 	}
 	return cp
 }

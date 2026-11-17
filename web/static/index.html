@@ -154,7 +154,7 @@
   <div class="card">
     <h2>当前状态</h2>
     <div class="stat-grid">
-      <div class="stat"><div class="k">最优 IP</div><div class="v" id="s-ip">—</div></div>
+      <div class="stat"><div class="k">最优 IP</div><div class="v" id="s-ip">—</div><div class="hint" id="s-iphint"></div></div>
       <div class="stat"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
       <div class="stat"><div class="k">下次测速</div><div class="v" id="s-next">—</div></div>
       <div class="stat"><div class="k">上次结果</div><div class="v" id="s-lastok">—</div></div>
@@ -237,23 +237,38 @@
 
     <div class="row">
       <div class="field">
+        <label>同步几条 IP</label>
+        <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
+        <div class="hint">
+          按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。
+        </div>
+      </div>
+      <div class="field">
         <label>记录缓存时间（TTL，秒）</label>
         <input type="number" id="dd-ttl" min="0" max="86400" step="60" placeholder="0">
         <div class="hint">
-          留 0 = 用各家的默认值（Cloudflare 自动、DNSPod 600、华为云 300、阿里云账号默认）。<br>
-          填了之后，改了 IP 别人要等这么久才拿到新的。想「换了马上生效」可以填 600（10 分钟）；
-          填太小有些免费版会直接拒绝（阿里云免费版要求 ≥600）。
+          留 0 = 用各家的默认值（Cloudflare 自动、DNSPod 600、华为云 300、阿里云账号默认）。
+          填了之后，改了 IP 别人要等这么久才拿到新的；填太小有些免费版会直接拒绝（阿里云免费版要求 ≥600）。
         </div>
       </div>
-      <div class="field" id="dd-proxied-box">
-        <div class="switch">
-          <input type="checkbox" id="dd-proxied">
-          <label for="dd-proxied" style="margin:0">开启 Cloudflare 云朵（代理）</label>
-        </div>
-        <div class="hint" style="color:var(--warn)">
-          一般<b>不要开</b>。开了之后域名会解析到 Cloudflare 的节点，不再指向你测出来的最优 IP，
-          DDNS 就白做了——只有在你想隐藏源站、并且不需要优选 IP 的时候才开。
-        </div>
+    </div>
+    <div style="margin-top:12px">
+      <div class="banner warn">
+        <b>填几条，这个域名下就只留几条。</b>其他同名的 A 记录（包括你以前手工加的）会被删掉，
+        否则会一直留着已经失效的旧 IP。测不出 IP 的时候一条都不会删。
+        <br>
+        另外，多条 A 记录不是「都用最快那条」，访问者是随机挑一条。所以 2～3 条是「一条挂了还有备胎」，
+        填到 5 条以上，大部分访问反而会落到不是最快的那些上面。
+      </div>
+    </div>
+    <div class="field" id="dd-proxied-box">
+      <div class="switch">
+        <input type="checkbox" id="dd-proxied">
+        <label for="dd-proxied" style="margin:0">开启 Cloudflare 云朵（代理）</label>
+      </div>
+      <div class="hint">
+        <b style="color:var(--warn)">一般不要开。</b>开了之后域名会解析到 Cloudflare 的节点，不再指向你测出来的最优 IP，
+        DDNS 就白做了——只有在你想隐藏源站、并且不需要优选 IP 的时候才开。
       </div>
     </div>
     <div class="actions">
@@ -464,6 +479,7 @@ async function loadConfig() {
   $("dd-provider").value = c.ddns_provider || "cloudflare";
   $("dd-domain").value = c.ddns_domain || "";
   $("dd-ttl").value = c.ddns_ttl || "";
+  $("dd-count").value = c.ddns_ip_count || 1;
   $("dd-proxied").checked = !!c.ddns_proxied;
   renderProvider();
 }
@@ -473,6 +489,9 @@ async function loadStatus() {
   $("ver").textContent = s.version ? " v" + s.version : "";
   renderBanners(s);
   $("s-ip").textContent = s.last_ip || "—";
+  // 有备选的时候把条数说出来，否则用户看不出「同步 5 条」到底生效没有。
+  const alt = Array.isArray(s.last_ips) ? s.last_ips.length : 0;
+  $("s-iphint").textContent = alt > 1 ? `本次可用 ${alt} 条，按设置写前 ${Math.min(alt, parseInt($("dd-count").value || "1", 10) || 1)} 条` : "";
   $("s-time").textContent = s.last_time || "—";
 
   // 下次测速：后端给的是「15:04」这种已经排好版的时间，为空就是没开定时。
@@ -658,20 +677,34 @@ async function checkDDNS() {
     const r = await api("/api/ddns/check", { method: "POST" });
     const label = (PROVIDERS[r.provider] || {}).label || r.provider;
     let rows = ddLine("服务商", escapeHtml(label)) + ddLine("域名", escapeHtml(r.domain));
-    if (r.found) rows += ddLine("现在指向", escapeHtml(r.current_ip || "（空）"));
-    else rows += ddLine("现在指向", "还没有这条 A 记录");
+    // 「现在指向」可能有多条：一个域名可以有多条 A，只说第一条会让人以为
+    // 其他的丢了。超过 3 条就折成「前三条 + 等 N 条」。
+    const cur = Array.isArray(r.current_ips) ? r.current_ips : (r.current_ip ? [r.current_ip] : []);
+    if (r.found) {
+      const shown = cur.slice(0, 3).join("、") + (cur.length > 3 ? ` 等 ${cur.length} 条` : "");
+      rows += ddLine("现在指向", escapeHtml(shown || "（空）"));
+    } else {
+      rows += ddLine("现在指向", "还没有这条 A 记录");
+    }
     if (r.best_ip) rows += ddLine("最优 IP", escapeHtml(r.best_ip));
+    if (Array.isArray(r.will_write) && r.will_write.length) {
+      rows += ddLine("点「立即更新」会写入", `<b>${r.will_write.length} 条</b>：` + escapeHtml(r.will_write.join("、")));
+    }
 
-    // 结论分四种，别说「成功」两个字就完事——每一种接下来该做什么都不一样。
+    // 结论分几种，别说「成功」两个字就完事——每一种接下来该做什么都不一样。
     let next;
+    const willCount = Array.isArray(r.will_write) ? r.will_write.length : 0;
     if (!r.found) {
       next = "密钥没问题，只是这条域名还没有 A 记录。下次测速成功后会自己创建；想现在就建，点「立即更新一次」。";
     } else if (!r.best_ip) {
       next = "密钥没问题。现在还没有测出最优 IP，回去点「立即测速」。";
-    } else if (r.current_ip !== r.best_ip) {
-      next = "密钥没问题，但现在的指向和最优 IP 不一样——点「立即更新一次」就改过来。";
+    } else if (cur.length !== willCount) {
+      next = `密钥没问题，但现在是 ${cur.length} 条、按你的设置会变成 ${willCount} 条——点「立即更新一次」就对上。`
+        + (cur.length > willCount ? "（多出来的会被删掉）" : "");
+    } else if (cur.join("|") !== r.will_write.join("|")) {
+      next = "密钥没问题，但指向的 IP 和最优列表不一样——点「立即更新一次」就改过来。";
     } else {
-      next = "密钥没问题，指向已经是最优 IP，不用动。";
+      next = "密钥没问题，指向已经和设置一致，不用动。";
     }
     box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>密钥可用</b></div>`
       + `<div class="kv">${rows}</div><div class="hint">${next}</div>`;
@@ -688,13 +721,16 @@ async function checkDDNS() {
 
 async function pushDDNS() {
   const box = $("dd-result");
-  const ok = confirm("现在就把当前最优 IP 写进域名解析？\n\n这会真的改动你在服务商那里的 A 记录（不是只读）。");
+  // 把「会写几条」写进确认框：这一步会删掉多余的记录，不能让人闭着眼点确定。
+  const n = parseInt($("dd-count").value || "1", 10) || 1;
+  const ok = confirm(`现在就把当前最优 IP 写进域名解析？\n\n${$("dd-domain").value.trim() || "这个域名"} 下会只保留 ${n} 条 A 记录，其他同名的会被删掉（你以前手工加的也算）。\n这会在服务商那边真的改动记录，不是只读。`);
   if (!ok) return;
   box.innerHTML = `<div class="banner">正在推送…</div>`;
   try {
     const r = await api("/api/ddns/update", { method: "POST" });
-    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新</b>`
-      + `<div class="kv">${ddLine("域名", escapeHtml(r.domain))}${ddLine("现在指向", escapeHtml(r.ip))}</div></div>`
+    const list = Array.isArray(r.ips) ? r.ips : [r.ip];
+    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新（${list.length} 条）</b>`
+      + `<div class="kv">${ddLine("域名", escapeHtml(r.domain))}${ddLine("现在指向", escapeHtml(list.join("、"))) }</div></div>`
       + `<div class="hint">服务商那边生效通常要几秒到几分钟（看 TTL）。</div>`;
     await loadStatus();
   } catch (e) {
@@ -772,6 +808,8 @@ async function saveAll() {
         // 空着就按 0 交上去 = 用各家默认值。别 parseInt("") 得 NaN，
         // JSON 里 NaN 会变成 null，后端解析就整个失败了。
         ddns_ttl: parseInt($("dd-ttl").value || "0", 10) || 0,
+        // 空着或填 0 都按 1 条交上去，和以前的行为一致。
+        ddns_ip_count: parseInt($("dd-count").value || "1", 10) || 1,
         // 非 Cloudflare 时这个框是藏着的，读出来可能是勾着的旧值——
         // 服务商不是 Cloudflare 就一定按 false 交，免得存进去一个用不上的标记。
         ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked

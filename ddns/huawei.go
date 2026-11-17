@@ -77,14 +77,20 @@ func (h *huawei) Verify(domain string) (RecordState, error) {
 	if !found {
 		return RecordState{}, nil
 	}
-	state := RecordState{Found: true}
+	state := RecordState{Found: true, CurrentIPs: append([]string(nil), rec.Records...)}
 	if len(rec.Records) > 0 {
 		state.CurrentIP = rec.Records[0]
 	}
 	return state, nil
 }
 
-func (h *huawei) EnsureARecord(domain, ip string, opt RecordOptions) error {
+// EnsureARecords 对华为云来说最省事：一个「记录集」本身就是一个值列表，
+// 一次 PUT 把 records 整体换掉，多余的自然就没了，不需要逐条删除。
+func (h *huawei) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
+	ips = normalizeIPs(ips)
+	if len(ips) == 0 {
+		return nil
+	}
 	// 华为云没填时沿用一直以来的 300。
 	ttl := opt.TTL
 	if ttl <= 0 {
@@ -95,12 +101,9 @@ func (h *huawei) EnsureARecord(domain, ip string, opt RecordOptions) error {
 		return err
 	}
 	if found {
-		if len(rec.Records) > 0 && rec.Records[0] == ip {
-			return nil
-		}
 		body := map[string]any{
 			"name": rec.Name, "type": rec.Type,
-			"records": []string{ip}, "ttl": ttl,
+			"records": ips, "ttl": ttl,
 		}
 		u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets/%s", huaweiAPIBase, rec.ZoneID, rec.ID)
 		var out hwRecordset
@@ -109,7 +112,7 @@ func (h *huawei) EnsureARecord(domain, ip string, opt RecordOptions) error {
 
 	body := map[string]any{
 		"name": domain + ".", "type": "A",
-		"records": []string{ip}, "ttl": ttl,
+		"records": ips, "ttl": ttl,
 	}
 	u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets", huaweiAPIBase, h.zoneID)
 	var out hwRecordset

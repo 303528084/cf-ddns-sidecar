@@ -466,6 +466,10 @@ type statusResp struct {
 	NextRunAt string `json:"next_run_at"`
 	LastOK    bool   `json:"last_ok"`
 	FailCount int    `json:"fail_count"`
+
+	// 上次测速排好序的完整 IP 列表。界面用它显示「已写入前 N 条」，
+	// 也让用户在改条数之前就能看到有哪些备选。
+	LastIPs []string `json:"last_ips"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -492,6 +496,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		NextRunAt:      formatRunTime(s.nextRunAt),
 		LastOK:         s.lastOK,
 		FailCount:      s.failCount,
+		LastIPs:        append([]string{}, cfg.LastIPs...),
 	}
 	s.mu.Unlock()
 
@@ -520,6 +525,7 @@ type configResp struct {
 	DDNSDomain      string   `json:"ddns_domain"`
 	DDNSTTL         int      `json:"ddns_ttl"`
 	DDNSProxied     bool     `json:"ddns_proxied"`
+	DDNSIPCount     int      `json:"ddns_ip_count"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -541,6 +547,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSDomain:      c.DDNS.Domain,
 			DDNSTTL:         c.DDNS.TTL,
 			DDNSProxied:     c.DDNS.Proxied,
+			DDNSIPCount:     c.DDNS.EffectiveIPCount(),
 		})
 	case http.MethodPost:
 		s.saveConfig(w, r)
@@ -563,6 +570,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSDomain      string   `json:"ddns_domain"`
 		DDNSTTL         int      `json:"ddns_ttl"`
 		DDNSProxied     bool     `json:"ddns_proxied"`
+		DDNSIPCount     int      `json:"ddns_ip_count"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -573,6 +581,15 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if body.DDNSTTL != 0 && (body.DDNSTTL < 60 || body.DDNSTTL > 86400) {
 		writeJSON(w, 400, map[string]string{
 			"error": "TTL 请填 0（用各服务商默认）或 60 到 86400 之间的秒数，常见的是 600 或 3600",
+		})
+		return
+	}
+	// 条数上限给 20：再多 DNS 响应就太长了，而且每条都会摊薄「优选」的效果。
+	// 0 表示「没填/用默认」，按 1 条处理——老界面和老的备份文件里没有这个字段，
+	// 一上来就要求 1..20 会把它们全部判成非法。
+	if body.DDNSIPCount < 0 || body.DDNSIPCount > 20 {
+		writeJSON(w, 400, map[string]string{
+			"error": "「同步几条 IP」请填 1 到 20 之间的整数",
 		})
 		return
 	}
@@ -598,6 +615,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.DDNS.Domain = config.NormalizeDomain(body.DDNSDomain)
 	cfg.DDNS.TTL = body.DDNSTTL
 	cfg.DDNS.Proxied = body.DDNSProxied
+	cfg.DDNS.IPCount = body.DDNSIPCount
 
 	s.cfg = &cfg
 	s.mu.Unlock()
@@ -838,7 +856,16 @@ func (s *Server) runOnce(cfg config.Config) error {
 	}
 
 	// 2) 推送域名解析（DDNS）
-	if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "" {
+	//
+	// 写几条由用户设定（默认 1 条）。注意 pushIPs 是「按排名截前 N」，
+	// 而 cfg.LastIPs 存的是**完整排名**——这样用户之后把条数从 1 改成 5，
+	// 点一下「立即更新一次」就能补齐，不用重新跑一次测速。
+	pushIPs := pickIPs(res.IPs, cfg.DDNS.EffectiveIPCount())
+	if len(pushIPs) == 0 {
+		// 走到这里说明这一轮没留下任何可用 IP。绝不能拿空列表去「对齐」——
+		// ddns 包会把它当成「这次没结果，别动」，但日志里得如实说一句。
+		s.appendLog("域名解析未推送：本次没有可用的 IP")
+	} else if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "" {
 		missing := config.MissingCredentials(cfg.DDNS.Provider)
 		if len(missing) > 0 {
 			s.appendLog("域名解析未推送：缺少密钥 " + strings.Join(missing, ", "))
@@ -847,10 +874,11 @@ func (s *Server) runOnce(cfg config.Config) error {
 			p, derr := ddns.New(cfg.DDNS.Provider, cfg.DDNS.Domain, creds)
 			if derr != nil {
 				s.appendLog("域名解析配置有误: " + derr.Error())
-			} else if derr := p.EnsureARecord(cfg.DDNS.Domain, best, recordOptions(cfg.DDNS)); derr != nil {
+			} else if derr := p.EnsureARecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS)); derr != nil {
 				s.appendLog("域名解析推送失败: " + derr.Error())
 			} else {
-				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s", cfg.DDNS.Domain, best))
+				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条）",
+					cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs)))
 			}
 		}
 	}
@@ -858,6 +886,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 3) 记录结果
 	s.mu.Lock()
 	s.cfg.LastIP = best
+	s.cfg.LastIPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
 	s.cfg.LastTime = now
 	toSave := s.cfg.Clone()
 	s.mu.Unlock()

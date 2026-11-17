@@ -75,55 +75,117 @@ func (c *cloudflare) Verify(domain string) (RecordState, error) {
 	if err != nil {
 		return RecordState{}, err
 	}
+	var state RecordState
 	for _, rec := range recs {
 		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
-			return RecordState{Found: true, CurrentIP: rec.Content}, nil
+			state.Found = true
+			state.CurrentIPs = append(state.CurrentIPs, rec.Content)
 		}
 	}
-	return RecordState{}, nil
+	if len(state.CurrentIPs) > 0 {
+		state.CurrentIP = state.CurrentIPs[0]
+	}
+	return state, nil
 }
 
-func (c *cloudflare) EnsureARecord(domain, ip string, opt RecordOptions) error {
+func (c *cloudflare) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
+	ips = normalizeIPs(ips)
+	// 空集合不是「把域名清空」，是「这次没结果，别动」。
+	if len(ips) == 0 {
+		return nil
+	}
+
 	list, err := c.aRecords(domain)
 	if err != nil {
 		return err
 	}
 
 	ttl := opt.cfTTL()
+	// 先建一张「现在有哪些 IP」的表，避免为每个期望 IP 都遍历一次全表。
+	have := make(map[string]cfRecord, len(list))
 	for _, rec := range list {
 		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
-			// IP、TTL、云朵三者都得对上才算「已经好了」。
-			// 只比 IP 的话，用户刚把云朵打开时 IP 没变，这一趟会被当成无事
-			// 可做而直接跳过，界面上显示保存成功、线上其实一点没动。
-			if rec.Content == ip && rec.TTL == ttl && rec.Proxied == opt.Proxied {
-				return nil
+			have[rec.Content] = rec
+		}
+	}
+
+	// 第一遍：把期望的每一条都弄好（已有的校准，没有的新建）。
+	for _, ip := range ips {
+		if rec, ok := have[ip]; ok {
+			// IP 对了，但 TTL 或云朵不是我们要的，得改一次。
+			if rec.TTL == ttl && rec.Proxied == opt.Proxied {
+				continue
 			}
 			rec.Content = ip
 			rec.TTL = ttl
 			rec.Proxied = opt.Proxied
-			var wr cfWriteResp
-			if err := c.do(http.MethodPut,
-				fmt.Sprintf("%s/zones/%s/dns_records/%s", cloudflareAPIBase, c.zoneID, rec.ID),
-				rec, &wr); err != nil {
+			if err := c.putRecord(rec); err != nil {
 				return err
 			}
-			// Cloudflare v4 存在 HTTP 200 但 success:false 的业务错误，必须校验。
-			if !wr.Success {
-				return fmt.Errorf("更新记录返回失败: %s", strings.Join(wr.Messages, ", "))
-			}
-			return nil
+			continue
+		}
+		if err := c.createRecord(domain, ip, ttl, opt.Proxied); err != nil {
+			return err
 		}
 	}
 
+	// 第二遍：删掉不在期望集合里的。
+	//
+	// 这一步会删掉用户手工加的、以及上一次写入但这次掉出前 N 名的记录。
+	// 用户明确选了「不要原有记录」，所以这是要的行为；但顺序必须放在补齐
+	// 之后，否则中间那一瞬间域名没有任何 A 记录。
+	want := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		want[ip] = true
+	}
+	for _, rec := range list {
+		if !strings.EqualFold(rec.Name, domain) || rec.Type != "A" || want[rec.Content] {
+			continue
+		}
+		if err := c.deleteRecord(rec.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *cloudflare) putRecord(rec cfRecord) error {
+	var wr cfWriteResp
+	if err := c.do(http.MethodPut,
+		fmt.Sprintf("%s/zones/%s/dns_records/%s", cloudflareAPIBase, c.zoneID, rec.ID),
+		rec, &wr); err != nil {
+		return err
+	}
+	// Cloudflare v4 存在 HTTP 200 但 success:false 的业务错误，必须校验。
+	if !wr.Success {
+		return fmt.Errorf("更新记录返回失败: %s", strings.Join(wr.Messages, ", "))
+	}
+	return nil
+}
+
+func (c *cloudflare) createRecord(domain, ip string, ttl int, proxied bool) error {
 	var wr cfWriteResp
 	if err := c.do(http.MethodPost,
 		fmt.Sprintf("%s/zones/%s/dns_records", cloudflareAPIBase, c.zoneID),
-		map[string]any{"name": domain, "type": "A", "content": ip, "ttl": ttl, "proxied": opt.Proxied},
+		map[string]any{"name": domain, "type": "A", "content": ip, "ttl": ttl, "proxied": proxied},
 		&wr); err != nil {
 		return err
 	}
 	if !wr.Success {
 		return fmt.Errorf("创建记录返回失败: %s", strings.Join(wr.Messages, ", "))
+	}
+	return nil
+}
+
+func (c *cloudflare) deleteRecord(id string) error {
+	var wr cfWriteResp
+	if err := c.do(http.MethodDelete,
+		fmt.Sprintf("%s/zones/%s/dns_records/%s", cloudflareAPIBase, c.zoneID, id),
+		nil, &wr); err != nil {
+		return err
+	}
+	if !wr.Success {
+		return fmt.Errorf("删除记录返回失败: %s", strings.Join(wr.Messages, ", "))
 	}
 	return nil
 }

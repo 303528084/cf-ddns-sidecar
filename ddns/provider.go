@@ -11,7 +11,12 @@ type RecordState struct {
 	// Found 为 false 表示账号里还没有这条 A 记录（第一次跑之前就是这种状态）。
 	Found bool
 	// CurrentIP 是当前 A 记录的值；Found 为 false 时为空。
+	// 有多条时取第一条——界面上的「现在指向」仍然只显示一个位置。
 	CurrentIP string
+	// CurrentIPs 是全部 A 记录的值，按接口返回顺序。
+	// 一个域名可以有多条 A（本程序按用户设定的条数写入），
+	// 只说第一条会让用户误以为其余的丢了。
+	CurrentIPs []string
 }
 
 // RecordOptions 是写 A 记录时的可选项。零值等于「一切按服务商默认」，
@@ -39,11 +44,17 @@ func (o RecordOptions) cfTTL() int {
 	return o.TTL
 }
 
-// Provider 是 DNS 服务商的统一接缝：把目标域名的 A 记录设为指定 IP（幂等）。
+// Provider 是 DNS 服务商的统一接缝：把目标域名的 A 记录**对齐**到给定的一组 IP。
 type Provider interface {
-	// EnsureARecord 确保 domain 的 A 记录指向 ip：记录存在则更新，不存在则创建。
-	// opt 里的 TTL / 云朵只在真正写记录时起作用；已经符合期望就不发请求。
-	EnsureARecord(domain, ip string, opt RecordOptions) error
+	// EnsureARecords 把 domain 的 A 记录对齐到 ips 这一组：
+	// 缺的补上、多的删掉、已在其中的顺手校准 TTL / 云朵。幂等。
+	//
+	// 两个刻意的约定：
+	//  1. ips 为空时**什么都不做**。测速失败或结果被过滤空时可能传进空列表，
+	//     那一下要是理解成「期望集合为空」就会把域名清空——访问直接断掉。
+	//  2. 顺序是先补齐、再删多余。反过来先删的话，中间会有一小段时间这个域名
+	//     一条 A 记录都没有，正在访问的人会解析失败。
+	EnsureARecords(domain string, ips []string, opt RecordOptions) error
 	// Verify 只读校验：确认密钥有效、能查到这个域名，并返回当前 A 记录值。
 	// 绝不写任何东西——用户点「测试密钥」时不该改到线上解析。
 	Verify(domain string) (RecordState, error)
@@ -65,6 +76,24 @@ func New(kind string, domain string, creds map[string]string) (Provider, error) 
 	default:
 		return nil, fmt.Errorf("不支持的 provider: %q", kind)
 	}
+}
+
+// normalizeIPs 丢掉空白项并去重（保持原有顺序，排名是从优到劣）。
+//
+// 空项必须丢：把空字符串当成一个 IP 写到服务商那里，轻则报错，
+// 重则在 Cloudflare 上留下一条把域名指向 "" 的坏记录。
+func normalizeIPs(ips []string) []string {
+	out := make([]string, 0, len(ips))
+	seen := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	return out
 }
 
 // splitDomain 把完整域名拆成根域与记录名。
