@@ -22,6 +22,34 @@ fail() {
     exit 1
 }
 
+# 把端口同步到「桌面入口」的两处静态配置：
+#   app/ui/config → "port": "8080"    飞牛点图标时用它拼 URL
+#   manifest      → service_port = xx
+# 不同步的话，用户把端口改成 9090，程序监听 9090、图标却还指着 8080，
+# 点开必然打不开页面。
+sync_port_to_entry() {
+    local port="$1"
+
+    local ui_conf="${TRIM_APPDEST}/ui/config"
+    if [ -f "$ui_conf" ]; then
+        if sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[0-9]+(\")/\1${port}\2/" "$ui_conf"; then
+            log "桌面入口端口已改为 ${port}"
+        else
+            log "警告：无法修改 $ui_conf，桌面图标可能仍指向旧端口"
+        fi
+    fi
+
+    # manifest 与 app/ 同级（TRIM_APPDEST 指向 app 目录）
+    local mf="${TRIM_APPDEST}/../manifest"
+    if [ -f "$mf" ]; then
+        if sed -i -E "s/^service_port[[:space:]]*=.*/service_port = ${port}/" "$mf"; then
+            log "manifest service_port 已改为 ${port}"
+        else
+            log "警告：无法修改 $mf"
+        fi
+    fi
+}
+
 # 写入/更新一个 KEY=VALUE（值为空则跳过；同时处理被注释掉的 "#KEY=" 行）
 set_kv() {
     local key="$1" val="$2" file="$3"
@@ -64,6 +92,20 @@ set_kv "CFDDNS_INTERVAL_MINUTES" "${wizard_interval_minutes:-}" "$ENV_FILE" || f
 # 标记「这次改动需要覆盖已有配置」：程序启动时读一次、落盘、把标记改回 0。
 # 没有这个标记的话，config.json 已经存在时这里的修改会被忽略。
 set_kv "CFDDNS_APPLY_ENV" "1" "$ENV_FILE" || fail "写入覆盖标记失败"
+
+# —— 后台端口（改了要同步桌面入口，否则图标点不开）——
+if [ -n "${wizard_port:-}" ]; then
+    case "$wizard_port" in
+        *[!0-9]*|"")
+            fail "端口必须是数字：$wizard_port"
+            ;;
+    esac
+    if [ "$wizard_port" -lt 1024 ] || [ "$wizard_port" -gt 65535 ]; then
+        fail "端口范围是 1024-65535，当前填的是 $wizard_port"
+    fi
+    set_kv "CFDDNS_PORT" "$wizard_port" "$ENV_FILE" || fail "写入端口失败"
+    sync_port_to_entry "$wizard_port"
+fi
 
 # —— Cloudflare ——
 set_kv "CF_API_TOKEN"   "${wizard_cf_token:-}"    "$ENV_FILE"

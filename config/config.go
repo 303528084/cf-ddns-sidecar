@@ -226,6 +226,12 @@ func (c *Config) Save() error {
 // Clone 深拷贝，供并发读快照。
 func (c *Config) Clone() Config {
 	cp := *c
-	cp.Domains = append([]string(nil), c.Domains...)
+	// 注意：append([]string(nil), 空slice...) 会得到 nil，
+	// 序列化后变成 "domains": null，前端还得额外兜底。这里保持空数组。
+	if len(c.Domains) == 0 {
+		cp.Domains = []string{}
+	} else {
+		cp.Domains = append(make([]string, 0, len(c.Domains)), c.Domains...)
+	}
 	return cp
 }

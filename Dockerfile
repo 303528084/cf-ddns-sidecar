@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # 直接复用它比自己用 Go 重写一套测速更可靠。
 FROM python:3.12-alpine AS allinone
 
-RUN apk add --no-cache ca-certificates tzdata curl && \
+RUN apk add --no-cache ca-certificates tzdata curl su-exec && \
     pip install --no-cache-dir aiohttp requests && \
     addgroup -S -g 1000 app && adduser -S -u 1000 -G app app
 
@@ -35,9 +35,11 @@ COPY --from=builder /cf-ddns-sidecar /usr/local/bin/cf-ddns-sidecar
 # 测速引擎：cfnb（MIT，见 third_party/cfnb/LICENSE）
 COPY third_party/cfnb/main.py /app/cfnb/main.py
 
-RUN mkdir -p /app/data && chown -R app:app /app
+# 入口脚本：以 root 修正挂载目录所有权后降权运行（见脚本内注释）
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
-USER app
+RUN mkdir -p /app/data && chown -R app:app /app
 
 ENV TZ=Asia/Shanghai \
     CFDDNS_ENGINE=/app/cfnb/main.py \
@@ -48,4 +50,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=60s --timeout=5s --start-period=15s \
     CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null 2>&1 || exit 1
 
-ENTRYPOINT ["cf-ddns-sidecar"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

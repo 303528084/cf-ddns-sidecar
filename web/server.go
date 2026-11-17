@@ -325,7 +325,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if err := cfg.Save(); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "保存失败: " + err.Error()})
+		writeJSON(w, 500, map[string]string{"error": "保存失败: " + friendlyErr(err)})
 		return
 	}
 
@@ -374,7 +374,7 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			existing[k] = v
 		}
 		if err := config.SaveEnvFile(config.EnvFilePath(), existing); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "保存密钥失败: " + err.Error()})
+			writeJSON(w, 500, map[string]string{"error": "保存密钥失败: " + friendlyErr(err)})
 			return
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
@@ -439,10 +439,11 @@ func (s *Server) runOnce(cfg config.Config) error {
 	}, s.appendLog)
 
 	if err != nil {
+		msg := friendlyErr(err)
 		s.mu.Lock()
-		s.lastErr = err.Error()
+		s.lastErr = msg
 		s.mu.Unlock()
-		s.appendLog("测速失败: " + err.Error())
+		s.appendLog("测速失败: " + msg)
 		return err
 	}
 
@@ -580,6 +581,25 @@ func normalizeDomains(in []string) []string {
 		out = append(out, d)
 	}
 	return out
+}
+
+// friendlyErr 把底层 OS 错误翻译成用户能看懂、能动手处理的话。
+// 界面是给不懂技术的人看的，直接抛 "permission denied" 等于没说。
+func friendlyErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "permission denied"):
+		return "数据目录不可写。请在「应用中心」把本应用重启一次；若仍然失败，" +
+			"说明数据目录被挂载成了只读（检查 compose 里 volumes 是否带 :ro）"
+	case strings.Contains(msg, "no space left"):
+		return "NAS 磁盘空间不足，请清理后重试"
+	case strings.Contains(msg, "read-only file system"):
+		return "数据目录是只读的，请检查挂载配置"
+	}
+	return msg
 }
 
 // ParseCIDRs 解析允许访问的来源网段（空字符串表示不限制）。

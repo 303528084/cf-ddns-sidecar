@@ -74,6 +74,9 @@ init_on_start() {
 # --- 自动化标记：设置页保存后置 1，程序应用完改回 0，不要手改 ---
 CFDDNS_APPLY_ENV=0
 
+# --- 后台端口（默认 8080；改了要重启应用，桌面图标会一起更新）---
+CFDDNS_PORT=8080
+
 # --- DDNS 服务商（cloudflare / aliyun / dnspod / huawei）---
 #CFDDNS_PROVIDER=cloudflare
 
@@ -119,6 +122,42 @@ EOF
         chmod 0644 "$pass_file" 2>/dev/null
         echo "[cf-ddns-sidecar] 已生成 Dashboard 初始密码: $pass_file"
     fi
+
+    sync_port_to_entry
+}
+
+# 端口同步：ddns.env 里的 CFDDNS_PORT 是唯一来源（默认 8080）。
+# 每次启动都对齐一次桌面入口，这样即使安装方向导里改了端口、
+# 或者用户只在「应用设置」里改过，图标也不会指向旧端口。
+#   app/ui/config → "port": "xxxx"    飞牛点图标时用它拼 URL
+#   manifest      → service_port = xx
+sync_port_to_entry() {
+    local env_file="${DATA_ROOT}/ddns.env"
+    local port=""
+
+    if [ -f "$env_file" ]; then
+        port=$(grep -E '^CFDDNS_PORT=' "$env_file" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' \r')
+    fi
+    case "$port" in
+        ''|*[!0-9]*) port=8080 ;;
+    esac
+    if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+        port=8080
+    fi
+
+    local ui_conf="${TRIM_APPDEST}/ui/config"
+    if [ -f "$ui_conf" ]; then
+        sed -i -E "s/(\"port\"[[:space:]]*:[[:space:]]*\")[0-9]+(\")/\1${port}\2/" "$ui_conf" 2>/dev/null \
+            || echo "[cf-ddns-sidecar] 警告：无法写入 $ui_conf"
+    fi
+
+    local mf="${TRIM_APPDEST}/../manifest"
+    if [ -f "$mf" ]; then
+        sed -i -E "s/^service_port[[:space:]]*=.*/service_port = ${port}/" "$mf" 2>/dev/null \
+            || echo "[cf-ddns-sidecar] 警告：无法写入 $mf"
+    fi
+
+    echo "[cf-ddns-sidecar] 后台端口: ${port}"
 }
 
 is_docker_running() {

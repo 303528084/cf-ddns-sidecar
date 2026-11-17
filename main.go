@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,7 +34,7 @@ func main() {
 		printVer bool
 		runOnce  bool
 	)
-	flag.StringVar(&listen, "listen", ":8080", "后台监听地址")
+	flag.StringVar(&listen, "listen", defaultListen(), "后台监听地址")
 	flag.BoolVar(&runOnce, "once", false, "只跑一次测速并写入后退出（可用于 cron）")
 	flag.BoolVar(&printVer, "v", false, "打印版本")
 	flag.Parse()
@@ -86,7 +88,25 @@ func main() {
 	srv := web.New(cfg, configPath, enginePath, workDir, password, selfURL(listen), mustCIDRs())
 
 	if runOnce {
-		if err := srv.RunOnce(); err != nil {
+		// 测速引擎要回调本进程的 /api/candidates 拿候选 IP（内置 Cloudflare 官方段），
+		// 所以哪怕只跑一次也得先把 HTTP 服务拉起来。否则本地源不可用，
+		// 只能依赖第三方聚合源，源挂了就会「没有产出可用 IP」。
+		onceServer := &http.Server{
+			Addr:              listen,
+			Handler:           srv.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			if err := onceServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("[提示] 候选列表服务未启动（%v），本次只能依赖第三方数据源", err)
+			}
+		}()
+		// 等端口真正进入监听，避免引擎的第一跳请求扑空
+		waitListening(listen, 2*time.Second)
+
+		err := srv.RunOnce()
+		_ = onceServer.Close()
+		if err != nil {
 			log.Fatalf("测速失败: %v", err)
 		}
 		return
@@ -130,6 +150,45 @@ func main() {
 	}
 	<-done
 	fmt.Println("已退出。")
+}
+
+// waitListening 等端口进入监听状态（最多等 timeout），用于 -once 模式。
+// 端口起不来也不报错，让后面的测速自己走降级路径。
+func waitListening(listen string, timeout time.Duration) {
+	target := listen
+	host, port, err := net.SplitHostPort(listen)
+	if err == nil {
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		target = net.JoinHostPort(host, port)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, derr := net.DialTimeout("tcp", target, 200*time.Millisecond)
+		if derr == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// defaultListen 决定后台监听端口。优先级：CFDDNS_PORT 环境变量 →
+// ddns.env 里的 CFDDNS_PORT → 8080。
+//
+// 为什么要可配：8080 很容易和 NAS 上别的服务撞车，用户在安装向导或
+// 「应用设置」里改了端口后，安装脚本会把 ddns.env 和桌面入口一起改掉，
+// 这里负责让程序真的监听那个端口。
+func defaultListen() string {
+	port := strings.TrimSpace(os.Getenv("CFDDNS_PORT"))
+	if port == "" {
+		port = strings.TrimSpace(config.LoadEnvFile(config.EnvFilePath())["CFDDNS_PORT"])
+	}
+	if n, err := strconv.Atoi(port); err == nil && n > 0 && n < 65536 {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 // mustCIDRs 解析来源网段；配置非法时拒绝启动（避免后台意外暴露到公网）。

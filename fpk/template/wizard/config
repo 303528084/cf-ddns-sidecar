@@ -30,6 +30,16 @@
       },
       {
         "type": "text",
+        "field": "wizard_port",
+        "label": "后台端口",
+        "initValue": "8080"
+      },
+      {
+        "type": "tips",
+        "helpText": "后台就是浏览器打开 http://飞牛IP:端口 那个界面。默认 8080，只有和 NAS 上别的服务撞端口时才要改（1024-65535）。改完桌面图标的地址会一起更新。"
+      },
+      {
+        "type": "text",
         "field": "wizard_interval_minutes",
         "label": "自动测速间隔（分钟）",
         "initValue": "60"
