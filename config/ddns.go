@@ -188,3 +188,22 @@ func flatValues(m map[string][]string) []string {
 	}
 	return out
 }
+
+// AllCredentialKeys 返回所有已知的密钥变量名（四家的必需项 + 可选项），已排序。
+//
+// 用途是白名单：导入别人的配置备份时，只允许写这些 key 进 ddns.env。
+// 不这么卡的话，一个手改过的 json 就能往密钥文件里塞任意变量名。
+func AllCredentialKeys() []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, group := range [][]string{flatValues(RequiredEnvByProvider), flatValues(OptionalEnvByProvider)} {
+		for _, k := range group {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}

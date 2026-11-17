@@ -17,6 +17,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -143,6 +144,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/config", s.auth(s.handleConfig))
+	mux.HandleFunc("/api/config/export", s.auth(s.handleExport))
+	mux.HandleFunc("/api/config/import", s.auth(s.handleImport))
 	mux.HandleFunc("/api/credentials", s.auth(s.handleCredentials))
 	mux.HandleFunc("/api/password", s.auth(s.handlePassword))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
@@ -824,6 +827,11 @@ func normalizeDomains(in []string) []string {
 		d = strings.TrimSuffix(d, "/")
 		d = strings.TrimSuffix(d, ".")
 		if d == "" || !strings.Contains(d, ".") || strings.ContainsAny(d, " /:") {
+			continue
+		}
+		// 别把 IP 当域名：有人会把「服务器 IP」直接填进来，写进 AdGuard
+		// 的重写表就是一条垃圾记录；导入别人改过的备份时也会碰到。
+		if net.ParseIP(d) != nil {
 			continue
 		}
 		if seen[d] {

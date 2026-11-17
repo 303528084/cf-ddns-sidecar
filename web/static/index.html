@@ -49,12 +49,13 @@
   .row { display: flex; gap: 10px; flex-wrap: wrap; }
   .row > * { flex: 1 1 200px; }
   label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
-  input[type=text], input[type=password], input[type=number], select {
+  input[type=text], input[type=password], input[type=number], select, textarea {
     width: 100%; padding: 8px 10px; border: 1px solid var(--line);
     border-radius: 8px; background: var(--bg); color: var(--text); font-size: 13.5px;
     font-family: inherit;
   }
-  input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  textarea { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
   .field { margin-bottom: 12px; }
   .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
   button {
@@ -197,6 +198,28 @@
     </div>
     <div id="cred-fields"></div>
     <div class="hint">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
+  </div>
+
+  <!-- 备份与恢复 -->
+  <div class="card">
+    <h2>备份与恢复 <span class="tag">把全部设置存成一个文件</span></h2>
+    <div class="actions" style="margin-top:0">
+      <button onclick="exportConfig()">导出配置文件</button>
+      <button onclick="pickImport()">从文件恢复…</button>
+      <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importConfig(this)">
+    </div>
+    <div class="hint">
+      导出文件里带着 AdGuard 密码和各家的 DNS 密钥——请当密码一样保管，不要发到群里。<br>
+      「从文件恢复」会用文件里的内容覆盖当前全部设置（后台登录密码不受影响，也不会被改）。<br>
+      什么时候用得上：重装应用、换一台 NAS、或者哪天数据目录又被清空了。
+    </div>
+    <div id="export-manual" class="hidden">
+      <div class="hint" style="color:var(--warn)">
+        下面这段就是备份文件的内容。如果刚才浏览器没弹出下载（飞牛桌面把后台嵌在 iframe 里时个别浏览器会拦下载），
+        点一下框里全选复制，粘贴到记事本里存成 <code>.json</code> 文件即可。
+      </div>
+      <textarea id="export-text" readonly rows="8" onclick="this.select()"></textarea>
+    </div>
   </div>
 
   <!-- 登录密码 -->
@@ -440,6 +463,65 @@ async function savePassword() {
     toast("密码已更新，下次用新密码登录");
     await loadStatus();
   } catch (e) { toast("修改失败：" + e.message); }
+}
+
+// ---- 备份与恢复 ----
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// 导出要拿原始文本（不能走 api()，那个会 JSON.parse），所以这里自己发一次请求。
+async function exportConfig() {
+  const tok = getToken();
+  let text;
+  try {
+    const res = await fetch("/api/config/export", {
+      headers: tok ? { Authorization: "Bearer " + tok } : {},
+      credentials: "same-origin"
+    });
+    if (res.status === 401) { setToken(""); showLogin(); throw new Error("未登录"); }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    text = await res.text();
+  } catch (e) { toast("导出失败：" + e.message); return; }
+
+  const name = "cf-ddns-sidecar-" + stamp() + ".json";
+  try {
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) { /* 下载被拦也没关系，下面还有手动复制那条路 */ }
+
+  // 不管下载有没有触发都显示手动复制那一段：浏览器拦下载时不会报错，
+  // 光靠 try/catch 判断不出来，只能把两条路都摆出来。
+  $("export-text").value = text;
+  $("export-manual").classList.remove("hidden");
+  toast("已生成 " + name + "，请到下载目录里找（没反应就手动复制下面那段）");
+}
+
+function pickImport() { $("import-file").click(); }
+
+async function importConfig(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const ok = confirm("恢复会用文件里的内容覆盖当前全部设置：AdGuard 地址与账号、要加速的域名、测速参数、DDNS 服务商和密钥。\n\n后台登录密码不受影响。确定继续吗？");
+  if (!ok) { input.value = ""; return; }
+
+  try {
+    const text = await f.text();
+    const r = await api("/api/config/import", { method: "POST", body: text });
+    const warns = (r && r.warnings) || [];
+    toast(warns.length ? "已恢复，但有提示：" + warns.join("；") : "已恢复全部设置");
+    await loadConfig();
+    credState = await api("/api/credentials");
+    renderProvider();
+    await loadStatus();
+  } catch (e) {
+    toast("恢复失败：" + e.message);
+  }
+  input.value = "";
 }
 
 async function saveAll() {
