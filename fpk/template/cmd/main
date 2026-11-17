@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # 飞牛生命周期脚本：处理 start / stop / status。
-# 首次 start 时：创建数据子目录 → 生成 ddns.env 示例配置（幂等，可重复执行）。
+# 首次 start 时：创建数据目录 → 生成 ddns.env 示例配置（幂等，可重复执行）。
+# v1.1.0 起改为单容器架构，所有数据统一放在 share/<appname>/data 一个目录。
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 # 飞牛数据共享目录的稳定软链路径（官方文档：/var/apps/<appname>/share/<share name>）
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+DATA_ROOT="${SHARE_ROOT}/data"
 FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
 
 fail() {
@@ -13,17 +15,51 @@ fail() {
     exit 1
 }
 
-# 首次启动初始化：建目录 + 生成示例配置（幂等）
-init_on_start() {
-    mkdir -p "${SHARE_ROOT}/subject" "${SHARE_ROOT}/sidecar" "${SHARE_ROOT}/conf" \
-        || fail "无法创建数据目录: ${SHARE_ROOT}"
+# 从旧版（双容器：subject/ sidecar/ conf/ 三个目录）升级时，把已有配置搬到新目录，
+# 避免用户升级后配置“看不见了”又得重填一遍。
+migrate_legacy() {
+    local old_env="${SHARE_ROOT}/sidecar/ddns.env"
+    local new_env="${DATA_ROOT}/ddns.env"
 
-    # 生成 ddns.env 示例（仅当不存在时），避免 env_file 缺失导致 compose 起不来
-    if [ ! -f "${SHARE_ROOT}/sidecar/ddns.env" ]; then
-        cat > "${SHARE_ROOT}/sidecar/ddns.env" <<'EOF'
+    if [ -f "$old_env" ] && [ ! -f "$new_env" ]; then
+        cp -p "$old_env" "$new_env" 2>/dev/null \
+            && echo "[cf-ddns-sidecar] 已迁移旧配置: $old_env -> $new_env"
+    fi
+
+    local old_state="${SHARE_ROOT}/sidecar/state.json"
+    local new_state="${DATA_ROOT}/sidecar-state.json"
+    if [ -f "$old_state" ] && [ ! -f "$new_state" ]; then
+        cp -p "$old_state" "$new_state" 2>/dev/null \
+            && echo "[cf-ddns-sidecar] 已迁移旧状态: $old_state -> $new_state"
+    fi
+
+    # 旧的 conf/config.yaml 也一并搬到新目录（旁路仍支持 config.yaml 高级配置）
+    local old_conf="${SHARE_ROOT}/conf/config.yaml"
+    local new_conf="${DATA_ROOT}/config.yaml"
+    if [ -f "$old_conf" ] && [ ! -f "$new_conf" ]; then
+        cp -p "$old_conf" "$new_conf" 2>/dev/null \
+            && echo "[cf-ddns-sidecar] 已迁移旧高级配置: $old_conf -> $new_conf"
+    fi
+}
+
+# 首次启动初始化：建目录 + 迁移旧数据 + 生成示例配置（幂等）
+init_on_start() {
+    mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
+
+    migrate_legacy
+
+    # 容器内以非 root（uid 1000）运行，需保证其可写数据目录
+    # （主体的 config.json、旁路的 state.json 都要落盘），否则配置无法保存。
+    chmod 0777 "$DATA_ROOT" 2>/dev/null
+
+    # 生成 ddns.env 示例（仅当不存在时），避免配置缺失导致旁路一直等待
+    if [ ! -f "${DATA_ROOT}/ddns.env" ]; then
+        cat > "${DATA_ROOT}/ddns.env" <<'EOF'
 # ============================================================
-# cf-ddns-sidecar 配置（本文件是唯一必填入口）
+# cf-ddns-sidecar 配置（本文件是 DDNS 唯一的必填入口）
 # 修改保存后：飞牛「应用中心 → 本应用 → 重启」使其生效
+#
+# 后台（Dashboard）登录密码：见同目录下的 dashboard-password 文件
 # ============================================================
 
 # --- 必填：DDNS 服务商（四选一：cloudflare / aliyun / dnspod / huawei）---
@@ -56,7 +92,20 @@ CFDDNS_DOMAIN=cf.example.com
 # --- 可选：轮询间隔（秒，默认 30）---
 #CFDDNS_POLL_INTERVAL=30
 EOF
-        echo "[cf-ddns-sidecar] 已生成示例配置: ${SHARE_ROOT}/sidecar/ddns.env"
+        echo "[cf-ddns-sidecar] 已生成示例配置: ${DATA_ROOT}/ddns.env"
+    fi
+
+    # 保证容器内非 root 用户可读取配置（防止 umask 077 导致 0600）
+    chmod 0644 "${DATA_ROOT}/ddns.env" 2>/dev/null
+
+    # Dashboard 登录密码：只在首次安装时生成一次，之后保持不变。
+    # 主体默认每次启动都会重新生成随机密码，用户难以使用；
+    # 这里落盘一份固定密码，容器启动时由 entrypoint 读取并注入。
+    local pass_file="${DATA_ROOT}/dashboard-password"
+    if [ ! -f "$pass_file" ]; then
+        (tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16) > "$pass_file" 2>/dev/null || true
+        chmod 0644 "$pass_file" 2>/dev/null
+        echo "[cf-ddns-sidecar] 已生成 Dashboard 初始密码: $pass_file"
     fi
 }
 
@@ -64,7 +113,7 @@ is_docker_running() {
     local container_name=""
 
     if [ -f "$FILE_PATH" ]; then
-        container_name=$(grep "container_name" "$FILE_PATH" | awk -F ':' '{print $2}' | xargs)
+        container_name=$(grep "container_name" "$FILE_PATH" | head -n 1 | awk -F ':' '{print $2}' | xargs)
     fi
 
     if [ -n "$container_name" ]; then

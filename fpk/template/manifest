@@ -9,4 +9,5 @@ distributor=Stone
 desktop_uidir=ui
 desktop_applaunchname=cf-ddns-sidecar.Application
 ctl_stop=true
+service_port=8080
 checkport=false

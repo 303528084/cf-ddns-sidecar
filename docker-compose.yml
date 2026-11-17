@@ -1,33 +1,22 @@
-# 本地开发 / 自定义部署用编排
+# 本地开发 / 自定义部署用编排（非飞牛）
 # 飞牛用户推荐直接用 .fpk 安装（内部已内置等价 compose）。
+#
+# 单容器架构：主体（测速 + AdGuard Home + Dashboard）与旁路（推送 DDNS）
+# 在同一容器内并行运行，共用一个数据目录。
 services:
-  # ===== 主体：测速 + 写入 AdGuard Home =====
-  cf-dns-select:
-    image: ghcr.io/neon9809/cf-dns-select:latest
-    container_name: cf-dns-select
+  cf-ddns-sidecar:
+    # 自建镜像：docker build -t yourname/cf-ddns-sidecar:latest .
+    image: ${SIDECAR_IMAGE:-your-dockerhub-username/cf-ddns-sidecar:latest}
+    container_name: cf-ddns-sidecar
     restart: unless-stopped
+    # 用 host 网络：Dashboard 的来源 IP 才是真实局域网 IP，CIDR 白名单才能生效
     network_mode: host
     environment:
       DSA_ALLOWED_CIDRS: "192.168.0.0/23"   # 改成你的局域网网段
       DSA_COLO_IP_DB: /app/data/colo_ip_db.json
       TZ: Asia/Shanghai
+      CFDDNS_LISTEN: ":18080"               # 旁路健康检查端口，避开主体的 8080
     volumes:
-      - ./subject-data:/app/data              # 主体的 config.json 写在这里
-
-  # ===== 旁路：读取最优 IP 并推送 DDNS =====
-  # 运行前先：cp .env.example .env 并填入密钥；cp config.yaml.example config/config.yaml
-  ddns-sidecar:
-    image: ${SIDECAR_IMAGE:-your-dockerhub-username/cf-ddns-sidecar:latest}
-    container_name: cf-ddns-sidecar
-    restart: unless-stopped
-    depends_on:
-      - cf-dns-select
-    ports:
-      - "18080:8080"                          # 健康检查端口，按需改
-    env_file:
-      - .env                                  # 存放各家 API 密钥
-    volumes:
-      - ./config:/app/config:ro                # config.yaml
-      - ./sidecar-data:/app/data               # 自身状态持久化
-      - ./subject-data:/app/subject:ro         # 只读挂载主体的 config.json
-    command: ["-c", "/app/config/config.yaml"]
+      # 一个目录装下所有数据：主体的 config.json / colo_ip_db.json、
+      # 旁路的 ddns.env / state.json / dashboard-password
+      - ./data:/app/data

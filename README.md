@@ -9,14 +9,19 @@
 
 ## 工作原理
 
+**一个容器里跑两个进程**（不再是两个容器）：飞牛应用中心里只看到一个 `cf-ddns-sidecar` 容器，
+一个数据目录、一个后台入口、一个桌面图标。
+
 ```
-主体容器 cf-dns-select（官方镜像，源码零改动）
-    ├─ 测速 → 选出最优 IP → 写入 AdGuard Home DNS 重写
-    └─ 最优 IP 持久化到 config.json 的 last_result_ip
-                    │（共享卷，只读）
-                    ▼
-旁路容器 cf-ddns-sidecar（本项目）
-    └─ 轮询 last_result_ip → 变化时推送到所选 DNS 服务商的 A 记录
+单容器 cf-ddns-sidecar
+├─ 主体 cf-dns-select（上游官方二进制，源码零改动）
+│     ├─ 测速 → 选出最优 IP → 写入 AdGuard Home DNS 重写
+│     ├─ 提供 Dashboard（:8080）
+│     └─ 最优 IP 持久化到 /app/data/config.json 的 last_result_ip
+│                        │（同一目录，直接读）
+│                        ▼
+└─ 旁路 ddns-sidecar（本项目）
+      └─ 轮询 last_result_ip → 变化时推送到所选 DNS 服务商的 A 记录
 ```
 
 - 主体：基于 [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) 测速内核，GPL-3.0。
@@ -31,9 +36,9 @@
 
 ### 安装后配置（关键，两处）
 
-应用数据目录：飞牛「文件管理」中的 `cf-ddns-sidecar` 共享文件夹（含 `subject` / `sidecar` / `conf` 三个子目录，安装后自动创建）。
+应用数据目录：飞牛「文件管理」中的 `cf-ddns-sidecar` 共享文件夹，里面的 **`data`** 子目录装下所有配置与数据（安装后自动创建）。
 
-1. **填写 ddns.env（唯一必填入口）**：在文件管理中打开 `cf-ddns-sidecar/sidecar/ddns.env`（安装时已自动生成示例），填写：
+1. **填写 ddns.env（唯一必填入口）**：在文件管理中打开 `cf-ddns-sidecar/data/ddns.env`（安装时已自动生成示例），填写：
    - `CFDDNS_PROVIDER`：`cloudflare` / `aliyun` / `dnspod` / `huawei` 四选一；
    - `CFDDNS_DOMAIN`：你的目标域名，如 `cf.example.com`；
    - 对应服务商的密钥（示例文件里有四家的注释模板，取消注释并填写即可）。
@@ -44,17 +49,23 @@
 
 3. **重启应用**：ddns.env 修改后需在「应用中心 → 本应用 → 重启」生效（程序在启动时读取该文件）。
 
-> 主体 Dashboard 首次密码：若未设置，从主体容器日志查看（`docker logs cf-dns-select`）。
-> 高级用户可选：在 `conf/` 下放 `config.yaml`（参照 `config.yaml.example`）覆盖默认轮询间隔等；不创建则纯用 ddns.env。
+> **Dashboard 登录密码**：安装时自动生成一次，固定保存在 `cf-ddns-sidecar/data/dashboard-password`，
+> 在文件管理里打开该文件即可看到（重启不会变）。
+> 高级用户可选：在 `data/` 下放 `config.yaml`（参照 `config.yaml.example`）覆盖默认轮询间隔等；不创建则纯用 ddns.env。
 
 ## 二、本地 docker compose 部署（非 FPK）
 
 ```bash
-mkdir config && cp config.yaml.example config/config.yaml   # 编辑 provider / domain
-cp .env.example .env                                        # 填所选服务商密钥
+mkdir -p data
+cp .env.example data/ddns.env            # 填所选服务商密钥（程序直接读该文件）
+printf 'YourPassword' > data/dashboard-password   # Dashboard 登录密码，自定
 # 编辑 docker-compose.yml 的 DSA_ALLOWED_CIDRS 为你的局域网网段
 docker compose up -d
 ```
+
+镜像可以自己构建：`docker build -t yourname/cf-ddns-sidecar:latest .`，
+并用环境变量 `SIDECAR_IMAGE` 指定。仅想跑旁路（不装 Dashboard）时：
+`docker build --target sidecar -t cf-ddns-sidecar:sidecar .`。
 
 ## 三、配置参考
 
@@ -81,8 +92,8 @@ docker compose up -d
 
 按顺序核对四步，全部通过即部署成功：
 
-1. **容器状态**：飞牛「应用中心 → 本应用 → 详情」，两个容器均为**运行中**；旁路容器日志开头有 `cf-ddns-sidecar vX.Y.Z 启动中`（版本号）。
-2. **测速成功**：主体 Dashboard（`http://飞牛IP:8080`）能看到最新测速结果与最优 IP；或 `docker logs cf-dns-select` 查看测速日志。
+1. **容器状态**：飞牛「应用中心 → 本应用 → 详情」，只有一个容器 `cf-ddns-sidecar`，状态为**运行中**；日志开头有 `cf-ddns-sidecar vX.Y.Z 启动中`（版本号）。
+2. **测速成功**：主体 Dashboard（`http://飞牛IP:8080`）能看到最新测速结果与最优 IP；或 `docker logs cf-ddns-sidecar` 查看测速日志。
 3. **DDNS 已更新**：`docker logs cf-ddns-sidecar` 出现 `[成功] cf.example.com 的 A 记录已更新为 x.x.x.x（服务商名）`；或到服务商 DNS 控制台确认 A 记录值。命令行验证：`nslookup cf.example.com`（或 `dig cf.example.com +short`）应返回最优 IP。
 4. **AdGuard 重写生效**：AdGuard Home 管理界面 → 「过滤器 → DNS 重写」能看到主体写入的优选规则（被加速域名 → 最优 IP）；局域网设备 `nslookup 被加速域名` 返回优选 IP 即生效。
 
@@ -94,6 +105,8 @@ docker compose up -d
 | 旁路日志 `[错误] 更新 ... 失败` 且 `（下一轮自动重试）` | 服务商 API 报错 | 看具体错误（密钥错误/权限不足），修正后自动恢复 |
 | 旁路日志 `[等待] 主体尚无最优 IP` | 主体还没完成第一次测速 | 到主体 Dashboard 触发测速，或等定时任务 |
 | 健康检查 `curl 飞牛IP:18080/healthz` 返回 503 | 上一轮推送失败 | 查旁路日志定位服务商报错 |
+| 桌面图标不见了 | 飞牛未注册到应用入口 | 确认装的是 v1.1.0 及以上（manifest 已补 `service_port`）；或直接浏览器访问 `http://飞牛IP:8080` |
+| 打不开 8080 后台 | 服务未起来 | 看容器日志：若提示「允许来源网段」，说明 `DSA_ALLOWED_CIDRS` 未覆盖你的网段 |
 
 ## 五、开发者：构建与发布
 
@@ -133,6 +146,7 @@ DOCKERHUB_REPO=yourname/cf-ddns-sidecar IMAGE_TAG=v1.0.0 ./scripts/build-multiar
 ```
 cf-ddns-sidecar/
 ├── main.go, config/, provider/, sidecar/   # Go 源码 + 测试
+├── entrypoint.sh                           # 单容器双进程启动入口
 ├── Dockerfile, docker-compose.yml          # 容器构建与编排
 ├── config.yaml.example, .env.example       # 配置示例
 ├── fpk/template/                           # 飞牛 FPK 模板
