@@ -14,10 +14,36 @@ type RecordState struct {
 	CurrentIP string
 }
 
+// RecordOptions 是写 A 记录时的可选项。零值等于「一切按服务商默认」，
+// 也就是升级前写死的那套行为——老配置文件里没有这两个字段时，写出去的结果
+// 和以前一模一样，不会因为加了选项就悄悄改掉用户现有的记录。
+type RecordOptions struct {
+	// TTL 是这条记录的生存时间（秒）。0 表示不指定，用本程序一直以来的默认值：
+	// Cloudflare 自动（1）、DNSPod 600、华为云 300、阿里云不传（账号默认）。
+	TTL int
+	// Proxied 只对 Cloudflare 有意义：true 表示开橙色云朵，让解析走 Cloudflare
+	// 代理。开了云朵之后域名不再直接指向优选 IP，DDNS 的意义就没了，界面上要
+	// 明确劝一句。其余三家忽略此字段。
+	Proxied bool
+}
+
+// cfTTL 返回 Cloudflare 该用的 ttl 值。
+//
+// Cloudflare 用 1 表示「自动」。另外代理记录（云朵打开）的缓存完全由
+// Cloudflare 接管，TTL 只能是自动，传别的值接口会直接报错——所以开了云朵
+// 就不要再把用户填的 TTL 递上去。
+func (o RecordOptions) cfTTL() int {
+	if o.Proxied || o.TTL <= 0 {
+		return 1
+	}
+	return o.TTL
+}
+
 // Provider 是 DNS 服务商的统一接缝：把目标域名的 A 记录设为指定 IP（幂等）。
 type Provider interface {
 	// EnsureARecord 确保 domain 的 A 记录指向 ip：记录存在则更新，不存在则创建。
-	EnsureARecord(domain, ip string) error
+	// opt 里的 TTL / 云朵只在真正写记录时起作用；已经符合期望就不发请求。
+	EnsureARecord(domain, ip string, opt RecordOptions) error
 	// Verify 只读校验：确认密钥有效、能查到这个域名，并返回当前 A 记录值。
 	// 绝不写任何东西——用户点「测试密钥」时不该改到线上解析。
 	Verify(domain string) (RecordState, error)

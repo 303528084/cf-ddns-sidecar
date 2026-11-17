@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,7 +87,7 @@ func (a *aliyun) Verify(domain string) (RecordState, error) {
 	return RecordState{Found: true, CurrentIP: rec.Value}, nil
 }
 
-func (a *aliyun) EnsureARecord(domain, ip string) error {
+func (a *aliyun) EnsureARecord(domain, ip string, opt RecordOptions) error {
 	rec, found, err := a.queryA(domain)
 	if err != nil {
 		return err
@@ -101,6 +102,10 @@ func (a *aliyun) EnsureARecord(domain, ip string) error {
 		u.Set("RR", a.rr(domain))
 		u.Set("Type", "A")
 		u.Set("Value", ip)
+		// TTL 没填就一个字都不传：阿里云这时用账号默认值，也就是升级前的行为。
+		if opt.TTL > 0 {
+			u.Set("TTL", strconv.Itoa(opt.TTL))
+		}
 		return a.request(u, &struct{}{})
 	}
 
@@ -110,6 +115,9 @@ func (a *aliyun) EnsureARecord(domain, ip string) error {
 	c.Set("RR", a.rr(domain))
 	c.Set("Type", "A")
 	c.Set("Value", ip)
+	if opt.TTL > 0 {
+		c.Set("TTL", strconv.Itoa(opt.TTL))
+	}
 	return a.request(c, &struct{}{})
 }
 

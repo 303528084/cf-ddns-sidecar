@@ -83,20 +83,24 @@ func (c *cloudflare) Verify(domain string) (RecordState, error) {
 	return RecordState{}, nil
 }
 
-func (c *cloudflare) EnsureARecord(domain, ip string) error {
+func (c *cloudflare) EnsureARecord(domain, ip string, opt RecordOptions) error {
 	list, err := c.aRecords(domain)
 	if err != nil {
 		return err
 	}
 
+	ttl := opt.cfTTL()
 	for _, rec := range list {
 		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
-			if rec.Content == ip && !rec.Proxied {
+			// IP、TTL、云朵三者都得对上才算「已经好了」。
+			// 只比 IP 的话，用户刚把云朵打开时 IP 没变，这一趟会被当成无事
+			// 可做而直接跳过，界面上显示保存成功、线上其实一点没动。
+			if rec.Content == ip && rec.TTL == ttl && rec.Proxied == opt.Proxied {
 				return nil
 			}
 			rec.Content = ip
-			rec.TTL = 1
-			rec.Proxied = false
+			rec.TTL = ttl
+			rec.Proxied = opt.Proxied
 			var wr cfWriteResp
 			if err := c.do(http.MethodPut,
 				fmt.Sprintf("%s/zones/%s/dns_records/%s", cloudflareAPIBase, c.zoneID, rec.ID),
@@ -114,7 +118,7 @@ func (c *cloudflare) EnsureARecord(domain, ip string) error {
 	var wr cfWriteResp
 	if err := c.do(http.MethodPost,
 		fmt.Sprintf("%s/zones/%s/dns_records", cloudflareAPIBase, c.zoneID),
-		map[string]any{"name": domain, "type": "A", "content": ip, "ttl": 1, "proxied": false},
+		map[string]any{"name": domain, "type": "A", "content": ip, "ttl": ttl, "proxied": opt.Proxied},
 		&wr); err != nil {
 		return err
 	}

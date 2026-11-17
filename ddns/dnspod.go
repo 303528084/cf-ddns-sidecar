@@ -101,7 +101,7 @@ func (d *dnspod) Verify(domain string) (RecordState, error) {
 	return RecordState{Found: true, CurrentIP: rec.Value}, nil
 }
 
-func (d *dnspod) EnsureARecord(domain, ip string) error {
+func (d *dnspod) EnsureARecord(domain, ip string, opt RecordOptions) error {
 	sub, _ := splitDomain(domain, d.root)
 	if sub == "@" {
 		sub = ""
@@ -109,6 +109,11 @@ func (d *dnspod) EnsureARecord(domain, ip string) error {
 	stdSub := sub
 	if stdSub == "" {
 		stdSub = "@"
+	}
+	// DNSPod 免费版要求 TTL ≥ 600，所以没填时沿用一直以来的 600。
+	ttl := opt.TTL
+	if ttl <= 0 {
+		ttl = 600
 	}
 
 	rec, found, err := d.queryA(domain)
@@ -121,7 +126,7 @@ func (d *dnspod) EnsureARecord(domain, ip string) error {
 		}
 		modify := tcRecord{
 			Domain: d.root, SubDomain: stdSub, RecordType: "A",
-			RecordLine: "默认", Value: ip, RecordId: rec.RecordId, TTL: 600,
+			RecordLine: "默认", Value: ip, RecordId: rec.RecordId, TTL: ttl,
 		}
 		var st tcStatusResp
 		if err := d.request("ModifyRecord", modify, &st); err != nil {
@@ -133,7 +138,7 @@ func (d *dnspod) EnsureARecord(domain, ip string) error {
 		return nil
 	}
 
-	create := tcRecord{Domain: d.root, SubDomain: stdSub, RecordType: "A", RecordLine: "默认", Value: ip, TTL: 600}
+	create := tcRecord{Domain: d.root, SubDomain: stdSub, RecordType: "A", RecordLine: "默认", Value: ip, TTL: ttl}
 	var st tcStatusResp
 	if err := d.request("CreateRecord", create, &st); err != nil {
 		return err

@@ -40,7 +40,7 @@ func TestCloudflareEnsureRecord(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	if err := p.EnsureARecord("cf.example.com", "1.2.3.4"); err != nil {
+	if err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !gotCreate {
@@ -64,7 +64,7 @@ func TestCloudflareWriteBusinessFailure(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	err := p.EnsureARecord("cf.example.com", "1.2.3.4")
+	err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{})
 	if err == nil {
 		t.Fatal("HTTP 200 + success:false 必须返回错误")
 	}
@@ -91,7 +91,7 @@ func TestCloudflareUpdatesExisting(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	if err := p.EnsureARecord("cf.example.com", "1.2.3.4"); err != nil {
+	if err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !updated {
@@ -123,7 +123,7 @@ func TestAliyunEnsureRecord(t *testing.T) {
 	p, _ := newAliyun("cf.example.com", map[string]string{
 		"ALIYUN_ACCESS_KEY_ID": "id", "ALIYUN_ACCESS_KEY_SECRET": "secret",
 	})
-	if err := p.EnsureARecord("cf.example.com", "1.2.3.4"); err != nil {
+	if err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if action != "AddDomainRecord" {
@@ -156,7 +156,7 @@ func TestDNSPodEnsureRecord(t *testing.T) {
 	p, _ := newDNSPod("cf.example.com", map[string]string{
 		"TENCENT_SECRET_ID": "id", "TENCENT_SECRET_KEY": "key",
 	})
-	if err := p.EnsureARecord("cf.example.com", "1.2.3.4"); err != nil {
+	if err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if action != "CreateRecord" {
@@ -191,7 +191,7 @@ func TestHuaweiEnsureRecord(t *testing.T) {
 	p, _ := newHuawei("cf.example.com", map[string]string{
 		"HUAWEI_AK": "ak", "HUAWEI_SK": "sk", "HUAWEI_ZONE_ID": "z",
 	})
-	if err := p.EnsureARecord("cf.example.com", "1.2.3.4"); err != nil {
+	if err := p.EnsureARecord("cf.example.com", "1.2.3.4", RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if !created {

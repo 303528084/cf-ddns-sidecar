@@ -53,6 +53,14 @@ type DDNSConfig struct {
 	Enabled  bool   `json:"enabled"`
 	Provider string `json:"provider"` // cloudflare / aliyun / dnspod / huawei
 	Domain   string `json:"domain"`   // 目标域名，如 cf.example.com
+
+	// TTL 是写出的解析记录的生存时间（秒），0 表示用本程序的默认值
+	// （Cloudflare 自动、DNSPod 600、华为云 300、阿里云不传）。
+	// 这两个字段是 2026-11-17 才加的，老配置文件里没有，反序列化后就是零值，
+	// 效果等同于以前写死的 1/600/300——升级不会改变用户现有记录的样子。
+	TTL int `json:"ttl,omitempty"`
+	// Proxied 只对 Cloudflare 有效：true 表示开橙色云朵（走 Cloudflare 代理）。
+	Proxied bool `json:"proxied,omitempty"`
 }
 
 // Config 是全部配置，持久化为 config.json。

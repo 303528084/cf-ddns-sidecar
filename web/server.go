@@ -518,6 +518,8 @@ type configResp struct {
 	DDNSEnabled     bool     `json:"ddns_enabled"`
 	DDNSProvider    string   `json:"ddns_provider"`
 	DDNSDomain      string   `json:"ddns_domain"`
+	DDNSTTL         int      `json:"ddns_ttl"`
+	DDNSProxied     bool     `json:"ddns_proxied"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -537,6 +539,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSEnabled:     c.DDNS.Enabled,
 			DDNSProvider:    c.DDNS.Provider,
 			DDNSDomain:      c.DDNS.Domain,
+			DDNSTTL:         c.DDNS.TTL,
+			DDNSProxied:     c.DDNS.Proxied,
 		})
 	case http.MethodPost:
 		s.saveConfig(w, r)
@@ -557,9 +561,19 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSEnabled     bool     `json:"ddns_enabled"`
 		DDNSProvider    string   `json:"ddns_provider"`
 		DDNSDomain      string   `json:"ddns_domain"`
+		DDNSTTL         int      `json:"ddns_ttl"`
+		DDNSProxied     bool     `json:"ddns_proxied"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	// TTL 只挡明显填错的：各家上限并不一样（阿里云最大 86400，DNSPod 免费版
+	// 最小 600），更细的边界让服务商自己报错更准确，别在这儿瞎猜。
+	if body.DDNSTTL != 0 && (body.DDNSTTL < 60 || body.DDNSTTL > 86400) {
+		writeJSON(w, 400, map[string]string{
+			"error": "TTL 请填 0（用各服务商默认）或 60 到 86400 之间的秒数，常见的是 600 或 3600",
+		})
 		return
 	}
 
@@ -582,6 +596,8 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.DDNS.Enabled = body.DDNSEnabled
 	cfg.DDNS.Provider = strings.ToLower(strings.TrimSpace(body.DDNSProvider))
 	cfg.DDNS.Domain = config.NormalizeDomain(body.DDNSDomain)
+	cfg.DDNS.TTL = body.DDNSTTL
+	cfg.DDNS.Proxied = body.DDNSProxied
 
 	s.cfg = &cfg
 	s.mu.Unlock()
@@ -611,6 +627,12 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 间隔可能变了，把睡着的定时器叫醒重算，否则「下次测速」要等旧的
 	// 周期走完才更新（最长能差一小时）。
 	s.wakeScheduler()
+
+	// 开了云朵这件事必须留在日志里。以后用户看到「域名解析的 IP 不是最优 IP」
+	// 时，日志里这一行能直接解释原因——是 Cloudflare 接手了，不是推送错了。
+	if cfg.DDNS.Proxied && cfg.DDNS.Provider == "cloudflare" {
+		s.appendLog("注意：Cloudflare 云朵（代理）已开启，域名会解析到 Cloudflare 的边缘节点，不再直接指向优选 IP")
+	}
 
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
@@ -825,7 +847,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			p, derr := ddns.New(cfg.DDNS.Provider, cfg.DDNS.Domain, creds)
 			if derr != nil {
 				s.appendLog("域名解析配置有误: " + derr.Error())
-			} else if derr := p.EnsureARecord(cfg.DDNS.Domain, best); derr != nil {
+			} else if derr := p.EnsureARecord(cfg.DDNS.Domain, best, recordOptions(cfg.DDNS)); derr != nil {
 				s.appendLog("域名解析推送失败: " + derr.Error())
 			} else {
 				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s", cfg.DDNS.Domain, best))

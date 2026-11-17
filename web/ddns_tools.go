@@ -41,6 +41,13 @@ func (s *Server) currentDDNS() (ddns.Provider, config.Config, string) {
 	return p, cfg, ""
 }
 
+// recordOptions 把配置里的 TTL / 云朵翻译成 ddns 包要求的写法。
+// 放一处是为了让「定时推送」和「立即更新一次」写出去的记录一定一致——
+// 两条路各写一份的话，早晚会有一条忘记带 TTL。
+func recordOptions(d config.DDNSConfig) ddns.RecordOptions {
+	return ddns.RecordOptions{TTL: d.TTL, Proxied: d.Proxied}
+}
+
 // handleDDNSCheck 只读校验密钥：确认能用、能查到这条域名，并报出当前指向。
 func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -108,7 +115,7 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := p.EnsureARecord(cfg.DDNS.Domain, ip); err != nil {
+	if err := p.EnsureARecord(cfg.DDNS.Domain, ip, recordOptions(cfg.DDNS)); err != nil {
 		s.appendLog("手动推送域名解析失败: " + err.Error())
 		writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
 		return

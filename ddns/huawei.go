@@ -84,7 +84,12 @@ func (h *huawei) Verify(domain string) (RecordState, error) {
 	return state, nil
 }
 
-func (h *huawei) EnsureARecord(domain, ip string) error {
+func (h *huawei) EnsureARecord(domain, ip string, opt RecordOptions) error {
+	// 华为云没填时沿用一直以来的 300。
+	ttl := opt.TTL
+	if ttl <= 0 {
+		ttl = 300
+	}
 	rec, found, err := h.queryA(domain)
 	if err != nil {
 		return err
@@ -95,7 +100,7 @@ func (h *huawei) EnsureARecord(domain, ip string) error {
 		}
 		body := map[string]any{
 			"name": rec.Name, "type": rec.Type,
-			"records": []string{ip}, "ttl": 300,
+			"records": []string{ip}, "ttl": ttl,
 		}
 		u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets/%s", huaweiAPIBase, rec.ZoneID, rec.ID)
 		var out hwRecordset
@@ -104,7 +109,7 @@ func (h *huawei) EnsureARecord(domain, ip string) error {
 
 	body := map[string]any{
 		"name": domain + ".", "type": "A",
-		"records": []string{ip}, "ttl": 300,
+		"records": []string{ip}, "ttl": ttl,
 	}
 	u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets", huaweiAPIBase, h.zoneID)
 	var out hwRecordset
