@@ -37,6 +37,16 @@
       {
         "type": "tips",
         "helpText": "检查间隔：多久看一次最优 IP 有没有变化，默认 30 秒。"
+      },
+      {
+        "type": "password",
+        "field": "wizard_dashboard_password",
+        "label": "管理后台登录密码",
+        "initValue": ""
+      },
+      {
+        "type": "tips",
+        "helpText": "「管理后台」指浏览器打开 http://飞牛IP:8080 那个界面。这里设一个你自己记得住的密码，保存后生效；留空表示不改。"
       }
     ]
   },

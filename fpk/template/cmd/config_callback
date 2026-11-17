@@ -80,6 +80,15 @@ set_kv "HUAWEI_ZONE_ID" "${wizard_huawei_zone_id:-}" "$ENV_FILE"
 
 log "配置已保存到 ${ENV_FILE}"
 
+# 管理后台（Dashboard）登录密码：用户在这里设，就不用去翻 dashboard-password 文件。
+# 留空则保持原密码不变。
+if [ -n "${wizard_dashboard_password:-}" ]; then
+    printf '%s' "$wizard_dashboard_password" > "${DATA_ROOT}/dashboard-password" \
+        || fail "写入后台密码失败"
+    chmod 0644 "${DATA_ROOT}/dashboard-password" 2>/dev/null
+    log "后台登录密码已更新"
+fi
+
 # 重启容器让新配置生效（失败不阻断，用户也可以在应用中心手动重启）
 if docker restart "$CONTAINER_NAME" >/dev/null 2>&1; then
     log "已重启容器使配置生效"

@@ -57,8 +57,8 @@
    - 在「域名」里添加要加速的域名（即套了 Cloudflare 的网站域名，可随时增删）；
    - 触发一次「立即测速并写入」。
 
-> **Dashboard 登录密码**：安装时自动生成一次，固定保存在 `cf-ddns-sidecar/data/dashboard-password`，
-> 在文件管理里打开该文件即可看到（重启不会变）。
+> **Dashboard 登录密码**：在同一个「应用设置」表单里有一个「管理后台登录密码」项，自己设一个即可（保存后立即生效）。
+> 不设的话，安装时会自动生成一个随机密码存在 `cf-ddns-sidecar/data/dashboard-password` 里。
 > 高级用户可选：在 `data/` 下放 `config.yaml`（参照 `config.yaml.example`）覆盖默认轮询间隔等；不创建则纯用 ddns.env。
 
 ## 二、本地 docker compose 部署（非 FPK）
