@@ -2,8 +2,21 @@
 #
 # 飞牛生命周期脚本：uninstall_callback（卸载完成后执行）。
 #
-# 删除数据目录，让「文件管理」里不再留下 cf-ddns-sidecar 共享文件夹。
-# 路径严格限定在本应用的固定目录下，避免误删其它数据。
+# 【2026-11-17 重要修改】这里以前是 `rm -rf $SHARE_ROOT`，本意是
+# 「卸载后别在文件管理里留个空文件夹」。这个取舍做错了：
+#
+#   v1.0.1 → v1.1.0 那次**升级**（不是卸载重装），用户后台里的 AdGuard
+#   地址、域名、各家 DNS 密钥全部变回默认值。程序启动日志显示 ddns.env、
+#   dashboard-password、.wizard-env-applied 三个文件同时不存在——数据目录
+#   被整个清空了。最可能就是本脚本在升级流程里被执行了（飞牛的「升级」
+#   在部分版本上走的是「卸旧装新」）。
+#
+# 现在的原则：**只清容器，绝不动数据。**
+# 飞牛自己的约定也是「卸载默认保留用户数据」。想清空请用户自己去
+# 「文件管理」里删（提示里已经写清楚了）。
+#
+# 代价：卸载后文件管理里会剩一个 cf-ddns-sidecar 共享文件夹。
+# 这个代价远比「升个级把密钥全丢了」小得多。
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
@@ -12,27 +25,13 @@ log() {
     echo "[cf-ddns-sidecar] $*"
 }
 
-# 再兜底清一次容器（防止 uninstall_init 未执行或执行失败）
+# 只兜底清容器（防止 uninstall_init 未执行或执行失败）。不删任何文件。
 docker rm -f -v cf-ddns-sidecar >/dev/null 2>&1 || true
 docker rm -f cf-dns-select >/dev/null 2>&1 || true
 
-# 删除数据共享目录（配置、状态、密码都在里面）
 if [ -d "$SHARE_ROOT" ]; then
-    # 双重校验：必须落在 /var/apps 下的本应用目录，才允许递归删除
-    case "$SHARE_ROOT" in
-        "/var/apps/${APP_NAME}/share/${APP_NAME}")
-            rm -rf "$SHARE_ROOT" && log "已删除数据目录 $SHARE_ROOT"
-            ;;
-        *)
-            log "数据目录路径异常，跳过删除：$SHARE_ROOT"
-            ;;
-    esac
-fi
-
-# 清理可能残留的应用目录（飞牛通常会自动删，这里兜底）
-APP_ROOT="/var/apps/${APP_NAME}"
-if [ -d "$APP_ROOT" ] && [ -z "$(ls -A "$APP_ROOT" 2>/dev/null)" ]; then
-    rmdir "$APP_ROOT" >/dev/null 2>&1 || true
+    log "已保留数据目录：$SHARE_ROOT"
+    log "如需彻底清除（含域名、服务商密钥、后台密码），请到「文件管理」里手动删除该文件夹"
 fi
 
 exit 0

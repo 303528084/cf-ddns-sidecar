@@ -69,6 +69,11 @@ type Config struct {
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
 	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
 	PendingSave bool `json:"-"`
+
+	// RestoredFromBackup 为 true 表示主配置文件不见了，本次是从 config.json.bak
+	// 恢复出来的。调用方应当把这个情况显式告诉用户——「静默退回默认值」正是
+	// 2026-11-17 配置丢失事故里最误导人的地方：后台看起来一切正常，只是全空了。
+	RestoredFromBackup bool `json:"-"`
 }
 
 var (
@@ -76,6 +81,14 @@ var (
 	cfgPathOnce sync.Once
 	mu          sync.Mutex
 )
+
+// backupSuffix 是配置文件的备份后缀。
+//
+// 每次写 config.json 前都会把旧内容留在 config.json.bak 里。目的有两个：
+//  1. 新写的那份如果本身是坏的（磁盘满、被截断），还能拿回上一版；
+//  2. config.json 万一被外部删掉（升级/清理脚本），Load 能从 .bak 恢复，
+//     而不是静默退回默认值。
+const backupSuffix = ".bak"
 
 // resolvePath 返回配置文件路径，可用 CFDDNS_CONFIG 环境变量覆盖。
 func resolvePath() string {
@@ -122,6 +135,19 @@ func Load() (*Config, error) {
 			c.PendingSave = true
 		}
 	case os.IsNotExist(err):
+		// 主文件不见了。先看有没有上一次写入前留下的 .bak（见 Save）：
+		// 有就恢复它，别让整份配置静默退回默认值。
+		//
+		// 这一条是为 2026-11-17 那次事故加的。当时升级把整个数据目录清空了，
+		// 程序读到「文件不存在」就当成首次启动、用默认值继续跑，用户看到的是
+		// 一个空白的后台——如果当时有 .bak，至少能自己爬起来。
+		if bak, berr := os.ReadFile(resolvePath() + backupSuffix); berr == nil && len(bak) > 0 {
+			if uerr := json.Unmarshal(bak, c); uerr == nil {
+				c.RestoredFromBackup = true
+				c.PendingSave = true
+				break
+			}
+		}
 		// 首次启动（安装向导刚写完 ddns.env）：用它打底，并立刻落盘。
 		// 这里必须也置 PendingSave —— 否则 config.json 一直不存在、
 		// 「已应用」标记永远清不掉，等用户以后在后台改了配置，
@@ -224,6 +250,11 @@ func (c *Config) Save() error {
 	}
 	if err := os.Chmod(name, 0o600); err != nil {
 		return err
+	}
+	// 落盘前把上一版留一份 .bak。失败不影响主流程——备份是加分项，
+	// 不能因为它写不了就导致用户存不了配置。
+	if old, rerr := os.ReadFile(p); rerr == nil && len(old) > 0 {
+		_ = os.WriteFile(p+backupSuffix, old, 0o600)
 	}
 	return os.Rename(name, p)
 }

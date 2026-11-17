@@ -1,6 +1,85 @@
 #!/bin/bash
+#
+# 飞牛生命周期脚本：upgrade_init（升级开始前执行）。
+#
+# 这个脚本原本是空壳 exit 0，2026-11-17 出过一次事故：
+# 用户从 v1.0.1 直接升级到 v1.1.0（不是卸载重装），升级后后台里的
+# AdGuard 地址、域名、各家 DNS 密钥全部变回默认值——数据目录被清空了。
+# 密码看起来还在，是因为飞牛把上次向导的答案又传了一遍、程序用种子重写了
+# dashboard-password；而域名/密钥这些不在向导里，就真丢了。
+#
+# 结论：不能假设升级一定保住 /var/apps/<app>/share/<app>。升级窗口里必须
+# 先自己备一份。这件事要三处一起改才闭环（另两处见 uninstall_callback 和
+# config/config.go 的 Save/Load），因为只靠猜平台行为不可靠。
+#
+# 备份失败绝不能阻断升级：宁可升级后提示「没备份成功」，也不能让用户卡在
+# 升不上去的状态里。
 
-# 飞牛生命周期脚本：upgrade_init。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+DATA_DIR="${SHARE_ROOT}/data"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+log() {
+    echo "[cf-ddns-sidecar] $*"
+}
+
+# 没有数据目录就没什么可备的
+if [ ! -d "$DATA_DIR" ]; then
+    log "升级前备份：没有 $DATA_DIR，跳过"
+    exit 0
+fi
+
+# 只备份真正的配置文件，不备份测速工作目录（那里可能有几百 MB 临时文件）。
+# 这里刻意不用 bash 数组：飞牛的系统 shell 组合不确定，纯 POSIX 写法到哪都能跑。
+WANTED="config.json ddns.env dashboard-password .wizard-env-applied"
+TOTAL=0
+for f in $WANTED; do
+    [ -e "${DATA_DIR}/${f}" ] && TOTAL=$((TOTAL + 1))
+done
+
+if [ "$TOTAL" -eq 0 ]; then
+    log "升级前备份：数据目录里没有配置文件，跳过"
+    exit 0
+fi
+
+# 备份目标优先放在数据目录的**同级**（.../share/cf-ddns-sidecar-backup-<时间>）：
+# 如果平台删的是 share/<app> 这一层，同级目录能活下来。
+# 万一同级不可写（ACL 限制），退回到数据目录内部，至少能防「文件被写坏」。
+BACKUP_DIR="/var/apps/${APP_NAME}/share/${APP_NAME}-backup-${STAMP}"
+if ! mkdir -p "$BACKUP_DIR" 2>/dev/null || ! : > "${BACKUP_DIR}/.probe" 2>/dev/null; then
+    rm -rf "$BACKUP_DIR" 2>/dev/null
+    BACKUP_DIR="${DATA_DIR}/.backup/${STAMP}"
+    if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+        log "升级前备份：无法创建备份目录，跳过（不影响升级本身）"
+        exit 0
+    fi
+fi
+# 探测用的临时文件要清掉，别在备份目录里留垃圾
+rm -f "${BACKUP_DIR}/.probe" 2>/dev/null
+
+ok=0
+for f in $WANTED; do
+    [ -e "${DATA_DIR}/${f}" ] || continue
+    if cp -p "${DATA_DIR}/${f}" "${BACKUP_DIR}/${f}" 2>/dev/null; then
+        ok=$((ok + 1))
+    fi
+done
+
+log "升级前备份：已保存 ${ok}/${TOTAL} 个文件到 ${BACKUP_DIR}"
+
+# 只保留最近 3 份，避免长期占空间。两处命名规则不同，分开清理。
+for base in "/var/apps/${APP_NAME}/share" "${DATA_DIR}/.backup"; do
+    [ -d "$base" ] || continue
+    # 同级备份：cf-ddns-sidecar-backup-20261117-151200
+    ls -1dt "${base}/${APP_NAME}-backup-"* 2>/dev/null | tail -n +4 | while read -r old; do
+        rm -rf "$old" 2>/dev/null
+    done
+    # 目录内备份：.backup/20261117-151200
+    find "$base" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*-[0-9]*' 2>/dev/null \
+        | sort -r | tail -n +4 | while read -r old; do
+        rm -rf "$old" 2>/dev/null
+    done
+done
+
 exit 0
