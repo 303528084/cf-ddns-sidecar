@@ -364,3 +364,33 @@ func assertAllInCIDRs(t *testing.T, out string, cidrs []string) {
 		t.Errorf("候选太少（%d 条），测速会没什么可挑的", len(lines))
 	}
 }
+
+// TestSourcePlanText 校验「这一轮用了哪些来源」那句话。
+//
+// 这句话是 2026-11-17 22:14 那次反馈的直接产物：日志里只有引擎自己的行，
+// 用户看不出程序到底用了他填的链接还是官方那 15 段。所以它必须只说真正
+// 存在的来源，不能把「0 个」也念出来吓人。
+func TestSourcePlanText(t *testing.T) {
+	cases := []struct {
+		name string
+		src  extraSources
+		want string
+	}{
+		{"只有段", extraSources{cidrs: []string{"104.16.0.0/13", "1.1.1.0/24"}}, "IP 段 2 个"},
+		{"只有单 IP", extraSources{ips: []string{"1.2.3.4"}}, "单个 IP 1 个"},
+		{"只有带端口节点", extraSources{nodes: []string{"1.2.3.4:8443#JP"}}, "带端口节点 1 个"},
+		{"三者都有", extraSources{
+			cidrs: []string{"104.16.0.0/13"},
+			ips:   []string{"1.2.3.4"},
+			nodes: []string{"5.6.7.8:2053#SG"},
+		}, "IP 段 1 个、单个 IP 1 个、带端口节点 1 个"},
+		{"一个都没有", extraSources{}, "本地没认出任何 IP"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sourcePlanText(c.src); got != c.want {
+				t.Fatalf("得到 %q，期望 %q", got, c.want)
+			}
+		})
+	}
+}

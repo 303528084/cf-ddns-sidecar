@@ -308,6 +308,27 @@ func sampleHint(samples []string) string {
 	return "，认不出的例如 " + strings.Join(quoted, "、")
 }
 
+// sourcePlanText 用一句话说清「这一轮本地凑出了哪些来源」。
+//
+// 刻意不写「0 个」：用户只填一条链接时，「IP 段 1 个、单个 IP 0 个、带端口
+// 节点 0 个」里那两个 0 只会让本来就心慌的人更慌，信息量为零。
+func sourcePlanText(src extraSources) string {
+	var parts []string
+	if n := len(src.cidrs); n > 0 {
+		parts = append(parts, fmt.Sprintf("IP 段 %d 个", n))
+	}
+	if n := len(src.ips); n > 0 {
+		parts = append(parts, fmt.Sprintf("单个 IP %d 个", n))
+	}
+	if n := len(src.nodes); n > 0 {
+		parts = append(parts, fmt.Sprintf("带端口节点 %d 个", n))
+	}
+	if len(parts) == 0 {
+		return "本地没认出任何 IP"
+	}
+	return strings.Join(parts, "、")
+}
+
 // ---------- 认证 ----------
 //
 // 令牌用 HMAC 签名，服务端不存会话表：
@@ -946,14 +967,29 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// custom 为 false 表示用户没设置，完全走升级前的老行为。
 	extra, _ := parseExtraSources(cfg.Speed.ExtraSources)
 	custom := len(cfg.Speed.ExtraSources) > 0
+	// 从配置里把链接原文单独留一份：resolveLinkSources 会把 extra.urls 清空
+	// （它们已经被「消费」成 IP 列表了），但日志必须能原样复述用户填了什么。
+	// 没有这一份，用户就只能靠「有没有出现外部 URL 行」猜程序到底用没用他的链接。
+	configuredURLs := append([]string(nil), extra.urls...)
 
 	localCandidates := s.selfURL + "/api/candidates"
 	var fallbackURLs []string
+
+	s.appendLog("开始测速…")
+
 	if custom {
+		// 先交代「你配的是什么」，再交代「解析成了什么」。顺序不能反：
+		// 22:14 那次真机反馈就是「结果出来了，但日志里找不到我那条链接」——
+		// 解析细节写在前面几行，用户翻日志时往往只看得到后面。
+		if len(configuredURLs) > 0 {
+			s.appendLog(fmt.Sprintf("候选来源：从你填的 %d 条链接下载 —— %s",
+				len(configuredURLs), strings.Join(configuredURLs, "、")))
+		}
 		if len(extra.urls) > 0 {
 			extra, fallbackURLs = s.resolveLinkSources(ctx, extra)
 		}
-		s.stageCandidates(candidatesText(extra, candidateCount))
+		staged := candidatesText(extra, candidateCount)
+		s.stageCandidates(staged)
 		defer s.unstageCandidates()
 
 		if extra.isEmpty() && len(fallbackURLs) == 0 {
@@ -964,6 +1000,23 @@ func (s *Server) runOnce(cfg config.Config) error {
 		// 日志里留一行「0 节点」，而这一次纯粹是我们没东西给它。
 		if extra.isEmpty() {
 			localCandidates = ""
+		}
+
+		// 第二句：解析成了什么。前半句用「候选来源：」还是「解析结果：」
+		// 取决于上一句在不在，避免出现「解析结果」却不知道解析的是什么的怪句子。
+		planHead := "候选来源："
+		if len(configuredURLs) > 0 {
+			planHead = "解析结果："
+		}
+		s.appendLog(fmt.Sprintf("%s%s；只用你填的来源，不叠加官方内置源",
+			planHead, sourcePlanText(extra)))
+		if n := strings.Count(staged, "\n"); n > 0 {
+			s.appendLog(fmt.Sprintf(
+				"候选池：本地生成 %d 条交给测速引擎（每次最多 %d 条）", n, candidateCount))
+		}
+		if len(fallbackURLs) > 0 {
+			s.appendLog(fmt.Sprintf(
+				"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
 		}
 	}
 
@@ -977,18 +1030,6 @@ func (s *Server) runOnce(cfg config.Config) error {
 		}, s.appendLog)
 	}
 
-	s.appendLog("开始测速…")
-	// 这一行是给用户看的「为什么会测出这些 IP」：以前候选来源是写死的，
-	// 现在能改，就必须说清楚这一轮到底用了谁的来源，否则出了问题无从判断。
-	if custom {
-		s.appendLog(fmt.Sprintf(
-			"候选来源：按后台设置的自定义来源（IP 段 %d 个、单个 IP %d 个、带端口节点 %d 个），不叠加内置聚合源",
-			len(extra.cidrs), len(extra.ips), len(extra.nodes)))
-		if len(fallbackURLs) > 0 {
-			s.appendLog(fmt.Sprintf(
-				"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
-		}
-	}
 	res, err := run()
 
 	// 失败自动重试一次。cfnb 的失败大多是「某个数据源或节点刚好超时」这类
@@ -1021,6 +1062,20 @@ func (s *Server) runOnce(cfg config.Config) error {
 
 	best := res.Best()
 	s.appendLog("测速完成，最优 IP: " + best)
+
+	// 上面那些 `1. x.x.x.x:443#US` 里的 `#US` **不是真实位置**，是我们为了满足
+	// 引擎的解析格式补的占位值（引擎遇到没有国家标签的裸 IP 会逐条去探测，
+	// 又慢又会把探测失败的节点丢掉）。它在引擎内部只用于国家过滤，而那个功能
+	// 在本产品里是关掉的，所以对结果毫无影响——但原样显示出来会让人以为
+	// 「程序认为这些 IP 都在美国」。这里真去问一次 Cloudflare 出口，补一行
+	// 可信的说法。探不到就不写，绝不编一个。
+	//
+	// 用独立于测速的 ctx：测速的预算已经快用完时，沿用它会一条都探不出去，
+	// 那这行日志就成了「探测不到」，反而误导。
+	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitBudget)
+	s.logExitCountries(exitCtx, res.IPs)
+	exitCancel()
+
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	// 1) 写入 AdGuard Home 重写表
