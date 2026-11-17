@@ -1,6 +1,51 @@
 #!/bin/bash
+#
+# 飞牛生命周期脚本：uninstall_init（卸载开始时执行，此时应用与容器还在）。
+#
+# 目标：卸载后像从没装过一样 —— 容器、镜像、网络记录全部清掉。
+# 数据目录在 uninstall_callback 里删除（那时应用目录已解绑，删得更干净）。
 
-# 飞牛生命周期脚本：uninstall_init。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+CONTAINER_NAME="cf-ddns-sidecar"
+
+log() {
+    echo "[cf-ddns-sidecar] $*"
+}
+
+# 1) 停止并删除容器（-v 同时删匿名卷）
+if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    docker rm -f -v "$CONTAINER_NAME" >/dev/null 2>&1 && log "已删除容器 $CONTAINER_NAME"
+fi
+
+# 2) 兼容 v1.0.x 双容器架构遗留的主体容器
+if docker inspect cf-dns-select >/dev/null 2>&1; then
+    docker rm -f cf-dns-select >/dev/null 2>&1 && log "已删除遗留容器 cf-dns-select"
+fi
+
+# 3) 清理 compose 项目残留容器（compose 会给容器打 project 标签）
+PROJECT_CONTAINERS=$(docker ps -aq --filter "label=com.docker.compose.project=${APP_NAME}" 2>/dev/null)
+if [ -n "$PROJECT_CONTAINERS" ]; then
+    # shellcheck disable=SC2086
+    docker rm -f $PROJECT_CONTAINERS >/dev/null 2>&1 && log "已清理 compose 项目残留容器"
+fi
+
+# 4) 清理 compose 默认网络
+docker network rm "${APP_NAME}_default" >/dev/null 2>&1 || true
+
+# 5) 删除本应用的镜像（含历史版本），让 Docker 里不留任何记录
+COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+IMAGE_REPO=""
+if [ -f "$COMPOSE_FILE" ]; then
+    IMAGE_REPO=$(grep -E '^[[:space:]]*image:' "$COMPOSE_FILE" \
+        | head -n 1 | awk '{print $2}' | sed 's/:[^:/]*$//')
+fi
+
+if [ -n "$IMAGE_REPO" ]; then
+    OLD_IMAGES=$(docker images "$IMAGE_REPO" -q 2>/dev/null | sort -u)
+    if [ -n "$OLD_IMAGES" ]; then
+        # shellcheck disable=SC2086
+        docker rmi -f $OLD_IMAGES >/dev/null 2>&1 && log "已删除镜像 $IMAGE_REPO"
+    fi
+fi
+
 exit 0

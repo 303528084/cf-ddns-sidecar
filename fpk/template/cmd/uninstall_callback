@@ -1,6 +1,38 @@
 #!/bin/bash
+#
+# 飞牛生命周期脚本：uninstall_callback（卸载完成后执行）。
+#
+# 删除数据目录，让「文件管理」里不再留下 cf-ddns-sidecar 共享文件夹。
+# 路径严格限定在本应用的固定目录下，避免误删其它数据。
 
-# 飞牛生命周期脚本：uninstall_callback。
-# Docker 项目的安装/升级/卸载/配置由应用中心直接管理，
-# 本应用无需额外动作，直接返回成功。
+APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
+SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
+
+log() {
+    echo "[cf-ddns-sidecar] $*"
+}
+
+# 再兜底清一次容器（防止 uninstall_init 未执行或执行失败）
+docker rm -f -v cf-ddns-sidecar >/dev/null 2>&1 || true
+docker rm -f cf-dns-select >/dev/null 2>&1 || true
+
+# 删除数据共享目录（配置、状态、密码都在里面）
+if [ -d "$SHARE_ROOT" ]; then
+    # 双重校验：必须落在 /var/apps 下的本应用目录，才允许递归删除
+    case "$SHARE_ROOT" in
+        "/var/apps/${APP_NAME}/share/${APP_NAME}")
+            rm -rf "$SHARE_ROOT" && log "已删除数据目录 $SHARE_ROOT"
+            ;;
+        *)
+            log "数据目录路径异常，跳过删除：$SHARE_ROOT"
+            ;;
+    esac
+fi
+
+# 清理可能残留的应用目录（飞牛通常会自动删，这里兜底）
+APP_ROOT="/var/apps/${APP_NAME}"
+if [ -d "$APP_ROOT" ] && [ -z "$(ls -A "$APP_ROOT" 2>/dev/null)" ]; then
+    rmdir "$APP_ROOT" >/dev/null 2>&1 || true
+fi
+
 exit 0
