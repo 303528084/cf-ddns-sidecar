@@ -602,10 +602,12 @@ type statusResp struct {
 	RestoredSource  string `json:"restored_source"`
 	LogFile         string `json:"log_file"`
 
-	// 定时器状态：下次几点跑、上次成没成、连续失败几次。
-	NextRunAt string `json:"next_run_at"`
-	LastOK    bool   `json:"last_ok"`
-	FailCount int    `json:"fail_count"`
+	// 定时器状态：下次几点跑、还有多少秒、上次成没成、连续失败几次。
+	// next_run_at 给人看（「01:12」），next_run_in_sec 给「还剩 N 分钟」用。
+	NextRunAt      string `json:"next_run_at"`
+	NextRunInSec   int    `json:"next_run_in_sec"`
+	LastOK         bool   `json:"last_ok"`
+	FailCount      int    `json:"fail_count"`
 
 	// 上次测速排好序的完整 IP 列表。界面用它显示「已写入前 N 条」，
 	// 也让用户在改条数之前就能看到有哪些备选。
@@ -639,6 +641,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RestoredUpgrade: s.restoredUpgrade,
 		RestoredSource:  s.restoredSource,
 		NextRunAt:       formatRunTime(s.nextRunAt),
+		NextRunInSec:    secsUntil(s.nextRunAt),
 		LastOK:          s.lastOK,
 		FailCount:       s.failCount,
 		LastIPs:         append([]string{}, cfg.LastIPs...),
@@ -944,6 +947,24 @@ func formatRunTime(t time.Time) string {
 		return t.Format("15:04")
 	}
 	return t.Format("01-02 15:04")
+}
+
+// secsUntil 算「离这个时刻还有多少秒」，给界面上的「还剩 N 分钟」用。
+//
+// 为什么不直接让界面拿 next_run_at 自己减：next_run_at 是「15:04」这样的
+// 字符串，跨天就分不清是今天还是明天；而且浏览器的时钟和 NAS 的时钟常常
+// 差几分钟，算出来会对不上。在这里一次算清，界面只管照着念。
+//
+// 已经到点（或没开定时）返回 0：宁可少说一句，也不能显示「还剩 -3 分钟」。
+func secsUntil(t time.Time) int {
+	if t.IsZero() {
+		return 0
+	}
+	d := int(time.Until(t).Seconds())
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // delayText 把等待时长说成人话，直接拼进日志句子（「10 秒后自动重试一次」）。

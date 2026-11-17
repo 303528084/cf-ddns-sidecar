@@ -40,23 +40,72 @@
   a{color:var(--accent);text-decoration:none}
 
   /* ---------- 登录 ---------- */
+  /* ---------- 登录页 ----------
+     原来的问题：图标/标题/副标题/输入框/按钮 五样全部左对齐堆成一根竖线，
+     卡片四周留白很大、内部却很挤，整页一片死灰没有层次，密码还看不见。
+     改法：顶部一条主色渐变（和概览卡同一语言）+ 图标与标题并排成品牌区 +
+     输入框带「显示密码」+ 错误信息就地显示在输入框下面（toast 会消失，
+     而「为什么进不去」这句话得留在原地）。 */
   .login{
-    position:fixed;inset:0;z-index:200;display:grid;place-items:center;background:var(--bg);padding:20px;
+    position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:24px;
+    background:
+      radial-gradient(1000px 520px at 50% -14%, #e7eeff 0%, rgba(231,238,255,0) 62%),
+      var(--bg);
   }
   .login .box{
-    width:100%;max-width:340px;background:var(--card);border:1px solid var(--line);
-    border-radius:16px;padding:26px 24px;box-shadow:var(--shadow);
+    width:100%;max-width:384px;background:var(--card);border:1px solid var(--line);
+    border-radius:18px;padding:30px 30px 24px;position:relative;overflow:hidden;
+    box-shadow:0 1px 2px rgba(16,24,40,.04), 0 24px 48px -20px rgba(16,24,40,.20);
   }
+  .login .box::before{
+    content:"";position:absolute;inset:0 0 auto 0;height:3px;
+    background:linear-gradient(90deg,#4c6ef5,#7048e8 45%,#12b886);
+  }
+  .login .brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}
   .login .mark{
-    width:38px;height:38px;border-radius:11px;background:linear-gradient(140deg,#4c6ef5,#7048e8);
-    display:grid;place-items:center;margin-bottom:14px;box-shadow:0 6px 16px -6px rgba(76,110,245,.6);
+    width:42px;height:42px;flex:none;border-radius:13px;display:grid;place-items:center;
+    background:linear-gradient(150deg,#4c6ef5,#3b5bdb);
+    box-shadow:0 6px 16px -6px rgba(59,91,219,.65);
   }
-  .login h1{font-size:18px;margin:0 0 4px;font-weight:650}
-  .login .sub{font-size:12.5px;color:var(--muted);margin-bottom:18px}
-  .login input{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;
-    font-size:14px;font-family:inherit;background:var(--card);color:var(--text);margin-bottom:14px}
+  .login h1{font-size:16.5px;margin:0;font-weight:650;letter-spacing:-.2px;line-height:1.3}
+  .login .who{font-size:12px;color:var(--dim);margin-top:3px}
+  .login label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:7px;font-weight:500}
+  .login .field{position:relative}
+  .login input{
+    width:100%;height:44px;padding:0 44px 0 13px;border:1px solid var(--line);border-radius:11px;
+    background:var(--card);color:var(--text);font-size:14px;font-family:inherit;transition:.15s;
+  }
+  .login input::placeholder{color:var(--dim)}
   .login input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,91,219,.12)}
-  .login button{width:100%}
+  /* 密码错的时候整框变红，比只弹一句 toast 更容易对上「是这一格的问题」 */
+  .login input.bad{border-color:var(--err);box-shadow:0 0 0 3px rgba(217,45,32,.1)}
+  .login .eye{
+    position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    width:32px;height:32px;border:none;background:transparent;color:var(--dim);
+    border-radius:8px;cursor:pointer;display:grid;place-items:center;padding:0;
+  }
+  .login .eye:hover{color:var(--accent);background:var(--accent-soft)}
+  .login .eye.on{color:var(--accent)}
+  /* 固定 17px 高：错误出现/消失时按钮不会上下跳 */
+  .login .err{font-size:12px;color:var(--err);min-height:17px;margin-top:7px;line-height:1.4}
+  .login button.go{
+    width:100%;height:44px;margin-top:6px;border:1px solid var(--accent);border-radius:11px;
+    background:var(--accent);color:#fff;font-size:14px;font-weight:500;cursor:pointer;
+    font-family:inherit;box-shadow:0 2px 8px -2px rgba(59,91,219,.45);transition:.15s;
+  }
+  .login button.go:hover{filter:brightness(1.07)}
+  .login button.go:disabled{opacity:.65;cursor:default}
+  .login .foot{
+    margin-top:20px;padding-top:15px;border-top:1px solid var(--line2);
+    font-size:11.5px;color:var(--dim);line-height:1.65;
+  }
+  @media (prefers-color-scheme: dark){
+    .login{
+      background:
+        radial-gradient(1000px 520px at 50% -14%, #1a2340 0%, rgba(26,35,64,0) 62%),
+        var(--bg);
+    }
+  }
 
   /* ---------- 布局 ---------- */
   .shell{display:flex;min-height:100vh}
@@ -110,25 +159,6 @@
   .btn.flat{box-shadow:none;background:transparent;border-color:transparent}
   .btn.flat:hover{background:var(--line2)}
 
-  /* ---------- Hero ---------- */
-  .hero{
-    background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px 24px;
-    box-shadow:var(--shadow);margin-bottom:16px;position:relative;overflow:hidden;
-  }
-  .hero::before{
-    content:"";position:absolute;inset:0 0 auto 0;height:3px;
-    background:linear-gradient(90deg,#4c6ef5,#7048e8 45%,#12b886);
-  }
-  .hero-top{display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap}
-  .hero .big{font:600 30px/1.15 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:-.5px}
-  .hero .cap{font-size:11.5px;color:var(--dim);letter-spacing:.4px;margin-bottom:7px}
-  .hero .under{font-size:12.5px;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .hero .split{display:flex;gap:26px;margin-left:auto;flex-wrap:wrap}
-  .metric .k{font-size:11.5px;color:var(--dim);margin-bottom:4px}
-  .metric .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
-  .hero-actions{display:flex;gap:8px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line2);align-items:center;flex-wrap:wrap}
-  .hero-actions .hint{margin:0}
-
   .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;flex:none}
   .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14)}
   .dot.busy{background:var(--warn);box-shadow:0 0 0 3px rgba(199,119,0,.16);animation:pulse 1.4s infinite}
@@ -143,42 +173,6 @@
   .card-h .right{margin-left:auto;display:flex;gap:8px;align-items:center}
   .card-b{padding:20px}
 
-  /* 可用 IP 列表：一行 = 序号 / 位置+IP / 速度条 / 延迟 / 状态
-     这几列就是用户判断「该不该换一个 IP」的全部依据，所以速度和延迟
-     必须和 IP 并排显示，而不是只躺在右下角的运行日志里。 */
-  .iplist{display:flex;flex-direction:column}
-  .iprow{display:flex;align-items:center;gap:14px;padding:12px 20px;border-bottom:1px solid var(--line2)}
-  .iprow:last-child{border-bottom:none}
-  .iprow .idx{
-    width:24px;height:24px;flex:none;border-radius:7px;display:grid;place-items:center;
-    font-size:11.5px;font-weight:600;background:var(--line2);color:var(--muted);
-  }
-  .iprow.write{background:linear-gradient(90deg,rgba(18,161,80,.05),transparent 62%)}
-  .iprow.write .idx{background:var(--ok-soft);color:var(--ok)}
-  .iprow .who{flex:1;min-width:0}
-  .iprow .who b{
-    display:block;font-size:13px;font-weight:600;margin-bottom:2px;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  }
-  .iprow .who b em{font-style:normal;font-weight:400;color:var(--dim);font-family:var(--mono)}
-  .iprow .who span{
-    font-size:11.5px;color:var(--dim);font-family:var(--mono);
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;
-  }
-  /* 速度条吃掉多余宽度：内容区在大屏上有 1000px 宽，固定 150px 的话
-     IP 和速度之间会留一大片空白，看着像两列数据没对上。上限 300px，
-     再宽就不像「相对快慢」而像进度条了。 */
-  .iprow .spd{flex:1 1 150px;max-width:300px;margin-left:6px}
-  .iprow .spd .n{font:12.5px/1.4 var(--mono);font-variant-numeric:tabular-nums;margin-bottom:5px}
-  .iprow .spd .b{height:4px;border-radius:2px;background:var(--line2);overflow:hidden}
-  .iprow .spd .b i{display:block;height:100%;border-radius:2px;background:var(--accent)}
-  .iprow.write .spd .b i{background:var(--ok)}
-  .iprow .lat{
-    width:76px;flex:none;text-align:right;font-size:12.5px;color:var(--muted);
-    font-variant-numeric:tabular-nums;font-family:var(--mono);
-  }
-  /* 「没测到」统一走这个颜色。绝不为了好看补一个数字——用户会拿它选 IP。 */
-  .iprow .miss{color:var(--dim)}
   .tag{font-size:11px;padding:2px 8px;border-radius:6px;white-space:nowrap;background:var(--line2);color:var(--muted)}
   .tag.ok{background:var(--ok-soft);color:var(--ok)}
   .empty{padding:22px 20px;font-size:13px;color:var(--dim);text-align:center}
@@ -291,6 +285,80 @@
   }
   .toast.show{opacity:1;transform:translate(-50%,0)}
 
+
+  /* ---------- 概览页：四张独立指标卡 ----------
+     数值全部来自 --accent/--ok/--line 这一套既有令牌，所以浅色和深色
+     两套主题都不用另写一份配色。 */
+  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+  .kpi{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:14px 16px;box-shadow:var(--shadow);position:relative;overflow:hidden;min-width:0;
+  }
+  .kpi .k{font-size:11.5px;color:var(--dim);letter-spacing:.3px;margin-bottom:6px}
+  .kpi .v{
+    font-size:19px;font-weight:600;letter-spacing:.2px;line-height:1.25;
+    font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .kpi .v.mono{font-family:var(--mono);font-size:16px;display:flex;align-items:center}
+  .kpi .v.sm{font-size:16px}
+  .kpi .v .unit{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
+  .kpi .v .miss{color:var(--dim)}
+  .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 第一张（最优 IP）点出来：极淡主色底 + 主色描边 + 右上角一团柔光。
+     这是方案 A 那张深蓝渐变卡的浅色对应物——同一个位置、同一个意思。 */
+  .kpi.hl{background:linear-gradient(150deg,#f4f7ff,var(--card) 62%);border-color:#dbe2fb}
+  .kpi.hl::after{
+    content:"";position:absolute;right:-32px;top:-32px;width:112px;height:112px;border-radius:50%;
+    background:radial-gradient(circle,rgba(59,91,219,.12),transparent 68%);pointer-events:none;
+  }
+  .copy-mini{
+    border:none;background:transparent;color:var(--dim);cursor:pointer;padding:2px;margin-left:5px;
+    border-radius:5px;display:grid;place-items:center;flex:none;
+  }
+  .copy-mini:hover{color:var(--accent);background:var(--accent-soft)}
+
+  /* ---------- 结果表 ---------- */
+  .card-b.tight{padding:0}
+  table.nodes{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.nodes thead th{
+    text-align:left;font-weight:500;color:var(--dim);font-size:11.5px;letter-spacing:.3px;
+    padding:9px 16px;border-bottom:1px solid var(--line);background:#fafbfd;white-space:nowrap;
+  }
+  table.nodes tbody td{padding:10px 16px;border-bottom:1px solid var(--line2);vertical-align:middle}
+  table.nodes tbody tr:last-child td{border-bottom:none}
+  table.nodes tbody tr:hover{background:#fafbfd}
+  table.nodes tr.best{background:linear-gradient(90deg,rgba(18,161,80,.055),transparent 62%)}
+  table.nodes tr.best:hover{background:linear-gradient(90deg,rgba(18,161,80,.09),transparent 62%)}
+  .rk{
+    width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;
+    font-size:11px;font-weight:600;background:var(--line2);color:var(--muted);
+    font-variant-numeric:tabular-nums;
+  }
+  tr.best .rk{background:var(--ok-soft);color:var(--ok)}
+  td.c-ip{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap}
+  td.c-loc{font-size:12.5px;color:var(--muted)}
+  td.c-loc b{color:var(--text);font-weight:600}
+  td.c-loc .code{color:var(--dim);font-family:var(--mono);font-size:11px;margin-left:4px}
+  /* 速度条按列宽铺开（上限 160px）：固定 88px 的话，「速度」这一列
+     右边会留一大片空白，看着像数字和条不是一组的。 */
+  .bar{height:5px;border-radius:3px;background:var(--line2);overflow:hidden;
+    width:100%;max-width:160px;margin-bottom:5px}
+  .bar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#3b5bdb,#5c7cfa)}
+  tr.best .bar i{background:linear-gradient(90deg,#12a150,#37b26c)}
+  .num{font-family:var(--mono);font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .num.dim{color:var(--dim)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap;display:inline-block}
+  .pill.ok{background:var(--ok-soft);color:var(--ok);border-color:#c9ecd8}
+  .pill.mut{background:var(--line2);color:var(--muted);border-color:var(--line)}
+
+  @media (prefers-color-scheme: dark){
+    .kpi.hl{background:linear-gradient(150deg,#1b2334,var(--card) 62%);border-color:#2c3a5c}
+    .kpi.hl::after{background:radial-gradient(circle,rgba(125,155,255,.16),transparent 68%)}
+    table.nodes thead th{background:#1b212b}
+    table.nodes tbody tr:hover{background:#1b212b}
+    .pill.ok{border-color:#1f4430}
+  }
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -307,31 +375,41 @@
     .content{padding:0 16px 90px}
     .head{padding:16px 0 14px;position:static}
     .form-grid{grid-template-columns:1fr}
-    .hero .split{margin-left:0;gap:22px;width:100%}
-    .iprow{padding:11px 14px;gap:10px}
-    .iprow .spd{max-width:140px}
-    .iprow .lat{width:64px;font-size:11.5px}
+    .kpis{grid-template-columns:1fr 1fr}
     .drawer{right:10px;left:10px;bottom:10px;width:auto;max-width:none}
     .drawer.collapsed{width:auto;right:auto}
     /* 日志条贴在底部，提示条得往上让一让，否则压在一起 */
     .toast{bottom:76px}
   }
-  /* 手机竖屏（<=700）：一行塞不下「序号 + 位置 + IP + 速度 + 延迟 + 状态」。
-     硬塞的结果是 IP 被截成「172.64.22…」——那等于把最重要的信息弄丢了。
-     改成两行：上面 序号/位置+IP/状态，下面 速度/延迟。 */
+  /* 手机竖屏（<=700）：四张卡改 2×2；表格从「六列」变成「每行三行」。
+     硬把六列塞进 390px 的结果是 IP 被截成「172.64.22…」——那等于把
+     最重要的信息弄丢了。 */
   @media(max-width:700px){
-    /* 四个指标在窄屏上原本是 3 个一行、第 4 个孤零零掉到下一行。
-       改成 2×2 网格，看着是「设计成这样」而不是「没排下」。 */
-    .hero .split{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px}
-    .iprow{flex-wrap:wrap;row-gap:6px}
-    .iprow .who{flex:1 1 60%}
-    .iprow .tag{order:3}
-    .iprow .spd{order:4;flex:0 0 auto;max-width:none;margin-left:34px}
-    .iprow .spd .n{margin-bottom:0}
-    .iprow .spd .b{display:none}
-    .iprow .lat{order:5;width:auto;margin-left:auto}
-    .iprow .who b em{display:none}
+    .kpis{grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+    .kpi{padding:12px 13px}
+    .kpi .v{font-size:17px}
+    .kpi .v.mono{font-size:13.5px}
+    .kpi .v.sm{font-size:14.5px}
+    .kpi .s{font-size:11px}
+
+    table.nodes thead{display:none}
+    table.nodes, table.nodes tbody, table.nodes tr, table.nodes td{display:block}
+    table.nodes tr{
+      display:grid;grid-template-columns:24px 1fr auto;gap:4px 10px;
+      padding:12px 14px;border-bottom:1px solid var(--line2);align-items:center;
+    }
+    table.nodes tbody tr:last-child{border-bottom:none}
+    table.nodes tbody td{padding:0;border:none}
+    td.c-rk{grid-area:1/1/2/2}
+    td.c-loc{grid-area:1/2/2/3}
+    td.c-wr{grid-area:1/3/2/4;text-align:right}
+    td.c-ip{grid-area:2/2/3/3}
+    td.c-lat{grid-area:2/3/3/4;text-align:right}
+    td.c-spd{grid-area:3/2/4/4;margin-top:3px}
+    .bar{width:100%}
+    table.nodes td.empty{grid-area:auto;text-align:center;padding:18px 0}
   }
+
 </style>
 </head>
 <body>
@@ -339,11 +417,28 @@
 <!-- 登录 -->
 <div class="login" id="login">
   <div class="box">
-    <div class="mark"><svg width="19" height="19" viewBox="0 0 24 24" fill="#fff"><path d="M14 2 6 14h5l-1.6 8L18 10h-5.4z"/></svg></div>
-    <h1>登录</h1>
-    <div class="sub">请输入管理密码</div>
-    <input type="password" id="pw" placeholder="管理密码" autocomplete="current-password">
-    <button class="btn primary" onclick="doLogin()">登录</button>
+    <div class="brand">
+      <div class="mark"><svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M14 2 6 14h5l-1.6 8L18 10h-5.4z"/></svg></div>
+      <div>
+        <h1>Cloudflare 优选 DDNS</h1>
+        <div class="who">管理后台</div>
+      </div>
+    </div>
+
+    <label for="pw">管理密码</label>
+    <div class="field">
+      <input type="password" id="pw" placeholder="输入安装时设置的密码" autocomplete="current-password">
+      <button class="eye" type="button" id="pw-eye" onclick="togglePw()" title="显示密码" aria-label="显示密码">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+    </div>
+    <div class="err" id="login-err"></div>
+
+    <button class="go" id="login-go" onclick="doLogin()">登录</button>
+
+    <div class="foot">
+      密码在飞牛的「应用设置」里修改。忘记密码不影响已配置的域名解析和定时测速。
+    </div>
   </div>
 </div>
 
@@ -416,56 +511,72 @@
 
     <!-- ========== 概览 ========== -->
     <section class="page on" id="page-overview">
-      <div class="hero">
-        <div class="hero-top">
-          <div>
-            <div class="cap">当前最优 IP</div>
-            <div class="big" id="s-ip">—</div>
-            <div class="under">
-              <!-- 真实机房：由 web/exitgeo.go 穿这个 IP 去问 Cloudflare 出口拿到。
-                   查不到时这里说「位置未知」——绝不按 IP 段猜国家。 -->
-              <span class="tag ok" id="s-place">位置未知</span>
-              <span class="hint" id="s-iphint" style="margin:0"></span>
-            </div>
-          </div>
-          <div class="split">
-            <div class="metric"><div class="k">速度</div><div class="v" id="s-speed">—</div></div>
-            <div class="metric"><div class="k">延迟</div><div class="v" id="s-delay">—</div></div>
-            <div class="metric"><div class="k">上次测速</div><div class="v" id="s-time">—</div></div>
-            <div class="metric"><div class="k">下次测速</div><div class="v" id="s-next">—</div></div>
-          </div>
+      <!-- 四张独立指标卡：方案 A 的骨架（一屏四格并列、各自成卡、一眼扫完）
+           + 方案 B 的配色（白卡、浅描边，主色只点在最关键那一格） -->
+      <div class="kpis">
+        <div class="kpi hl">
+          <div class="k">当前最优 IP</div>
+          <div class="v mono"><span id="s-ip">—</span><button class="copy-mini" title="复制 IP" onclick="copyText($('s-ip').textContent)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+          </button></div>
+          <div class="s"><span id="s-place">还没测过</span><span id="s-iphint"></span></div>
         </div>
-        <div class="hero-actions">
-          <button class="btn primary" id="btn-run" onclick="doRun()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg>
-            <span id="btn-run-label">立即测速</span>
-          </button>
-          <span class="runmeta">
-            <span class="dot ok" id="s-dot"></span>
-            <span id="s-state">空闲</span>
-            <span class="sep">·</span>
-            <span id="s-lastok">还没跑过</span>
-            <span class="sep hidden" id="s-dursep">·</span>
-            <span class="hidden" id="s-dur"></span>
-          </span>
-          <span class="hint" id="s-runhint" style="margin:0 0 0 auto"></span>
+
+        <div class="kpi">
+          <div class="k">速度 / 延迟</div>
+          <div class="v" id="s-speed">—</div>
+          <div class="s" id="s-delay">还没测过</div>
+        </div>
+
+        <div class="kpi">
+          <div class="k">上次测速</div>
+          <div class="v sm" id="s-time">—</div>
+          <div class="s"><span id="s-lastok">还没跑过</span><span id="s-dur"></span></div>
+        </div>
+
+        <div class="kpi">
+          <div class="k">下次测速</div>
+          <div class="v sm" id="s-next">—</div>
+          <div class="s" id="s-nextsub"></div>
         </div>
       </div>
 
-      <div class="card">
+      <!-- 结果表：真表格（带表头），速度条压在数字上方 -->
+      <section class="card">
         <div class="card-h">
-          <h2>本次可用 IP</h2>
-          <span class="sub">按速度排名，前面的写进域名解析</span>
+          <h2>本次测速结果</h2>
+          <span class="sub">按速度从快到慢</span>
+          <div class="right">
+            <span class="runmeta"><span class="dot ok" id="s-dot"></span><span id="s-state">空闲</span></span>
+            <button class="btn primary sm" id="btn-run" onclick="doRun()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg>
+              <span id="btn-run-label">立即测速</span>
+            </button>
+          </div>
         </div>
-        <div class="iplist" id="ip-list">
-          <div class="empty">还没有结果。点上面的「立即测速」跑一次。</div>
+        <div class="card-b tight">
+          <table class="nodes">
+            <thead>
+              <tr>
+                <th class="c-rk">#</th>
+                <th>机房位置</th>
+                <th>IP 地址</th>
+                <th class="c-spd">速度</th>
+                <th class="c-lat">延迟</th>
+                <th class="c-wr">写入</th>
+              </tr>
+            </thead>
+            <tbody id="ip-list">
+              <tr><td colspan="6" class="empty">还没有结果。点右上角「立即测速」跑一次。</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="hint" style="padding:0 20px 16px">
-          速度是这次测速实际跑出来的下行带宽，延迟是握手往返时间；
-          「位置」是拿这个 IP 真去问一次 Cloudflare 出口得到的机房，不是猜的。
-          任何一项没测到就显示「—」，不会补数字。
+        <div class="hint" style="padding:0 16px 12px">
+          速度是这次测速实际跑出来的下行带宽，延迟是握手往返时间；「机房位置」是拿这个 IP
+          真去问一次 Cloudflare 出口得到的，不是猜的。任何一项没测到就显示「—」，不会补数字。
         </div>
-      </div>
+        <div class="hint hidden" id="s-runhint" style="padding:0 16px 12px;margin:0"></div>
+      </section>
     </section>
 
     <!-- ========== 域名 ========== -->
@@ -813,13 +924,46 @@ function enterApp() {
   $("app").classList.remove("hidden");
 }
 
+// togglePw 切换密码可见。
+// 内网后台通常是「输一次就走」，密码错了只能重输一遍——能看一眼再提交，
+// 比反复试要省事得多。
+function togglePw() {
+  const el = $("pw"), eye = $("pw-eye");
+  const show = el.type === "password";
+  el.type = show ? "text" : "password";
+  eye.classList.toggle("on", show);
+  eye.title = show ? "隐藏密码" : "显示密码";
+  el.focus();
+}
+
 async function doLogin() {
+  const errBox = $("login-err"), pw = $("pw"), go = $("login-go");
+  errBox.textContent = "";
+  pw.classList.remove("bad");
+  if (!pw.value) {
+    errBox.textContent = "请输入管理密码";
+    pw.classList.add("bad");
+    pw.focus();
+    return;
+  }
+  go.disabled = true;
+  const oldText = go.textContent;
+  go.textContent = "登录中…";
   try {
-    const r = await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
+    const r = await api("/api/login", { method: "POST", body: JSON.stringify({ password: pw.value }) });
     if (r && r.token) setToken(r.token);
     enterApp();
     boot();
-  } catch (e) { toast(e.message); }
+  } catch (e) {
+    // 错误就地写在输入框下面：toast 三秒就没了，而「为什么进不去」
+    // 这句话得留在原地，否则用户只能一遍遍重试。
+    errBox.textContent = e.message;
+    pw.classList.add("bad");
+    pw.select();
+  } finally {
+    go.disabled = false;
+    go.textContent = oldText;
+  }
 }
 
 async function logout() {
@@ -887,52 +1031,49 @@ async function loadStatus() {
   // 开发构建的版本号就是 "dev"，拼上 v 会变成「vdev」这种四不像。
   $("ver").textContent = !s.version ? "" : (s.version === "dev" ? "开发版" : "v" + s.version);
   renderBanners(s);
-  $("s-ip").textContent = s.last_ip || "—";
-
-  // 节点列表先算出来：下面的「最优节点的位置/速度/延迟」都从它取，
-  // 保证 Hero 和表格说的是同一件事（两处各算一次迟早会打架）。
+  // 节点列表先算出来：下面四张卡里「最优节点」的那几项都从它取，
+  // 保证卡片和表格说的是同一件事（两处各算一次迟早会打架）。
   const nodes = renderIPList(s);
   const top = nodes.length ? nodes[0] : null;
-
-  // 最优节点的位置。查不到就说「位置未知」，不留空、不猜国家。
-  const place = $("s-place");
-  if (top && top.place) {
-    place.textContent = top.place;
-    place.className = "tag ok";
-  } else if (top && top.colo) {
-    place.textContent = "机房 " + top.colo;
-    place.className = "tag ok";
-  } else if (top) {
-    place.textContent = "位置未知";
-    place.className = "tag";
-  } else {
-    place.textContent = "";
-    place.className = "tag hidden";
-  }
-
-  // 速度 / 延迟：单位单独用小字，跟数字分开——「15.09」扫一眼就够，
-  // 「Mbps」只是注脚。
-  setMetric("s-speed", top && top.speed ? fmt2(top.speed) : "", "Mbps");
-  setMetric("s-delay", top && top.delay ? fmt2(top.delay) : "", "ms");
-
-  // 有备选的时候把条数说出来，否则用户看不出「同步 5 条」到底生效没有。
   const alt = Array.isArray(s.last_ips) ? s.last_ips.length : 0;
-  const iphint = $("s-iphint");
-  iphint.textContent = alt > 1 ? `本次可用 ${alt} 条，按设置写前 ${Math.min(alt, parseInt($("dd-count").value || "1", 10) || 1)} 条` : "";
-  // 没话可说时连那句提示一起藏掉，否则 IP 底下会留一小截空白。
-  iphint.classList.toggle("hidden", !iphint.textContent);
+
+  $("s-ip").textContent = s.last_ip || "—";
+
+  // 卡 1 副行：位置 · 可用 N 条
+  $("s-place").textContent = !top ? "还没测过"
+    : top.place ? top.place
+    : top.colo ? "机房 " + top.colo
+    : "位置未知";
+  // 只留「几条可用」。原来还写了「写前 N 条」，1100px 那种宽度下会被
+  // 省略号截掉一半；而表格里每行的「已写入/备选」已经说清了写哪几条。
+  $("s-iphint").textContent = alt > 1 ? " · " + alt + " 条可用" : "";
+
+  // 卡 2：速度 / 延迟。数字大、单位小；没测到就一个「—」，绝不补数。
+  $("s-speed").innerHTML = top && top.speed
+    ? fmt2(top.speed) + '<span class="unit">Mbps</span>'
+    : '<span class="miss">—</span>';
+  $("s-delay").textContent = top && top.delay
+    ? fmt2(top.delay) + " ms" + (alt ? " · " + alt + " 个节点通过" : "")
+    : (top ? "这次没测到延迟" : "还没测过");
+
+  // 卡 3：上次测速
   $("s-time").textContent = shortTime(s.last_time);
 
-  // 下次测速：后端给的是「15:04」这种已经排好版的时间，为空就是没开定时。
+  // 卡 4：下次测速
   if (s.next_run_at) {
-    setStat("s-next", s.next_run_at, "");
+    $("s-next").textContent = s.next_run_at;
+    const left = humanLeft(s.next_run_in_sec);
+    $("s-nextsub").textContent = (left ? "还剩 " + left : "") +
+      (s.interval_minutes ? (left ? " · " : "") + "间隔 " + s.interval_minutes + " 分钟" : "");
   } else if (!s.interval_minutes) {
-    setStat("s-next", "未开启", "muted");
+    $("s-next").textContent = "未开启";
+    $("s-nextsub").textContent = "在「测速设置」里打开定时";
   } else {
-    setStat("s-next", "—", "");
+    $("s-next").textContent = "—";
+    $("s-nextsub").textContent = "";
   }
 
-  // 上次结果。last_ok 是 false 时有两种情况要分开说：跑过但失败，
+  // 上次结果。last_ok 为 false 时有两种情况要分开说：跑过但失败，
   // 和一次都还没跑过（那时 last_error 也是空的）。混在一起说
   // 「上次失败」会在刚装好、还没测过的时候就把人吓一跳。
   const runhint = $("s-runhint");
@@ -945,26 +1086,18 @@ async function loadStatus() {
     setStat("s-lastok", s.fail_count > 1 ? "失败（连续 " + s.fail_count + " 次）" : "失败", "err");
   } else if (s.last_time) {
     // 有「上次测速时间」却没有结果：那个时间是重启前存进配置文件的，
-    // 而成败只存在内存里。老实说「未知」，别让上面一行的时间和这里打架。
-    setStat("s-lastok", "未知", "muted");
+    // 而成败只存在内存里。老实说「结果未知」，别让卡片里的时间和状态打架。
+    setStat("s-lastok", "结果未知", "muted");
     runhint.textContent = "上次测速发生在本次启动之前，那次成没成没有存下来；本次启动后还没跑过。";
   } else {
     setStat("s-lastok", "还没跑过", "muted");
   }
 
-  // 「用时 N 秒」只在这次启动跑成功过的时候才说。
-  // 它是从内存里来的（重启就没了），配上「成功」两个字才有意义——
-  // 单说一句「用时 38 秒」而不知道成没成，反而让人以为这是本次的进度。
-  const dur = $("s-dur"), dursep = $("s-dursep");
-  if (s.last_ok && s.last_duration_sec > 0) {
-    dur.textContent = "用时 " + s.last_duration_sec + " 秒";
-    dur.classList.remove("hidden");
-    dursep.classList.remove("hidden");
-  } else {
-    dur.textContent = "";
-    dur.classList.add("hidden");
-    dursep.classList.add("hidden");
-  }
+  // 「用时 N 秒」只在这次启动跑成功过的时候才说。它是内存里的数，
+  // 配上「成功」两个字才有意义——单说一句「用时 38 秒」会让人以为是本次进度。
+  $("s-dur").textContent = s.last_ok && s.last_duration_sec > 0
+    ? " · 用时 " + s.last_duration_sec + " 秒" : "";
+  runhint.classList.toggle("hidden", !runhint.textContent);
 
   const dot = $("s-dot"), state = $("s-state");
   if (s.running) { dot.className = "dot busy"; state.textContent = "测速中"; }
@@ -985,85 +1118,83 @@ async function loadStatus() {
   }
 }
 
-// renderIPList 画「本次可用 IP」这张表，并把用到的节点数组返回给调用方。
+// renderIPList 画「本次测速结果」这张表，并把节点数组返回给调用方。
 //
 // 数据全部来自后端 /api/status 的 nodes（与 last_ips 一一对应）：
-//   ip    —— 节点地址
-//   speed —— 这次测速实际跑出来的下行带宽（Mbps）
-//   delay —— TCP 握手往返（毫秒）
-//   colo  —— 真实机房代码，如 NRT
-//   place —— 「日本·东京(NRT)」，查不到机房时为空
+//   ip / speed（Mbps）/ delay（ms）/ colo（机房代码）/ place（「日本·东京(NRT)」）
 //
 // 缺哪一项就显示「—」。这三个数字是用户判断「该不该换 IP」的唯一依据，
 // 为了「和设计稿一样好看」而补一个数，是最坏的一种错。
 //
-// 返回值给 loadStatus 用：Hero 上的位置/速度/延迟必须和表格第一行一致，
+// 返回值给 loadStatus 用：上面四张卡里的位置/速度/延迟必须和表格第一行一致，
 // 所以让它们共用同一份数据，而不是各自再取一次。
 function renderIPList(s) {
-  const box = $("ip-list");
-  if (!box) return [];
+  const tbody = $("ip-list");
+  if (!tbody) return [];
 
   // 以 nodes 为准；老版本后端只给 last_ips，那就退化成「只有 IP」，
   // 照样能显示，只是没有质量数据（页面不会因为少个字段就白掉）。
   let nodes = Array.isArray(s.nodes) ? s.nodes.slice() : [];
-  const ips = Array.isArray(s.last_ips) ? s.last_ips : [];
   if (!nodes.length) {
-    nodes = ips.map(ip => ({ ip: ip }));
+    nodes = (Array.isArray(s.last_ips) ? s.last_ips : []).map(ip => ({ ip: ip }));
   }
-
   if (!nodes.length) {
-    box.innerHTML = `<div class="empty">还没有结果。点上面的「立即测速」跑一次。</div>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">还没有结果。点右上角「立即测速」跑一次。</td></tr>`;
     return [];
   }
 
   const want = parseInt($("dd-count").value || "1", 10) || 1;
   const n = Math.min(nodes.length, want);
-  // 速度条的满格取「本批最快那条」。用固定刻度（比如 100Mbps）的话，
-  // 一批 10Mbps 的节点会全变成看不见的短条，反而看不出彼此差距。
+  // 速度条满格取「本批最快那条」。用固定刻度的话，一批 10Mbps 的节点
+  // 会全变成看不见的短条，反而看不出彼此差距。
   const fastest = nodes.reduce((m, x) => Math.max(m, x.speed || 0), 0);
 
-  box.innerHTML = nodes.map((node, i) => {
+  tbody.innerHTML = nodes.map((node, i) => {
     const write = i < n;
+    const best = i === 0;
     const speed = node.speed || 0;
     const delay = node.delay || 0;
 
-    // 位置那行的三种情况：有完整地名 / 只有机房代码 / 什么都没探到。
-    // 后端给的是「日本·东京(NRT)」这种一整个字符串，这里把机房代码拆出来
-    // 单独用浅色小字排——一眼看到的是「日本·东京」，代码是查证用的。
-    let title = "位置未知";
+    // 位置那格：后端给的是「日本·东京(NRT)」一整个字符串，把机房代码
+    // 拆出来单独用浅色小字排——一眼看到的是地名，代码是查证用的。
+    let place = "位置未知";
     let code = "";
     if (node.place) {
       const m = /^(.*?)\s*\(([A-Z0-9]{2,4})\)$/.exec(node.place);
-      if (m) {
-        title = escapeHtml(m[1]);
-        code = `<em>${escapeHtml(m[2])}</em>`;
-      } else {
-        title = escapeHtml(node.place);
-      }
+      if (m) { place = escapeHtml(m[1]); code = `<span class="code">${escapeHtml(m[2])}</span>`; }
+      else { place = escapeHtml(node.place); }
     } else if (node.colo) {
-      title = "机房 " + escapeHtml(node.colo);
+      place = "机房 " + escapeHtml(node.colo);
     }
 
     const spd = speed
-      ? `<div class="n">${fmt2(speed)} <span class="miss">Mbps</span></div>
-         <div class="b"><i style="width:${fastest ? Math.max(6, Math.round(speed / fastest * 100)) : 0}%"></i></div>`
-      : `<div class="n miss">— <span>Mbps</span></div>`;
+      ? `<div class="bar"><i style="width:${fastest ? Math.max(6, Math.round(speed / fastest * 100)) : 0}%"></i></div>
+         <span class="num">${fmt2(speed)} Mbps</span>`
+      : `<span class="num dim">— Mbps</span>`;
+    const lat = delay ? `<span class="num">${fmt2(delay)} ms</span>` : `<span class="num dim">—</span>`;
 
-    const lat = delay ? `${fmt2(delay)} ms` : "—";
-
-    return `<div class="iprow${write ? " write" : ""}">
-      <span class="idx">${i + 1}</span>
-      <div class="who">
-        <b>${title} ${code}</b>
-        <span>${escapeHtml(node.ip || "")}</span>
-      </div>
-      <div class="spd">${spd}</div>
-      <div class="lat${delay ? "" : " miss"}">${lat}</div>
-      <span class="tag${write ? " ok" : ""}">${write ? "已写入" : "备选"}</span>
-    </div>`;
+    return `<tr class="${best ? "best" : ""}">
+      <td class="c-rk"><span class="rk">${i + 1}</span></td>
+      <td class="c-loc"><b>${place}</b>${code}</td>
+      <td class="c-ip">${escapeHtml(node.ip || "")}</td>
+      <td class="c-spd">${spd}</td>
+      <td class="c-lat">${lat}</td>
+      <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}">${write ? "已写入" : "备选"}</span></td>
+    </tr>`;
   }).join("");
 
   return nodes;
+}
+
+// humanLeft 把「还剩多少秒」说成人话，用在「下次测速」那张卡的副行。
+// 认不出（0 或负数）就返回空串——那一行少半句，比写「还剩 0 秒」好。
+function humanLeft(sec) {
+  if (!sec || sec <= 0) return "";
+  if (sec < 60) return sec + " 秒";
+  if (sec < 3600) return Math.round(sec / 60) + " 分钟";
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return m ? h + " 小时 " + m + " 分" : h + " 小时";
 }
 
 // shortTime 把后端存的「2026-11-17 23:20:05」压成「今天 23:20」。
@@ -1091,15 +1222,6 @@ function shortTime(s) {
 // 两处数字对得上，用户拿页面和日志互相印证时不会以为哪一个错了。
 function fmt2(v) {
   return Number(v).toFixed(2);
-}
-
-// setMetric 画 Hero 上的一个大指标：数字 + 小字单位。没有数字就显示「—」。
-function setMetric(id, num, unit) {
-  const el = $(id);
-  if (!el) return;
-  el.innerHTML = num
-    ? `${escapeHtml(num)} <small style="font-size:11.5px;font-weight:400;color:var(--dim)">${escapeHtml(unit)}</small>`
-    : `<span class="miss" style="color:var(--dim)">—</span>`;
 }
 
 // setStat 改一个指标格子的文字和颜色。color 传 ok/err/warn/muted，空串表示跟随主题。
