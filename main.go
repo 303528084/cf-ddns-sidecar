@@ -29,6 +29,10 @@ var version = "dev"
 func main() {
 	web.SetVersion(version)
 
+	// 必须放在最前面：-listen 的默认值在 flag.Parse 之前就已求值（看 defaultListen），
+	// 所以安装向导的端口种子得先落进 ddns.env，否则程序会按旧端口起监听。
+	seedFromWizardEnv()
+
 	var (
 		listen   string
 		printVer bool
@@ -135,6 +139,7 @@ func main() {
 	}
 	fmt.Println("  改密码: 在「应用设置」里保存即生效，无需重启")
 	fmt.Println("  访问限制: 无，所有 IP 均可打开后台（请务必设置登录密码）")
+	printInstallDebug(configDir)
 	fmt.Printf("==============================================\n\n")
 
 	done := make(chan struct{})
@@ -218,21 +223,107 @@ func waitListening(listen string, timeout time.Duration) {
 	}
 }
 
-// defaultListen 决定后台监听端口。优先级：CFDDNS_PORT 环境变量 →
-// ddns.env 里的 CFDDNS_PORT → 8080。
+// defaultListen 决定后台监听端口。优先级：ddns.env 里的 CFDDNS_PORT →
+// CFDDNS_PORT 环境变量 → 8080。
 //
-// 为什么要可配：8080 很容易和 NAS 上别的服务撞车，用户在安装向导或
-// 「应用设置」里改了端口后，安装脚本会把 ddns.env 和桌面入口一起改掉，
-// 这里负责让程序真的监听那个端口。
+// 为什么**文件优先于环境变量**（这里曾经反着来，会引发无限重启）：
+// 安装向导的值会通过 compose 的 ${wizard_port} 变成容器环境变量，而容器环境
+// 变量一旦建好就不会再变。如果环境变量优先，用户在「应用设置」里把端口改成
+// 9090 之后，程序重启时又会从环境变量读到安装时的旧值（比如 8080），于是
+// 监听 8080 → 发现 ddns.env 是 9090 → 退出 → 重启 → 又读旧值……死循环。
+// 现在安装时的值只当「种子」写进 ddns.env 一次，之后一律以文件为准。
 func defaultListen() string {
-	port := strings.TrimSpace(os.Getenv("CFDDNS_PORT"))
-	if port == "" {
-		port = strings.TrimSpace(config.LoadEnvFile(config.EnvFilePath())["CFDDNS_PORT"])
+	port := strings.TrimSpace(config.LoadEnvFile(config.EnvFilePath())["CFDDNS_PORT"])
+	if !isPort(port) {
+		port = strings.TrimSpace(os.Getenv("CFDDNS_PORT"))
 	}
-	if n, err := strconv.Atoi(port); err == nil && n > 0 && n < 65536 {
+	if isPort(port) {
 		return ":" + port
 	}
 	return ":8080"
+}
+
+// isPort 判断字符串是不是 1-65535 的合法端口号。
+func isPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n > 0 && n < 65536
+}
+
+// seedFromWizardEnv 把安装向导里填的端口和密码落盘，只做一次。
+//
+// 为什么需要这一步：飞牛不是执行 `docker compose up`，而是通过 Docker 接口
+// 建容器，而且在 install_callback 之前容器就已经建好跑起来了。所以在回调
+// 脚本里写文件、再重启让它生效，时机上永远晚一步。飞牛唯一保证会做的，是
+// 建容器之前对 compose 里的 ${wizard_xxx} 做变量替换。于是 compose 里放了
+// 两个占位符（CFDDNS_PORT / CFDDNS_PASSWORD_SEED），由这里落成文件。
+//
+// 为什么只做一次（marker 文件）：环境变量一旦烘进容器就不再变。如果每次都
+// 用环境变量覆盖文件，用户在「应用设置」里改完端口，重启后又被改回安装时的
+// 旧值，会无限重启。
+func seedFromWizardEnv() {
+	configDir := filepath.Dir(config.EnvFilePath())
+	if p := os.Getenv("CFDDNS_CONFIG"); p != "" {
+		configDir = filepath.Dir(p)
+	}
+
+	marker := filepath.Join(configDir, ".wizard-env-applied")
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+
+	if port := strings.TrimSpace(os.Getenv("CFDDNS_PORT")); isPort(port) {
+		envFile := config.EnvFilePath()
+		if cur := strings.TrimSpace(config.LoadEnvFile(envFile)["CFDDNS_PORT"]); cur != port {
+			if err := config.UpdateEnvFile(envFile, map[string]string{"CFDDNS_PORT": port}); err != nil {
+				log.Printf("[警告] 安装向导端口 %s 未能写入 ddns.env：%v", port, err)
+			} else {
+				log.Printf("[信息] 已把安装向导里填的端口 %s 写入 ddns.env", port)
+			}
+		}
+	}
+
+	if seed := os.Getenv("CFDDNS_PASSWORD_SEED"); strings.TrimSpace(seed) != "" {
+		passFile := filepath.Join(configDir, "dashboard-password")
+		cur, _ := os.ReadFile(passFile)
+		if strings.TrimSpace(string(cur)) == "" {
+			if err := os.WriteFile(passFile, []byte(seed), 0o644); err != nil {
+				log.Printf("[警告] 安装向导密码未能写入 %s：%v", passFile, err)
+			} else {
+				log.Printf("[信息] 已把安装向导里设的密码写入 %s（%d 位）", passFile, len(seed))
+			}
+		}
+	}
+
+	// 无论有没有值都记标记：留空本身就等于「不用种子」，之后走文件那条路。
+	if err := os.WriteFile(marker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		log.Printf("[提示] 无法写入标记 %s：%v（下次启动会再试一次，无副作用）", marker, err)
+	}
+}
+
+// printInstallDebug 把 config_callback 留下的诊断日志转述到运行日志。
+//
+// 飞牛不会收集生命周期脚本的标准输出，所以脚本内部出问题时用户在界面上
+// 什么都看不到。脚本把「这次收到了哪几个向导变量」写进 install-debug.log，
+// 这里读出来打印——用户看「应用中心 → 运行日志」就能判断是「值没送到脚本」
+// 还是「送到了但写不进去」，不用碰命令行。
+func printInstallDebug(configDir string) {
+	p := filepath.Join(configDir, "install-debug.log")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		fmt.Println("  [诊断] 暂无 config_callback 记录（安装/设置向导尚未提交过）")
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(b), "\r\n"), "\n")
+	const keep = 14
+	if len(lines) > keep {
+		lines = lines[len(lines)-keep:]
+		fmt.Println("  [诊断] config_callback 最近记录（只显示最后 14 行）:")
+	} else {
+		fmt.Println("  [诊断] config_callback 记录:")
+	}
+	for _, ln := range lines {
+		fmt.Println("  " + ln)
+	}
 }
 
 // resolvePassword 决定后台登录密码的兜底值，返回密码与来源标记（env / file / generated）。

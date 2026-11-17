@@ -74,6 +74,24 @@ def validate_wizards(work: Path) -> None:
         for i, page in enumerate(data):
             if "stepTitle" not in page or "items" not in page:
                 raise ValueError(f"wizard/{p.name} 第 {i + 1} 页缺少 stepTitle 或 items")
+            for j, item in enumerate(page["items"]):
+                where = f"wizard/{p.name} 第 {i + 1} 页第 {j + 1} 项"
+                t = item.get("type")
+                if t == "tips":
+                    if not item.get("helpText"):
+                        raise ValueError(f"{where} 是 tips 但缺少 helpText")
+                    continue
+                if "field" not in item:
+                    raise ValueError(f"{where}（type={t}）缺少 field——没有 field 就没有同名环境变量，值到不了脚本")
+                if "rules" not in item:
+                    # 官方文档里 text / password 的标准形状都带 rules（可为空数组）。
+                    # 缺了不一定会当场报错，但一旦飞牛那边按「没有 rules 就不当有效输入」
+                    # 处理，现象就是「表单能填、保存无报错、但值永远是空」——极难查。
+                    raise ValueError(f"{where}（type={t}）缺少 rules 字段，请照官方标准形状补 \"rules\": []")
+                # initValue 必须是字符串：写成布尔会让飞牛反序列化 WizardConfig 失败，
+                # 整个向导被静默跳过并按「无答案」继续安装。
+                if "initValue" in item and not isinstance(item["initValue"], str):
+                    raise ValueError(f"{where} 的 initValue 必须是字符串，实际是 {type(item['initValue']).__name__}")
         print(f"[fpk] wizard/{p.name}: {len(data)} 页，"
               f"{sum(1 for pg in data for it in pg['items'] if it.get('type') != 'tips')} 个输入项")
 

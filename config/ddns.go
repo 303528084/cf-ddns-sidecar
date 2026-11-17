@@ -62,7 +62,11 @@ func SaveEnvFile(path string, kv map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	// 0644 而不是 0600：这个文件有两个不同用户在读写。
+	// 程序以 app 用户跑，飞牛生命周期脚本以 docker-<appname> 用户跑。
+	// 用 0600 的话脚本读不到内容，它的 set_kv 会「读了个空」然后把整个文件
+	// 重写成只剩它要写的那一项——用户填的所有密钥会被静默冲掉。
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 // UpdateEnvFile 只改指定 key 的行，其余内容（注释、顺序、其他 key）原样保留。
@@ -113,7 +117,8 @@ func UpdateEnvFile(path string, kv map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	// 0644 的理由同 SaveEnvFile：生命周期脚本是另一个用户，必须能读。
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func hasKey(m map[string]string, k string) bool {

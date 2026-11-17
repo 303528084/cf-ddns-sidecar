@@ -10,7 +10,8 @@
         "type": "text",
         "field": "wizard_port",
         "label": "后台端口",
-        "initValue": ""
+        "initValue": "",
+        "rules": []
       },
       {
         "type": "tips",
@@ -20,7 +21,7 @@
         "type": "password",
         "field": "wizard_dashboard_password",
         "label": "登录密码",
-        "initValue": ""
+        "rules": []
       },
       {
         "type": "tips",

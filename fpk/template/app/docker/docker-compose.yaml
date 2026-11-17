@@ -14,6 +14,21 @@ services:
     network_mode: host
     environment:
       TZ: Asia/Shanghai
+      # 下面两个 ${wizard_xxx} 是飞牛官方唯一保证能把「安装向导里填的值」送进容器的通道。
+      #
+      # 为什么只能这么传：飞牛不是执行 `docker compose up`，而是通过 Docker 接口
+      # 建容器，并且在 install_callback 之前就已经把容器建成跑起来了。所以在回调
+      # 脚本里改文件再重启，时机上永远晚一步。飞牛唯一保证会做的，是建容器之前
+      # 对 compose 里的 ${wizard_xxx} 做变量替换。占位符不写，值就到不了。
+      #
+      # 值为空时（用户在向导里留空、或用户自己用 docker compose up 部署）就是空串，
+      # 程序会当作「没设置」忽略掉。
+      #
+      # 这两个只当「种子」用：程序只在第一次启动时把它们落到 ddns.env /
+      # dashboard-password，之后一律以文件为准。否则你在「应用设置」里改了端口或
+      # 密码，重启后又被这两个固定不变的环境变量盖回去，就成了另一个坑。
+      CFDDNS_PORT: "${wizard_port:-}"
+      CFDDNS_PASSWORD_SEED: "${wizard_dashboard_password:-}"
     volumes:
       # 飞牛数据共享目录的稳定绝对路径（安装时自动创建并授予本应用 ACL 权限）
       # 一个目录装下全部：config.json、ddns.env、dashboard-password、测速工作目录

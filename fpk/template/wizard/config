@@ -10,7 +10,8 @@
         "type": "text",
         "field": "wizard_port",
         "label": "新端口（留空 = 不改）",
-        "initValue": ""
+        "initValue": "",
+        "rules": []
       },
       {
         "type": "tips",
@@ -20,7 +21,7 @@
         "type": "password",
         "field": "wizard_dashboard_password",
         "label": "新密码（留空 = 不改）",
-        "initValue": ""
+        "rules": []
       },
       {
         "type": "tips",
