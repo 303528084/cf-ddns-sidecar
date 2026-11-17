@@ -27,8 +27,15 @@ APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
 # v1.1.0～v1.3.2 的数据位置（平台删 /var/apps/<app> 时跟着没）
 LEGACY_DATA_DIR="${SHARE_ROOT}/data"
-# v1.4.0 起的数据位置（通常是指向 <volN>/<app>-data 的符号链接）
-DATA_DIR="/var/apps/${APP_NAME}-data"
+# v1.4.x 的数据位置（真实目录，没链到存储卷）
+V14_DATA_DIR="/var/apps/${APP_NAME}-data"
+# v1.5.0 起：飞牛官方的运行数据目录（TRIM_PKGVAR，平台建成软链指向
+# /vol{n}/@appdata/<app>）。为空时退回 v1.4.x 的旧路径。
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_DIR="$TRIM_PKGVAR"
+else
+    DATA_DIR="$V14_DATA_DIR"
+fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -75,8 +82,13 @@ fi
 
 # 迁移之后数据正常在新位置；迁移失败或没权限时就还留在老位置。
 # 备份必须备「程序下次真正会读的那个目录」，所以按实际内容判断，而不是论路径。
-if [ ! -e "${DATA_DIR}/config.json" ] && [ -e "${LEGACY_DATA_DIR}/config.json" ]; then
-    DATA_DIR="$LEGACY_DATA_DIR"
+# 三个候选按「越新越优先」：官方目录 → v1.4.x 目录 → v1.1.0～v1.3.2 目录。
+if [ ! -e "${DATA_DIR}/config.json" ]; then
+    if [ -e "${V14_DATA_DIR}/config.json" ]; then
+        DATA_DIR="$V14_DATA_DIR"
+    elif [ -e "${LEGACY_DATA_DIR}/config.json" ]; then
+        DATA_DIR="$LEGACY_DATA_DIR"
+    fi
 fi
 
 # 没有数据目录就没什么可备的

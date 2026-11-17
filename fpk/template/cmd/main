@@ -10,15 +10,81 @@ SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
 # v1.1.0～v1.3.2 的数据位置。平台删 /var/apps/<app> 时它跟着一起没，
 # 所以从 v1.4.0 起不再是运行时的数据位置，只作为**搬迁来源**保留。
 LEGACY_DATA_ROOT="${SHARE_ROOT}/data"
-# v1.4.0 起的数据位置。这个路径通常是一个指向 <volN>/<app>-data 的符号链接，
-# 由下面的 ensure_data_root() 在每次启动时安置。它是 <app> 的**兄弟**，
-# 平台删应用目录时不会碰到它。
-DATA_ROOT="/var/apps/${APP_NAME}-data"
+# v1.4.0～v1.4.1 的数据位置（真实目录，没有链到存储卷）。同样只作为搬迁来源。
+V14_DATA_ROOT="/var/apps/${APP_NAME}-data"
+# v1.5.0 起的数据位置：飞牛官方给的运行数据目录。
+#
+# 官方文档写明安装后 /var/apps/<app>/ 下由平台自动建好
+# `var -> /vol{n}/@appdata/<app>`，变量名 TRIM_PKGVAR，并要求「不要硬编码路径」。
+# 也就是说「把数据放到存储卷上」从来不需要我们自己 mkdir /vol1/... 再建软链。
+#
+# 变量为空（老飞牛、或不是用安装包装的）时退回 v1.4.x 的旧路径，行为完全不变。
+VAR_ROOT="${TRIM_PKGVAR:-}"
+if [ -n "$VAR_ROOT" ]; then
+    DATA_ROOT="$VAR_ROOT"
+else
+    DATA_ROOT="/var/apps/${APP_NAME}-data"
+fi
 FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
 
 fail() {
-    echo "$1" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    # 优先写飞牛给的日志文件（会展示在界面上）；写不了再退到 stderr。
+    # 两段都要有兜底：v1.5.0 探针测试里实测发现，非 root 身份下 `> /dev/stderr`
+    # 会被拒（can't create /dev/stderr: Permission denied），于是「启动失败」
+    # 这件事本身也没人知道——这正是「静默失败」的另一半。
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ] \
+        && printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE" 2>/dev/null; then
+        :
+    else
+        printf '[cf-ddns-sidecar][错误] %s\n' "$1" >&2 2>/dev/null || true
+    fi
     exit 1
+}
+
+# —— 「数据到底在哪儿」的记账（v1.4.2）——
+#
+# 教训：v1.3.2～v1.4.1 三版都号称把数据/备份搬到了存储卷，2026-11-17 真机一翻
+# 文件管理器，`cf-ddns-sidecar-data` 和 `cf-ddns-sidecar-backup` **根本不在盘上**。
+# 真因：`/volN` 根目录属于 root，而本脚本以 `run-as: package` 的普通用户执行，
+# `mkdir -p /vol1/...` 直接被拒；以前那里写着 `2>/dev/null`，错误被吞掉，于是
+# 每一版都「以为搬了、其实没搬」，日志里一个字都没有——用户和我只能靠翻文件管理器猜。
+#
+# 现在改成：脚本把判断结果写进数据目录里的 location-status.txt，由容器里的程序
+# 读出来打进「运行日志」。**脚本负责说实话，程序负责让用户看得见。**
+LOC_DATA_ERR=""
+LOC_BACKUP_ERR=""
+
+# 把本次「安置」的结果落盘（每次 init 覆盖成最新一份，历史没有价值）。
+# 必须放在数据目录已经存在之后调用——文件本身要写进数据目录。
+record_location() {
+    local f="${DATA_ROOT}/location-status.txt"
+    [ -d "$DATA_ROOT" ] || return 0
+
+    local dkind="real" bkind="real"
+    [ -L "$DATA_ROOT" ] && dkind="symlink"
+    [ -n "${BACKUP_ROOT:-}" ] && [ -L "$BACKUP_ROOT" ] && bkind="symlink"
+
+    local ts dreal breal
+    ts="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    dreal="$(readlink -f "$DATA_ROOT" 2>/dev/null)"
+    breal="$(readlink -f "${BACKUP_ROOT:-}" 2>/dev/null)"
+
+    {
+        echo "time=${ts}"
+        echo "var_root=${VAR_ROOT:-<未设置>}"
+        echo "volume_root=${VOL_ROOT:-}"
+        echo "data_host=${DATA_ROOT}"
+        echo "data_kind=${dkind}"
+        echo "data_real=${dreal}"
+        echo "data_error=${LOC_DATA_ERR}"
+        echo "migrate=${MIGRATE_NOTE:-<没有需要搬的旧数据>}"
+        echo "backup_host=${BACKUP_ROOT:-}"
+        echo "backup_kind=${bkind}"
+        echo "backup_real=${breal}"
+        echo "backup_error=${LOC_BACKUP_ERR}"
+    } > "$f" 2>/dev/null || true
+    # 容器里的程序是 uid 1000，读不到就别谈「说出来」了
+    chmod 0644 "$f" 2>/dev/null || true
 }
 
 # 从旧版（双容器：subject/ sidecar/ conf/ 三个目录）升级时，把已有配置搬到新目录，
@@ -94,9 +160,14 @@ detect_volume_root() {
 # 把备份弄丢、或者让容器因为挂载源异常而起不来，绝不能接受。
 ensure_backup_root() {
     local target="$1"   # 为空表示没探到存储卷，只能留在原地
+    local err=""
 
     if [ -z "$target" ]; then
-        mkdir -p "$BACKUP_ROOT" 2>/dev/null
+        if ! err="$(mkdir -p "$BACKUP_ROOT" 2>&1)"; then
+            LOC_BACKUP_ERR="连 ${BACKUP_ROOT} 都建不出来（${err}），备份等于没有"
+            return 0
+        fi
+        LOC_BACKUP_ERR="没探到存储卷（/vol1～/vol9 都不在），备份只能留在 ${BACKUP_ROOT}；这一层在平台清理应用时可能一起被删"
         return 0
     fi
 
@@ -105,7 +176,8 @@ ensure_backup_root() {
         return 0
     fi
 
-    if ! mkdir -p "$target" 2>/dev/null; then
+    if ! err="$(mkdir -p "$target" 2>&1)"; then
+        LOC_BACKUP_ERR="在 ${target} 建不了目录（${err}），备份只能留在 ${BACKUP_ROOT}"
         mkdir -p "$BACKUP_ROOT" 2>/dev/null
         return 0
     fi
@@ -113,16 +185,19 @@ ensure_backup_root() {
     # 原来是个真实目录（v1.3.1/v1.3.2 早期建的，里面很可能已经有备份了）：
     # 先把内容整份搬过去，搬成功才换成软链；任何一步不成功就原地不动。
     if [ -d "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ]; then
-        if ! cp -a "$BACKUP_ROOT"/. "$target"/ 2>/dev/null; then
+        if ! err="$(cp -a "$BACKUP_ROOT"/. "$target"/ 2>&1)"; then
+            LOC_BACKUP_ERR="把备份复制到 ${target} 失败（${err}），备份仍旧留在 ${BACKUP_ROOT}"
             echo "[cf-ddns-sidecar] 备份目录搬迁失败（复制不成功），仍旧留在 ${BACKUP_ROOT}"
             return 0
         fi
-        if ! mv "$BACKUP_ROOT" "${BACKUP_ROOT}.migrating" 2>/dev/null; then
+        if ! err="$(mv "$BACKUP_ROOT" "${BACKUP_ROOT}.migrating" 2>&1)"; then
+            LOC_BACKUP_ERR="把 ${BACKUP_ROOT} 改名为 ${BACKUP_ROOT}.migrating 失败（${err}），备份仍旧留在原地"
             return 0
         fi
-        if ! ln -s "$target" "$BACKUP_ROOT" 2>/dev/null; then
+        if ! err="$(ln -s "$target" "$BACKUP_ROOT" 2>&1)"; then
             # 链接建不起来就把原目录搬回去，别留下「什么都没有」的局面
             mv "${BACKUP_ROOT}.migrating" "$BACKUP_ROOT" 2>/dev/null
+            LOC_BACKUP_ERR="建不了符号链接 ${BACKUP_ROOT}（${err}），备份已搬回原地"
             return 0
         fi
         rm -rf "${BACKUP_ROOT}.migrating" 2>/dev/null
@@ -130,23 +205,40 @@ ensure_backup_root() {
         return 0
     fi
 
-    ln -s "$target" "$BACKUP_ROOT" 2>/dev/null
+    if ! err="$(ln -s "$target" "$BACKUP_ROOT" 2>&1)"; then
+        mkdir -p "$BACKUP_ROOT" 2>/dev/null
+        LOC_BACKUP_ERR="建不了符号链接 ${BACKUP_ROOT}（${err}），备份只能留在原地"
+    fi
     return 0
 }
 
-# 把老位置（share/<app>/data）的数据搬到 dest。
+# 把老位置的数据搬到 dest。
 #
-# 只在「dest 还是空的」且「老位置确实有东西」时才搬。两个判据都不能省：
+# 两个来源，按「越新越优先」：v1.4.x 的 /var/apps/<app>-data，再往前的
+# share/<app>/data。只在「dest 还是空的」时才搬。两个判据都不能省：
 #   · 不判 dest 空 → 会拿老数据盖掉新数据（新位置才是最新的）；
-#   · 不判老位置有东西 → 全新安装时白跑一趟 cp，还会把 dest 的 mtime 搅乱。
+#   · 不判来源有东西 → 全新安装时白跑一趟 cp，还会把 dest 的 mtime 搅乱。
 # 用「目录是否为空」而不是「有没有 config.json」：全新安装时老位置可能只有
 # 一个 ddns.env 示例，那种也要搬——否则新位置会再生成一份，端口就被重置了。
+#
+# 搬失败不静默：写进 MIGRATE_NOTE，由 record_location 落盘、程序打进运行日志。
+# 前三个版本的教训就是「兜底方向是对的，但它不说话」。
+MIGRATE_NOTE=""
 migrate_from_legacy_data() {
-    local dest="$1"
+    local dest="$1" src
     [ -n "$dest" ] || return 0
     [ -z "$(ls -A "$dest" 2>/dev/null)" ] || return 0
-    [ -n "$(ls -A "$LEGACY_DATA_ROOT" 2>/dev/null)" ] || return 0
-    cp -a "${LEGACY_DATA_ROOT}"/. "$dest"/ 2>/dev/null
+
+    for src in "$V14_DATA_ROOT" "$LEGACY_DATA_ROOT"; do
+        [ -n "$(ls -A "$src" 2>/dev/null)" ] || continue
+        if cp -a "${src}"/. "$dest"/ 2>/dev/null; then
+            MIGRATE_NOTE="已把 ${src} 的数据搬到 ${dest}"
+        else
+            MIGRATE_NOTE="把 ${src} 的数据复制到 ${dest} 失败（旧文件没动，新位置可能是半份）"
+        fi
+        return 0
+    done
+    return 0
 }
 
 # 数据根目录 /var/apps/<app>-data 的安置（v1.4.0）。
@@ -167,12 +259,14 @@ migrate_from_legacy_data() {
 # 让容器因为挂载源异常起不来、或者把已有配置搬丢，绝不能接受。
 ensure_data_root() {
     local target="$1"   # 为空表示没探到存储卷，只能留在原地
+    local err=""
 
     if [ -z "$target" ]; then
         # 探测不到卷（老飞牛、非标准布局）：只能留在 /var/apps 下，
         # 但老位置的数据仍然要搬过来——换了路径却不搬数据，等于配置凭空消失。
         mkdir -p "$DATA_ROOT" 2>/dev/null
         migrate_from_legacy_data "$DATA_ROOT"
+        LOC_DATA_ERR="没探到存储卷（/vol1～/vol9 都不在），数据只能留在 ${DATA_ROOT}"
         return 0
     fi
 
@@ -183,7 +277,8 @@ ensure_data_root() {
 
     # 存储卷上那个目录必须先建出来。软链指向不存在的目标就是死链，
     # docker 做 bind mount 时内核解析不到，容器会直接起不来。
-    if ! mkdir -p "$target" 2>/dev/null; then
+    if ! err="$(mkdir -p "$target" 2>&1)"; then
+        LOC_DATA_ERR="在 ${target} 建不了目录（${err}），数据只能留在 ${DATA_ROOT}"
         mkdir -p "$DATA_ROOT" 2>/dev/null
         return 0
     fi
@@ -196,14 +291,17 @@ ensure_data_root() {
     if [ -d "$DATA_ROOT" ] && [ ! -L "$DATA_ROOT" ]; then
         if [ ! -e "${DATA_ROOT}/config.json" ] && [ -e "${target}/config.json" ]; then
             # 卷上有正本，优先用卷上的
-            if cp -a "${target}"/. "$DATA_ROOT"/ 2>/dev/null; then
+            if err="$(cp -a "${target}"/. "$DATA_ROOT"/ 2>&1)"; then
                 echo "[cf-ddns-sidecar] 已把存储卷上的数据复制回 ${DATA_ROOT}（本次软链未生效，下次升级会自动切过去）"
+                LOC_DATA_ERR="本次软链没生效，数据实际在 ${DATA_ROOT}（真实目录）；存储卷上也有一份，下次重启会切过去"
             else
                 echo "[cf-ddns-sidecar] 警告：数据复制失败，程序将以空配置启动（可用备份恢复）"
+                LOC_DATA_ERR="从存储卷复制数据到 ${DATA_ROOT} 失败（${err}），程序会以空配置启动"
             fi
         else
             # 卷上还没有，就试老位置
             migrate_from_legacy_data "$DATA_ROOT"
+            LOC_DATA_ERR="数据实际在 ${DATA_ROOT}（真实目录，不是存储卷上的 ${target}）"
         fi
         return 0
     fi
@@ -211,12 +309,13 @@ ensure_data_root() {
     # 情况 B：$DATA_ROOT 不存在（第一次装 v1.4.0、且安装脚本正常跑到的情形）。
     # 先把老位置的数据搬到卷上，搬成功才切软链。
     if [ ! -e "${target}/config.json" ] && [ -f "${LEGACY_DATA_ROOT}/config.json" ]; then
-        if cp -a "${LEGACY_DATA_ROOT}"/. "$target"/ 2>/dev/null; then
+        if err="$(cp -a "${LEGACY_DATA_ROOT}"/. "$target"/ 2>&1)"; then
             echo "[cf-ddns-sidecar] 数据目录已搬到存储卷：${LEGACY_DATA_ROOT} -> ${target}"
         else
             # 搬不过来就别切软链，否则容器挂新路径 = 空配置，而老数据随后被平台删掉。
             # 这行日志是排查线索，出现它请连同运行日志一起反馈。
             echo "[cf-ddns-sidecar] 警告：数据迁移失败（复制不成功），暂时留在 ${LEGACY_DATA_ROOT}"
+            LOC_DATA_ERR="把老数据复制到 ${target} 失败（${err}），暂时留在 ${LEGACY_DATA_ROOT}"
             mkdir -p "$DATA_ROOT" 2>/dev/null
             return 0
         fi
@@ -226,27 +325,75 @@ ensure_data_root() {
         migrate_from_legacy_data "$target"
     fi
 
-    if ln -s "$target" "$DATA_ROOT" 2>/dev/null; then
+    if err="$(ln -s "$target" "$DATA_ROOT" 2>&1)"; then
         echo "[cf-ddns-sidecar] 数据目录：${DATA_ROOT} -> ${target}"
     else
         mkdir -p "$DATA_ROOT" 2>/dev/null
         echo "[cf-ddns-sidecar] 警告：建不了符号链接，数据目录留在 ${DATA_ROOT}（升级时会被平台删掉，但有备份兜底）"
+        LOC_DATA_ERR="建不了符号链接 ${DATA_ROOT}（${err}），数据留在 ${DATA_ROOT}；平台升级时会被删，但有备份兜底"
     fi
     return 0
 }
 
+# —— v1.5.0 探针：直接用飞牛官方的 TRIM_PKGVAR ——
+#
+# 走这条分支时，下面那三个自造函数（detect_volume_root / ensure_data_root /
+# ensure_backup_root）整段跳过。它们做的事是「在 /vol1 根下建目录再建软链」，
+# 而 /vol1 属于 root、本脚本是 package 用户——真机上三次都是 Permission denied，
+# 只不过错误被 2>/dev/null 吞了，所以每版都「以为搬了」。
+#
+# 这条分支只做三件事，少一件就会出现「装完配置是空的」：
+#   ① 目录先建出来。docker 建容器时若挂载源不存在，会自己建一个 root 属主的
+#      空目录，容器里的 uid 1000 就写不进去；
+#   ② 老位置的数据搬过来。换了路径却不搬数据，等于配置凭空消失（v1.4.0 踩过）；
+#   ③ **验证真的能写**。mkdir 成功不代表能写，ACL 要到写那一刻才拦——这正是
+#      本次要验证的第二个问题，所以必须真写一个探针文件，不能只看目录在不在。
+#
+# 探针失败时**不切换路径**：compose 已经按 ${TRIM_PKGVAR} 挂上了，脚本要是
+# 偷偷改写到旧路径，就成了「向导里设了密码、程序读不到」那个更隐蔽的坑。
+# 正确做法是把原因写进账本，让程序在运行日志里说出来。
+init_on_platform_var() {
+    local err=""
+
+    if ! err="$(mkdir -p "$VAR_ROOT" 2>&1)"; then
+        LOC_DATA_ERR="建不了官方数据目录 ${VAR_ROOT}（${err}）"
+        echo "[cf-ddns-sidecar] 警告：${LOC_DATA_ERR}"
+        return 0
+    fi
+
+    migrate_from_legacy_data "$VAR_ROOT"
+
+    # 用外部命令 touch 而不是 `: > file`：shell 重定向失败时错误打在 shell 自己的
+    # stderr 上，`$( )` 捕获不到，日志里就只剩「（）」这对空括号；touch 的报错是可捕获的。
+    if ! err="$(touch "${VAR_ROOT}/.write-probe" 2>&1)"; then
+        LOC_DATA_ERR="官方数据目录 ${VAR_ROOT} 存在但不让容器用户写（${err}）"
+        echo "[cf-ddns-sidecar] 警告：${LOC_DATA_ERR}"
+        return 0
+    fi
+    rm -f "${VAR_ROOT}/.write-probe" 2>/dev/null
+
+    echo "[cf-ddns-sidecar] 数据目录（官方 TRIM_PKGVAR）：${VAR_ROOT}"
+}
+
 # 首次启动初始化：建目录 + 迁移旧数据 + 生成示例配置（幂等）
 init_on_start() {
-    # 存储卷根只探一次：数据目录和备份目录都要用，两次探测没意义。
-    VOL_ROOT="$(detect_volume_root)"
-
-    # 数据目录必须先「安置」再 mkdir：它通常是一个指向存储卷的符号链接。
-    # 顺序反了的话，mkdir 会在软链所在的位置建出一个真实空目录把链接顶掉，
-    # 数据就又回到了平台会删的那一层，白搬一次。
-    if [ -n "$VOL_ROOT" ]; then
-        ensure_data_root "${VOL_ROOT}/${APP_NAME}-data"
+    VOL_ROOT=""
+    if [ -n "$VAR_ROOT" ]; then
+        # 官方目录在手，自造软链那一套整段跳过。
+        init_on_platform_var
     else
-        ensure_data_root ""
+        # 老路：平台没给 TRIM_PKGVAR（老版本飞牛，或不是用安装包装的）。
+        # 存储卷根只探一次：数据目录和备份目录都要用，两次探测没意义。
+        VOL_ROOT="$(detect_volume_root)"
+
+        # 数据目录必须先「安置」再 mkdir：它通常是一个指向存储卷的符号链接。
+        # 顺序反了的话，mkdir 会在软链所在的位置建出一个真实空目录把链接顶掉，
+        # 数据就又回到了平台会删的那一层，白搬一次。
+        if [ -n "$VOL_ROOT" ]; then
+            ensure_data_root "${VOL_ROOT}/${APP_NAME}-data"
+        else
+            ensure_data_root ""
+        fi
     fi
     mkdir -p "$DATA_ROOT" || fail "无法创建数据目录: $DATA_ROOT"
 
@@ -263,7 +410,11 @@ init_on_start() {
     # 属主对齐失败才退回放开 0777——宁可权限宽一点，也不要让备份悄悄写不进去。
     # 这一段整体失败也不影响启动。
     BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
-    if [ -n "$VOL_ROOT" ]; then
+    if [ -n "$VAR_ROOT" ]; then
+        # 探针期间备份位置刻意不动（安全网不能跟着实验一起挪），只保证目录在。
+        mkdir -p "$BACKUP_ROOT" 2>/dev/null \
+            || LOC_BACKUP_ERR="建不了备份目录 ${BACKUP_ROOT}"
+    elif [ -n "$VOL_ROOT" ]; then
         ensure_backup_root "${VOL_ROOT}/${APP_NAME}-backup"
     else
         ensure_backup_root ""
@@ -364,6 +515,12 @@ EOF
     fi
 
     sync_port_to_entry
+
+    # 最后一步：把「这次到底把数据和备份放哪儿了」写成一份小账本，
+    # 容器里的程序启动时读出来打进运行日志——用户不用翻文件管理器就能知道真相。
+    # 放在最后是因为它要等数据目录和备份目录都安置完，才能记全两边的情况。
+    # 写不进去也不影响启动（容器里还有自己的日志可以看）。
+    record_location
 }
 
 # 端口同步：ddns.env 里的 CFDDNS_PORT 是唯一来源（默认 8080）。

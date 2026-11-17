@@ -52,8 +52,37 @@ func main() {
 	// 顺序也很关键：必须在 seedFromWizardEnv() 之前。恢复会连
 	// .wizard-env-applied 一起搬回来，种子函数看到标记就直接退出，
 	// 不会拿容器里烘死的旧端口/旧密码把刚恢复的内容再盖一遍。
+	//
+	// v1.5.1：光看「数据目录是空的」会误判。2026-11-17 20:56 的真机日志就踩了这个：
+	// 数据目录不是被删，而是**换到了飞牛官方的 @appdata 下**，新目录天然是空的，
+	// 于是同一段代码打出了「升级期间数据目录被清空了」——把一次正常的换位置
+	// 说成了事故。两种情形要分开说，判据是 compose 有没有把宿主机路径传进来。
+	// v1.5.1：换了数据目录，得先把老用户的配置搬过来。
+	//
+	// 顺序**必须**在下面那次 RestoreFromUpgradeBackup 之前：搬成功之后，
+	// 那边看到 config.json 已经在就什么都不做，用户也就不会看到「被清空」的红条。
+	// 只有搬不动（旧目录不存在 / 只读挂载读不到 / 权限不够）才轮到备份兜底。
+	//
+	// 为什么搬迁写在程序里而不是宿主机脚本里：真机日志已经证明，飞牛对 Docker
+	// 应用做覆盖升级时**不执行任何宿主机生命周期脚本**（cmd/main 与 upgrade_init
+	// 都没跑，只有用户点开「应用设置」才触发了 config_callback）。写在脚本里
+	// 等于写在永远不会被调用的地方。
+	if src := config.MigrateFromLegacyData(); src != "" {
+		if host := legacyHostPath(); host != "" {
+			log.Printf("[信息] 已把配置从 v1.4.x 的旧位置搬过来：%s"+
+				"（旧目录里的文件故意保留着，确认后台一切正常后可以自行删除）", host)
+		} else {
+			log.Printf("[信息] 已把配置从旧位置搬过来：%s", src)
+		}
+	}
+
 	if src := config.RestoreFromUpgradeBackup(); src != "" {
-		log.Printf("[警告] 数据目录是空的，已从升级前的自动备份恢复：%s", src)
+		if host := dataHostPath(); host != "" {
+			log.Printf("[信息] 数据目录已换到飞牛官方位置（%s），新目录是空的，"+
+				"已从最近一次自动备份恢复：%s", host, src)
+		} else {
+			log.Printf("[警告] 数据目录是空的，已从升级前的自动备份恢复：%s", src)
+		}
 	}
 
 	// 必须放在最前面：-listen 的默认值在 flag.Parse 之前就已求值（看 defaultListen），
@@ -90,9 +119,23 @@ func main() {
 		if src == "" {
 			src = "升级前的自动备份"
 		}
-		log.Printf("[警告] 升级期间数据目录被清空了，已从升级前的自动备份恢复（来源 %s）。"+
-			"请核对后台里的 AdGuard 地址、要加速的域名、同步几条 IP 和各家密钥是否完整；"+
-			"核对无误后点一次「保存全部设置」，页面顶上的红条就会消失", src)
+		if host := dataHostPath(); host != "" {
+			// 换成官方目录后的正常路径：说清「换了位置」而不是「被清空了」，
+			// 否则用户看到「数据目录被清空」只会以为又出了事故。
+			log.Printf("[提示] 数据目录刚刚换到 %s（v1.5.1 起改用飞牛官方的应用数据目录），"+
+				"配置是从最近一次自动备份恢复的（来源 %s）。"+
+				"请核对 AdGuard 地址、要加速的域名、同步几条 IP 和各家密钥；"+
+				"核对无误后点一次「保存全部设置」，页面顶上的红条就会消失", host, src)
+			if old := legacyHostPath(); old != "" {
+				log.Printf("[提示] 旧位置 %s 里还留着一份同样的配置（v1.4.x 用的）。"+
+					"确认后台一切正常、并且这次保存过之后，可以到文件管理器里把它删掉，"+
+					"免得以后分不清哪个才是正在用的", old)
+			}
+		} else {
+			log.Printf("[警告] 升级期间数据目录被清空了，已从升级前的自动备份恢复（来源 %s）。"+
+				"请核对后台里的 AdGuard 地址、要加速的域名、同步几条 IP 和各家密钥是否完整；"+
+				"核对无误后点一次「保存全部设置」，页面顶上的红条就会消失", src)
+		}
 	} else if cfg.RestoredFromBackup {
 		log.Printf("[警告] config.json 不见了，已从 config.json.bak 恢复。" +
 			"请核对后台里的 AdGuard 地址、要加速的域名和各家密钥是否完整")
@@ -129,6 +172,23 @@ func main() {
 	} else {
 		log.Printf("[信息] 备份目录 %s 可用：共 %d 份，最新 %s", bs.Dir, bs.Count, bs.Newest)
 	}
+
+	// 交代「数据/备份到底放在哪一层」。紧跟在备份那几行后面：
+	// 一个说「有没有备份」，一个说「备份和数据在不在会被删的那一层」，凑在一起才完整。
+	//
+	// 这一段是 v1.4.2 补的。之前三版（v1.3.2/v1.4.0/v1.4.1）的日志都会说
+	// 「数据目录已搬到存储卷」，而真机翻遍文件管理器压根没有那两个文件夹——
+	// 搬失败的错误被脚本里的 2>/dev/null 吞了。现在脚本把真相写进账本，这里念出来。
+	//
+	// v1.5.1 起补一条硬事实：宿主机路径由 compose 传进来就直接念，不再依赖账本。
+	// 真机实测证明飞牛对 Docker 应用做覆盖升级时**根本不执行** cmd/main，账本
+	// 永远写不出来，只看账本等于每次都「什么都没读到」。
+	if host := dataHostPath(); host != "" {
+		log.Printf("[信息] 数据目录：%s（容器内 /app/data）", host)
+	} else if old := strings.TrimSpace(os.Getenv("CFDDNS_LEGACY_HOST")); old != "" {
+		log.Printf("[提示] 数据目录：容器内 /app/data（宿主机路径未告知，v1.4.x 老布局）")
+	}
+	reportLocation()
 
 	// 配置文件路径：默认与 ddns.env 同目录的 config.json
 	configPath := configFilePath(configDir)
@@ -365,6 +425,63 @@ func seedFromWizardEnv() {
 	}
 }
 
+// reportLocation 把宿主机脚本留下的「目录安置账本」转述到运行日志。
+//
+// 唯一目的：让「我的数据到底在哪儿、为什么没在数据盘上」变成几行日志，
+// 而不是让人去翻文件管理器猜。判断一律以账本为准，程序不自己推断路径。
+//
+// 为什么必须由程序来念、而不是脚本自己 echo：飞牛不收集生命周期脚本的标准
+// 输出，脚本打得再多，用户在「应用中心 → 运行日志」里也看不到一个字。
+// 脚本能写文件、程序能说话，两边各干一半才有人看得见。
+func reportLocation() {
+	st := config.InspectLocation()
+	if !st.Found {
+		// 不是用飞牛安装包装的（自己写 compose 跑）就没有这个文件，属正常情况。
+		return
+	}
+
+	if st.DataError == "" {
+		if st.DataKind == "symlink" {
+			log.Printf("[信息] 数据放在存储卷上：%s -> %s（应用升级、卸载都删不到这里）",
+				st.DataHost, st.DataWhere())
+		} else {
+			log.Printf("[信息] 数据放在 %s", st.DataWhere())
+		}
+	} else {
+		// 四行，顺序是刻意排的：出了什么事 → 现在有没有危险 → 为什么会这样 → 下一步怎么办。
+		//
+		// 这里**刻意不给一条「复制粘贴就能修好」的命令**。试过两版建议：
+		//   · `chown 1000:1000 /vol1/<app>-data` 确实能让容器写进去，但宿主机脚本
+		//     跑的是另一个普通用户，回头它往这个目录里复制备份就会被拒——一条建议
+		//     换来一条永远消不掉的告警，比不给建议更糟；
+		//   · `chmod 0777` 能同时满足两边，但那是在教人为了省事把装着密钥的目录
+		//     敞开，不该出现在日志里。
+		// 真正干净的路子是让**容器里的 root**（docker-entrypoint.sh，以 root 起步）
+		// 去建这两个目录：它有权限，脚本没有。那是下一步的事，不该让用户现在敲命令。
+		log.Printf("[警告] 数据目录没搬到存储卷上：%s", st.DataError)
+		log.Printf("[提示] 数据现在实际在 %s。它和应用目录是平级的，实测升级不会删（v1.4.1 已验证过）；"+
+			"但仍在 /var/apps 下面，最坏情况下只有自动备份能把配置捡回来", st.DataWhere())
+		if st.VolumeRoot != "" {
+			log.Printf("[提示] 这不是故障，是程序按设计退回了安全位置。原因是安装脚本以普通用户身份运行，"+
+				"而数据盘根目录（%s）属于 root，普通用户在它下面建不了目录", st.VolumeRoot)
+		} else {
+			log.Printf("[提示] 这不是故障，是程序按设计退回了安全位置：这台机器上没探到数据盘（/vol1～/vol9）")
+		}
+		log.Printf("[提示] 要真正搬过去得停应用、挪文件、再删旧目录，别自己敲——跟我说一声，我给一份带备份和校验的步骤")
+	}
+
+	// 备份单独说一句：两个目录各判各的，可能一个成一个不成（例如卷上数据目录
+	// 是用户手动建好的、备份目录不是）。只报数据会漏掉「备份还在应用旁边」。
+	if st.BackupError != "" {
+		prefix := "备份目录也没在存储卷上"
+		if st.DataError == "" {
+			prefix = "备份目录没在存储卷上"
+		}
+		log.Printf("[警告] %s：%s", prefix, st.BackupError)
+		log.Printf("[提示] 备份留在原地不影响使用（容器里挂的还是它，几份都在），只是少了一层保险")
+	}
+}
+
 // printInstallDebug 把 config_callback 留下的诊断日志转述到运行日志。
 //
 // 飞牛不会收集生命周期脚本的标准输出，所以脚本内部出问题时用户在界面上
@@ -427,6 +544,28 @@ func dataDir() string {
 		return filepath.Dir(p)
 	}
 	return filepath.Dir(config.EnvFilePath())
+}
+
+// dataHostPath 返回「数据目录在宿主机上的真实路径」，没传就是空。
+//
+// 容器里只看得到 /app/data，看不见自己在宿主机上对应哪个目录。飞牛官方文档
+// 说安装后会把 `var -> /vol{n}/@appdata/<app>` 建好、变量叫 TRIM_PKGVAR，
+// 但那是**宿主机**的视角，容器进程拿不到。所以 compose 把它作为 CFDDNS_DATA_HOST
+// 传进来，日志才能直接说「数据在 /vol1/@appdata/cf-ddns-sidecar」，
+// 而不是让用户去文件管理器里一层层翻（v1.3.2～v1.4.1 就一直在翻）。
+//
+// 这个值同时是「数据目录换了位置」的判据：有它就说明这次跑在官方目录上。
+func dataHostPath() string {
+	return strings.TrimSpace(os.Getenv("CFDDNS_DATA_HOST"))
+}
+
+// legacyHostPath 返回 v1.4.x 用的旧数据目录路径（宿主视角），没传就是空。
+//
+// 换到官方目录后，旧目录里那份配置不会被自动删掉（故意不删：出问题还能回退）。
+// 但它会长期留着一份旧副本，用户以后分不清哪个在用——所以要在日志里点名，
+// 让人知道「确认没问题之后可以自己删」。
+func legacyHostPath() string {
+	return strings.TrimSpace(os.Getenv("CFDDNS_LEGACY_HOST"))
 }
 
 // configFilePath 返回 config.json 的路径。CFDDNS_CONFIG 是精确覆盖，优先于推导。

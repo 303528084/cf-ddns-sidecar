@@ -20,9 +20,15 @@
 
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
-# v1.4.0 起数据在 <app>-data（通常指向存储卷）；v1.1.0～v1.3.2 在 share/<app>/data。
-# 两个位置都有可能存在（升级过的机器），提示里要都能指到。
-DATA_ROOT="/var/apps/${APP_NAME}-data"
+# 数据位置，与 cmd/main、compose 保持一致：
+#   v1.5.0 起是官方 TRIM_PKGVAR（通常链到 /vol{n}/@appdata/<app>），
+#   v1.4.x 是 <app>-data，v1.1.0～v1.3.2 在 share/<app>/data。
+# 三个都有可能存在（升级过的机器），提示里要都能指到。
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_ROOT="$TRIM_PKGVAR"
+else
+    DATA_ROOT="/var/apps/${APP_NAME}-data"
+fi
 
 log() {
     echo "[cf-ddns-sidecar] $*"
@@ -36,8 +42,11 @@ docker rm -f cf-dns-select >/dev/null 2>&1 || true
 DATA_REAL="$(readlink -f "$DATA_ROOT" 2>/dev/null)"
 if [ -n "$DATA_REAL" ] && [ -d "$DATA_REAL" ]; then
     log "已保留数据目录：${DATA_REAL}"
-    log "它就在「文件管理」存储空间的根目录下，文件夹名 ${APP_NAME}-data。"
+    log "（这是飞牛给应用自己的数据目录；文件管理里在存储空间的 @appdata 下面）"
     log "如需彻底清除（含域名、服务商密钥、后台密码），请手动删除该文件夹"
+elif [ -d "/var/apps/${APP_NAME}-data" ]; then
+    log "已保留数据目录：/var/apps/${APP_NAME}-data（v1.4.x 的位置）"
+    log "如需彻底清除（含域名、服务商密钥、后台密码），请到「文件管理」里手动删除该文件夹"
 elif [ -d "${SHARE_ROOT}/data" ]; then
     log "已保留数据目录：${SHARE_ROOT}/data（老版本位置）"
     log "如需彻底清除（含域名、服务商密钥、后台密码），请到「文件管理」里手动删除该文件夹"

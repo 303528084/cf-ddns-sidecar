@@ -7,12 +7,22 @@
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="${TRIM_APPNAME:-cf-ddns-sidecar}"
 SHARE_ROOT="/var/apps/${APP_NAME}/share/${APP_NAME}"
-# v1.4.0 起数据在 <app>-data（可能是指向存储卷的符号链接）
-DATA_ROOT="/var/apps/${APP_NAME}-data"
+# v1.5.0 起优先用飞牛官方的运行数据目录（TRIM_PKGVAR，安装后由平台建好并链到
+# /vol{n}/@appdata/<app>）；平台没给就退回 v1.4.x 的 <app>-data。
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_ROOT="$TRIM_PKGVAR"
+else
+    DATA_ROOT="/var/apps/${APP_NAME}-data"
+fi
 
 # 前提：飞牛已经把共享目录挂上（detect_volume_root 靠它顺着软链找到卷号），
-# 或者上一次安装已经把数据目录安置好了。两个都没有就交给 install_callback 再试。
-if { [ -d "$SHARE_ROOT" ] || [ -d "$DATA_ROOT" ]; } && [ -x "${SELF_DIR}/main" ]; then
+# 或者上一次安装已经把数据目录安置好了。
+#
+# 有 TRIM_PKGVAR 时**无条件**跑一次：install_init 是「容器还没建出来」的最后时机，
+# docker 一旦按一个不存在的挂载源把空目录建出来（属主 root），容器里的 uid 1000
+# 就再也写不进去。这一步跑得越早，走到那个死局的机会越小。
+if { [ -n "${TRIM_PKGVAR:-}" ] || [ -d "$SHARE_ROOT" ] || [ -d "$DATA_ROOT" ]; } \
+    && [ -x "${SELF_DIR}/main" ]; then
     "${SELF_DIR}/main" init || true
 fi
 
