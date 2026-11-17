@@ -6,7 +6,9 @@ package web
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
@@ -51,8 +53,8 @@ type Server struct {
 	logs    []string
 	lastErr string
 
-	sessMu   sync.Mutex
-	sessions map[string]time.Time
+	// 会话令牌签名密钥，由登录密码派生：改密码后旧令牌自动失效。
+	secret []byte
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
@@ -60,6 +62,8 @@ type Server struct {
 // 不做来源 IP 限制：局域网、容器网段、甚至从公网反代进来都放行，
 // 访问控制完全交给登录密码。
 func New(cfg *config.Config, configPath, enginePath, workDir, password, selfURL string) *Server {
+	// 密钥派生：不额外存文件，改密码即等于吊销所有旧令牌。
+	sum := sha256.Sum256([]byte("cf-ddns-sidecar/session:" + password))
 	return &Server{
 		configPath: configPath,
 		enginePath: enginePath,
@@ -67,7 +71,7 @@ func New(cfg *config.Config, configPath, enginePath, workDir, password, selfURL 
 		password:   password,
 		selfURL:    strings.TrimSuffix(selfURL, "/"),
 		cfg:        cfg,
-		sessions:   make(map[string]time.Time),
+		secret:     sum[:],
 	}
 }
 
@@ -127,6 +131,22 @@ func (s *Server) handleCandidates(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 认证 ----------
+//
+// 令牌用 HMAC 签名，服务端不存会话表：
+//   1) 容器重启后登录状态不丢（改完配置重启不用再登一次）；
+//   2) 签名密钥由密码派生，改密码即等于吊销全部旧令牌。
+//
+// 令牌有两种携带方式，按顺序取：
+//   1) Authorization: Bearer <token>  —— 前端首选
+//   2) Cookie: cfddns_session         —— 直连浏览器时的兜底
+// 必须支持第 1 种：飞牛把后台嵌在 iframe 里，跨站上下文下浏览器可能
+// 根本不保存 Cookie，于是「登录成功 → 下一个请求又 401」，表现为
+// 无论输什么密码都提示未登录。
+
+const (
+	sessionCookie = "cfddns_session"
+	sessionTTL    = 30 * 24 * time.Hour
+)
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -145,16 +165,45 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// hasValidSession 判断请求携带的会话 Cookie 是否仍然有效。
+// hasValidSession 判断请求携带的令牌是否有效（header 或 Cookie 二选一）。
 func (s *Server) hasValidSession(r *http.Request) bool {
-	c, err := r.Cookie("cfddns_session")
-	if err != nil {
+	tok := requestToken(r)
+	return tok != "" && s.validToken(tok)
+}
+
+// signToken 生成 <过期时间戳>.<签名> 形式的令牌。
+func (s *Server) signToken() string {
+	exp := strconv.FormatInt(time.Now().Add(sessionTTL).Unix(), 10)
+	return exp + "." + s.tokenSig(exp)
+}
+
+func (s *Server) tokenSig(payload string) string {
+	mac := hmac.New(sha256.New, s.secret)
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) validToken(tok string) bool {
+	exp, sig, ok := strings.Cut(tok, ".")
+	if !ok {
 		return false
 	}
-	s.sessMu.Lock()
-	exp, ok := s.sessions[c.Value]
-	s.sessMu.Unlock()
-	return ok && time.Now().Before(exp)
+	n, err := strconv.ParseInt(exp, 10, 64)
+	if err != nil || time.Now().Unix() > n {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(s.tokenSig(exp)), []byte(sig)) == 1
+}
+
+// requestToken 先看 Authorization 头，再退回 Cookie。
+func requestToken(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+		return strings.TrimSpace(h[7:])
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		return c.Value
+	}
+	return ""
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -175,32 +224,27 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.password)) != 1 {
 		time.Sleep(500 * time.Millisecond) // 抬高暴力破解成本
-		writeJSON(w, 401, map[string]string{"error": "密码错误"})
+		writeJSON(w, 401, map[string]string{"error": "密码错误，请核对「应用设置」里的登录密码"})
 		return
 	}
-	token := randomToken()
-	s.sessMu.Lock()
-	s.sessions[token] = time.Now().Add(30 * 24 * time.Hour)
-	s.sessMu.Unlock()
+	token := s.signToken()
 
+	// Cookie 仍然设一份，方便直接在浏览器地址栏访问时免登录。
+	// 值里有点号，Cookie 允许，无需转义。
 	http.SetCookie(w, &http.Cookie{
-		Name:     "cfddns_session",
+		Name:     sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   30 * 24 * 3600,
+		MaxAge:   int(sessionTTL / time.Second),
 	})
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "token": token})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie("cfddns_session"); err == nil {
-		s.sessMu.Lock()
-		delete(s.sessions, c.Value)
-		s.sessMu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{Name: "cfddns_session", Value: "", Path: "/", MaxAge: -1})
+	// 令牌是无状态的，服务端没法单独吊销；清掉 Cookie 由前端清本地令牌即可。
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -554,14 +598,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func randomToken() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
 }
 
 // normalizeDomains 去重、去协议前缀、小写、丢弃非法项。

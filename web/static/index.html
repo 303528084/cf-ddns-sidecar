@@ -120,7 +120,7 @@
   </div>
 </div>
 
-<div class="wrap" id="app" class="hidden">
+<div class="wrap hidden" id="app">
   <h1>Cloudflare 优选 IP · DDNS</h1>
   <div class="sub">自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。<span id="ver"></span></div>
 
@@ -245,27 +245,49 @@ function toast(msg) {
   t._h = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
+const TOKEN_KEY = "cfddns_token";
+// 内存兜底：飞牛把后台嵌在 iframe 里，某些浏览器策略会让 localStorage
+// 直接抛异常。这时至少保证当前页面会话内能正常用，不至于又退回登录页。
+let memToken = "";
+
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || memToken; } catch (e) { return memToken; }
+}
+function setToken(t) {
+  memToken = t || "";
+  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts
-  });
-  if (res.status === 401) { showLogin(); throw new Error("未登录"); }
+  const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  const tok = getToken();
+  if (tok) headers["Authorization"] = "Bearer " + tok;
+
+  const res = await fetch(path, { ...opts, headers, credentials: "same-origin" });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+
+  if (res.status === 401 && path !== "/api/login") {
+    setToken("");
+    showLogin();
+    throw new Error("未登录");
+  }
   if (!res.ok) throw new Error((data && data.error) || text || ("HTTP " + res.status));
   return data;
 }
 
 function showLogin() {
+  if (pollTimer) clearInterval(pollTimer);
   $("login").classList.remove("hidden");
   $("app").classList.add("hidden");
 }
 
 async function doLogin() {
   try {
-    await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
+    const r = await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("pw").value }) });
+    if (r && r.token) setToken(r.token);
+    $("pw").value = "";
     $("login").classList.add("hidden");
     $("app").classList.remove("hidden");
     boot();
@@ -273,6 +295,7 @@ async function doLogin() {
 }
 
 async function logout() {
+  setToken("");
   await api("/api/logout", { method: "POST" }).catch(() => {});
   showLogin();
 }
