@@ -10,3 +10,6 @@
 /fpk/template/config/privilege text eol=lf
 /fpk/template/config/resource text eol=lf
 /fpk/template/app/ui/config text eol=lf
+
+# 飞牛生命周期脚本：必须 LF、必须可执行
+fpk/template/cmd/* text eol=lf
