@@ -13,3 +13,8 @@ dist-fpk/
 test_icon.png
 fnpack
 fnpack*
+
+# 本地临时脚本 / 打包缓存（.scratch 里可能有 token，别提交）
+.scratch/
+__pycache__/
+*.pyc

@@ -11,6 +11,7 @@
 
 产物：dist-fpk/cf-ddns-sidecar-<version>.fpk
 """
+import json
 import os
 import re
 import shutil
@@ -33,6 +34,46 @@ def inject(path: Path, repl: dict) -> None:
         # 防御未来新增模板时出现未注入占位符静默出包。
         raise ValueError(f"{path} 注入后仍残留未识别的 {{{{...}}}} 占位符")
     path.write_text(text, encoding="utf-8")
+
+
+def validate_wizards(work: Path) -> None:
+    """校验 wizard/ 下每个向导文件都是合法 JSON，且安装向导确实存在。
+
+    飞牛的向导是按生命周期分文件的：
+        wizard/install   安装向导（应用中心装包时弹）
+        wizard/config    「应用设置」向导（装完之后弹）
+    只有 config 没有 install 时，安装过程中不会有任何表单，装完点「应用设置」
+    才弹——这就是「全新安装也没让我选端口和密码」的原因，别再把它删了。
+
+    两份表单刻意不同，不是漏同步：
+        install 只有一页「后台访问」（端口 + 密码）——安装时真正非定不可的
+                就这两项，多塞字段只会让人一路点「下一步」；
+        config  三页（后台访问 / 域名解析 / 服务商密钥）——装完想补想改都在这。
+    两者字段名一致（wizard_*），所以 install_callback 和 config_callback
+    可以共用同一套写盘逻辑。
+    """
+    wdir = work / "wizard"
+    expect = {"install", "config"}
+    got = {p.name for p in wdir.iterdir() if p.is_file()}
+    missing = expect - got
+    if missing:
+        raise ValueError(f"wizard/ 缺少向导文件: {', '.join(sorted(missing))}")
+
+    for p in sorted(wdir.iterdir()):
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            # JSON 写错时飞牛只会静默不弹向导，现象和「没写这个文件」一模一样，极难查。
+            raise ValueError(f"wizard/{p.name} 不是合法 JSON: {e}") from e
+        if not isinstance(data, list) or not data:
+            raise ValueError(f"wizard/{p.name} 必须是非空 JSON 数组（每个元素是一页）")
+        for i, page in enumerate(data):
+            if "stepTitle" not in page or "items" not in page:
+                raise ValueError(f"wizard/{p.name} 第 {i + 1} 页缺少 stepTitle 或 items")
+        print(f"[fpk] wizard/{p.name}: {len(data)} 页，"
+              f"{sum(1 for pg in data for it in pg['items'] if it.get('type') != 'tips')} 个输入项")
 
 
 def find_fnpack() -> Optional[Path]:
@@ -63,6 +104,7 @@ def main() -> int:
         inject(work / "manifest", {"VERSION": version})
         inject(work / "app" / "docker" / "docker-compose.yaml",
                {"IMAGE_TAG": image_tag, "DOCKERHUB_REPO": repo})
+        validate_wizards(work)
     except ValueError as e:
         print(f"[fpk] 错误：{e}", file=sys.stderr)
         return 1
