@@ -80,7 +80,7 @@ func TestReportLocation(t *testing.T) {
 			t.Fatalf("宿主机路径已知时不该再念一遍账本，实际日志：\n%s", got)
 		}
 		// 但备份的告警必须还在——去重不是「少说点话」，是「别重复说同一件事」。
-		if !strings.Contains(got, "备份目录没在存储卷上") {
+		if !strings.Contains(got, "备份目录不可用") {
 			t.Fatalf("备份告警被一起吞掉了，实际日志：\n%s", got)
 		}
 	})
@@ -97,9 +97,13 @@ func TestReportLocation(t *testing.T) {
 		}
 	})
 
-	// 守住最容易被顺手删掉的那部分：「数据没搬到存储卷」是警告，即使宿主机
-	// 路径已知也必须说。真机上这情况意味着「程序读得到数据，但那个位置不安全」
+	// 守住最容易被顺手删掉的那部分：「数据目录不可用」是警告，即使宿主机
+	// 路径已知也必须说。真机上这情况意味着「程序可能读不到也写不进数据目录」
 	// ——沉默等于骗人。
+	//
+	// v1.6.5：措辞从「数据目录没搬到存储卷上」改成「数据目录不可用」。
+	// 原因是 data_error 的来源变了：不再是「没能搬到 /vol1」（那段 shell 已在
+	// v1.6.4 删除），而是「官方目录建不出来 / 建出来但容器用户写不进去」。
 	t.Run("警告不被去重吞掉", func(t *testing.T) {
 		writeLedger(t, dir, "time=2026-11-18 08:31:00\n"+
 			"volume_root=/vol1\n"+
@@ -112,7 +116,7 @@ func TestReportLocation(t *testing.T) {
 		reportLocation(true)
 		got := buf.String()
 
-		if !strings.Contains(got, "数据目录没搬到存储卷上") {
+		if !strings.Contains(got, "数据目录不可用") {
 			t.Fatalf("警告被去重逻辑吞了，实际日志：\n%s", got)
 		}
 		if !strings.Contains(got, "Permission denied") {

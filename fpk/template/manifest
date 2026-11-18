@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=删掉一段从来没生效过的「把数据搬到存储卷」老代码，不再让人误以为还有这层保护；其他行为一行未变
+changelog=清掉一批历史遗留：双容器时代两个从没生效过的脚本函数、v1.4.x 老数据目录的搬迁通道、日志里「搬卷失败」的过时说明。启动日志不再凭空声称旧位置里还留着一份配置；功能与数据位置一行未变
 disable_authorization_path=true
