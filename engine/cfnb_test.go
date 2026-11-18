@@ -182,6 +182,35 @@ func TestParseOutputQuality(t *testing.T) {
 	}
 }
 
+// TestParseOutputIPv6 验证 v6 节点的解析：
+// 带方括号的 [v6]:port 应正确拆出裸 v6 地址；裸 v6 串（端口并进地址）应被拒绝，
+// 绝不静默当成 IP 收下。
+func TestParseOutputIPv6(t *testing.T) {
+	const content = `
+[2606:4700::1]:443#US 12.34 Mbps 56.78 ms
+2606:4700::2:443#US 99.00 Mbps 1.00 ms
+1.2.3.4:443#US 5.00 Mbps 10.00 ms
+`
+	p := filepath.Join(t.TempDir(), "ip.txt")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("写文件失败: %v", err)
+	}
+	ips, nodes, err := parseOutput(p)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	want := []string{"2606:4700::1", "1.2.3.4"}
+	if !eq(ips, want) {
+		t.Fatalf("应只收下带方括号的 v6 和正常 v4，裸 v6 串要丢掉；实际 %v", ips)
+	}
+	if len(nodes) != len(ips) {
+		t.Fatalf("节点数应与 IP 数一致：%d vs %d", len(nodes), len(ips))
+	}
+	if nodes[0].Speed != 12.34 || nodes[0].Delay != 56.78 {
+		t.Errorf("v6 节点质量读错: %+v", nodes[0])
+	}
+}
+
 func eq(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

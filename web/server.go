@@ -131,6 +131,13 @@ type Server struct {
 	// （用户填的来源一个地址都没有），不能靠长度判断。
 	candText   string
 	candStaged bool
+
+	// IPv6 探测（阶段①：只测不写）。与主测速完全隔离：
+	// 探测结果不进 res.IPs，因此永远不会被写进 AdGuard 或 DDNS。
+	v6ProbeRunning bool
+	v6ProbeNodes   []engine.Node
+	v6ProbeAt      time.Time
+	v6ProbeErr     string
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
@@ -198,6 +205,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
 	// 本机 IPv6 只读检测（阶段①）。只读、不改任何状态，但含本机网卡细节，仍需登录。
 	mux.HandleFunc("/api/ipv6", s.auth(s.handleIPv6))
+	// IPv6 阶段①探测：只测 CF 的 v6 节点、不写任何解析。
+	// candidates 端点给测速引擎喂 v6 候选，和主测速的 /api/candidates 完全隔离。
+	mux.HandleFunc("/api/ipv6/candidates", s.candidatesGuard)
+	mux.HandleFunc("/api/ipv6/probe", s.auth(s.handleIPv6Probe))
+	mux.HandleFunc("/api/ipv6/probe/result", s.auth(s.handleIPv6ProbeResult))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
 	// 所以即使所有外部数据源都不可达，测速依然能跑。
@@ -221,6 +233,11 @@ func (s *Server) Handler() http.Handler {
 // 127.0.0.1，只判 IP 等于把这个接口对全网敞开。见 guard.go 的说明。
 func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
 	if isLocalRequest(r) || s.hasValidSession(r) {
+		// IPv6 探测的候选入口返回 CF v6 段采样，和主测速的 v4 候选完全隔离。
+		if r.URL.Path == "/api/ipv6/candidates" {
+			s.handleIPv6Candidates(w, r)
+			return
+		}
 		s.handleCandidates(w, r)
 		return
 	}

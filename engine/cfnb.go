@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -304,11 +305,22 @@ func parseOutput(path string) ([]string, []Node, error) {
 		if i := strings.IndexByte(token, '#'); i > 0 {
 			token = token[:i]
 		}
+		// 节点串约定：v4 是 1.2.3.4:443，v6 是 [2606:4700::1]:443（必须带方括号）。
+		// 判断依据就是有没有方括号——裸 v6 串 2606:4700::2:443 拆不开、
+		// 又可能恰好是合法 v6（::2:443），会把端口并进地址造成静默错误，一律拒绝。
 		ip := token
-		if host, _, err := net.SplitHostPort(token); err == nil {
+		bracketed := strings.HasPrefix(token, "[")
+		if bracketed || strings.Count(token, ":") == 1 {
+			// 带方括号（v6）或只有一个冒号（v4 的 ip:port）才拆 host/port。
+			host, _, err := net.SplitHostPort(token)
+			if err != nil {
+				continue
+			}
 			ip = host
+		} else if strings.Count(token, ":") > 1 {
+			// 多个冒号又没方括号 = 裸 v6 带端口，格式错误，丢弃。
+			continue
 		}
-		ip = strings.Trim(ip, "[]")
 		if !looksLikeIP(ip) || seen[ip] {
 			continue
 		}
@@ -341,22 +353,21 @@ func parseOutput(path string) ([]string, []Node, error) {
 	return ips, nodes, scanner.Err()
 }
 
-// looksLikeIP 做轻量格式校验（不引入 net.ParseIP 的开销与 IPv6 括号差异）。
+// looksLikeIP 校验一个字符串是不是合法的 IP（v4 或 v6）。
+//
+// 本地补丁（cf-ddns-sidecar）：原来是"只查字符集"的轻量校验——任何含冒号的串
+// 都放过。做 v6 优选后这成了隐患：裸 v6 串 2606:4700::1:443 因 SplitHostPort
+// 拆不开，端口会被并进地址，而这个畸形串靠字符集校验照样过关（静默错误）。
+// 换成 netip.ParseAddr 做真校验，v4 结果不变，v6 杜绝畸形串蒙混。
 func looksLikeIP(s string) bool {
-	if s == "" || len(s) > 45 {
+	if s == "" {
 		return false
 	}
-	dot, colon := strings.Count(s, "."), strings.Count(s, ":")
-	if dot == 0 && colon == 0 {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
 		return false
 	}
-	for _, r := range s {
-		if (r >= '0' && r <= '9') || r == '.' || r == ':' || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
-			continue
-		}
-		return false
-	}
-	return true
+	return addr.Is4() || addr.Is6()
 }
 
 // DefaultTimeout 返回一次测速的合理上限。

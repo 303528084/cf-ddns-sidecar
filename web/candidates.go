@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,14 @@ var cloudflareIPv4 = []string{
 	"104.24.0.0/14",
 	"172.64.0.0/13",
 	"131.0.72.0/22",
+}
+
+// cloudflareIPv6 是 Cloudflare 官方公布的 IPv6 段（https://www.cloudflare.com/ips-v6）。
+// 官方只公布一条 /32，和 IPv4 那 15 条完全不同：v6 是 Anycast，
+// 采样再广也很可能落在同一批边缘设备上——所以 v6 优选有没有意义要靠真机测，
+// 不能凭"段多"想当然（见 docs/IPv6方案.md 第八节）。
+var cloudflareIPv6 = []string{
+	"2606:4700::/32",
 }
 
 // extraSources 是解析之后的用户自定义来源，四类分开存。
@@ -273,6 +282,91 @@ func uint32ToIP(v uint32) string {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)
 	return net.IP(b[:]).String()
+}
+
+// ipv6Prefix 存一段 v6 CIDR 采样所需的信息：网络前缀 16 字节、主机位数量。
+// 和 v4 的 cidrEntry（uint32）分开——v6 主机位最多 128 位，uint32 装不下，
+// 用 netip.Addr 的 As16() 拿到完整的 128 位再随机填。
+type ipv6Prefix struct {
+	base [16]byte
+	bits int // 主机位数量（128 - ones）
+}
+
+// sampleFromIPv6CIDRs 从 v6 段里随机采样 count 个地址，输出 `[ipv6]:443#US`。
+//
+// 方括号是硬要求：Go 的 parseOutput 用 net.SplitHostPort 拆 host/port，
+// 裸写法 2606:4700::1:443 会因冒号过多拆不开，端口被并进地址（静默错误）。
+// 引擎侧（main.py）已同步改成认 [v6]:port 形式。
+func sampleFromIPv6CIDRs(cidrs []string, count int) []string {
+	if count <= 0 {
+		count = 600
+	}
+	var prefixes []ipv6Prefix
+	for _, s := range cidrs {
+		p, err := netip.ParsePrefix(strings.TrimSpace(s))
+		if err != nil || !p.Addr().Is6() {
+			continue
+		}
+		ones := p.Bits()
+		bits := p.Addr().BitLen() // v6 恒为 128
+		hostBits := bits - ones
+		if hostBits < 2 { // 主机位太少（/127、/128）没有采样空间
+			continue
+		}
+		a := p.Masked().Addr().As16()
+		prefixes = append(prefixes, ipv6Prefix{base: a, bits: hostBits})
+	}
+	if len(prefixes) == 0 {
+		return nil
+	}
+
+	seen := make(map[netip.Addr]bool, count)
+	out := make([]string, 0, count)
+	perPrefix := count / len(prefixes)
+	if perPrefix < 4 {
+		perPrefix = 4
+	}
+	for _, p := range prefixes {
+		for i := 0; i < perPrefix && len(out) < count; i++ {
+			addr := randomIPv6(p)
+			if addr.IsUnspecified() || seen[addr] {
+				continue
+			}
+			seen[addr] = true
+			out = append(out, "["+addr.String()+"]:443#US")
+		}
+	}
+	// 配额没凑够时补一轮（和 v4 的 sampleFromCIDRs 同样的兜底逻辑）。
+	for tries := 0; tries < 3 && len(out) < count; tries++ {
+		p := prefixes[rand.Intn(len(prefixes))]
+		addr := randomIPv6(p)
+		if addr.IsUnspecified() || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, "["+addr.String()+"]:443#US")
+	}
+	return out
+}
+
+// randomIPv6 在一段 v6 前缀里随机出一个地址：保留前缀字节，主机位随机填。
+func randomIPv6(p ipv6Prefix) netip.Addr {
+	var b [16]byte
+	copy(b[:], p.base[:])
+	hostBytes := p.bits / 8
+	hostRem := p.bits % 8
+	// 前缀长度总是 8 的倍数时（如 /32、/48、/64），只需随机填后面的整字节。
+	for i := 16 - hostBytes; i < 16; i++ {
+		b[i] = byte(rand.Intn(256))
+	}
+	if hostRem > 0 {
+		// 非整字节的前缀：掩码掉高位，只随机低位（本项目用的 /32 不走这里，
+		// 但留着让这个函数对任意 CIDR 都正确）。
+		idx := 16 - hostBytes - 1
+		mask := byte((1 << uint(hostRem)) - 1)
+		b[idx] = (b[idx] &^ mask) | (byte(rand.Intn(256)) & mask)
+	}
+	return netip.AddrFrom16(b)
 }
 
 // candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。

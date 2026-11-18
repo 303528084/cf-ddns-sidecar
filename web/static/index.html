@@ -512,6 +512,17 @@
   .v6-row.pick .v6-why{color:var(--ok)}
   .v6-stat{font-size:11.5px;color:var(--dim);margin-top:12px;line-height:1.7}
   .v6-stat b{color:var(--muted);font-weight:600}
+  /* CF v6 节点探测（阶段①：只测不写）——同样全用现成变量，深色自动适配 */
+  .v6-probe{border-top:1px solid var(--line2);margin-top:16px;padding-top:14px}
+  .v6-probe-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .v6-probe-h b{font-size:13px;color:var(--text)}
+  .v6-probe-h .hint{flex:1;min-width:160px;font-size:11.5px}
+  .v6-probe-note{font-size:12px;color:var(--dim);line-height:1.6}
+  .v6-probe-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+    border:1px solid var(--line2);border-radius:9px;padding:9px 12px;margin-top:8px}
+  .v6-probe-row .addr{font-family:var(--mono);font-size:12px;color:var(--text);
+    word-break:break-all;flex:1;min-width:0}
+  .v6-probe-row .q{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -755,6 +766,16 @@
             「前缀 64 + 网卡名最短」选出的稳定地址；临时地址、链路本地（fe80）、私有段（fc/fd）
             已被排除，不会出现在列表里。<b>能不能从外网连进来还取决于路由器是否放行</b>——
             地址有、但手机流量打不开，就是入站没放行。flags 原文留给真机核对。
+          </div>
+          <!-- CF v6 节点探测（阶段①：只测不写） -->
+          <div class="v6-probe">
+            <div class="v6-probe-h">
+              <b>Cloudflare IPv6 节点探测</b>
+              <span class="hint">选测：从 CF 官方 v6 段里挑节点跑一次测速，看看 v6 到底快不快</span>
+              <button class="btn sm flat" id="btn-v6probe" onclick="probeIPv6()">开始探测</button>
+            </div>
+            <div class="v6-probe-note" id="v6probe-note">还没探测。点「开始探测」跑一次——只测速、不写任何解析。</div>
+            <div id="v6probe-list"></div>
           </div>
         </div>
       </section>
@@ -1670,6 +1691,73 @@ async function loadIPv6() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// === CF v6 节点探测（阶段①：只测不写）===
+// 点一次触发探测（后端异步跑），这里每 3 秒轮询结果，跑完停。
+let v6ProbeTimer = null;
+async function probeIPv6() {
+  const btn = $("btn-v6probe"), note = $("v6probe-note"), list = $("v6probe-list");
+  if (!btn || !note) return;
+  btn.disabled = true;
+  note.innerHTML = "正在从 Cloudflare 的 IPv6 段里挑节点测速…（只测不写，通常 1 分钟内）";
+  list.innerHTML = "";
+  try {
+    const start = await api("/api/ipv6/probe", {method: "POST"});
+    if (!start || !start.ok) throw new Error((start && start.error) || "启动失败");
+    if (v6ProbeTimer) clearInterval(v6ProbeTimer);
+    let ticks = 0;
+    v6ProbeTimer = setInterval(async () => {
+      ticks++;
+      try {
+        const j = await api("/api/ipv6/probe/result");
+        if (!j || !j.ok) throw new Error("读取结果失败");
+        if (j.running && ticks < 40) {
+          note.innerHTML = "探测进行中…（" + ticks * 3 + " 秒）";
+          return;
+        }
+        clearInterval(v6ProbeTimer); v6ProbeTimer = null;
+        btn.disabled = false;
+        renderV6ProbeResult(j, note, list);
+      } catch (e) {
+        clearInterval(v6ProbeTimer); v6ProbeTimer = null;
+        btn.disabled = false;
+        note.innerHTML = "<b>探测结果读取失败</b>：" + escapeHtml(e.message || String(e));
+      }
+    }, 3000);
+  } catch (e) {
+    btn.disabled = false;
+    note.innerHTML = "<b>探测启动失败</b>：" + escapeHtml(e.message || String(e));
+  }
+}
+
+function renderV6ProbeResult(j, note, list) {
+  if (j.error) {
+    note.innerHTML = "<b>探测失败</b>：" + escapeHtml(j.error);
+    list.innerHTML = "";
+    return;
+  }
+  const nodes = Array.isArray(j.nodes) ? j.nodes : [];
+  if (!nodes.length) {
+    note.innerHTML = "<b>没测出可用的 CF v6 节点。</b>可能是本机连不上 Cloudflare 的 v6，或 v6 出口被挡——" +
+      "这正好说明阶段②（把 v6 写进解析）在你这条网络下意义不大。";
+    list.innerHTML = "";
+    return;
+  }
+  const best = nodes[0];
+  note.innerHTML = `<b>测出 ${nodes.length} 个 CF v6 节点。</b>最快的排最前：` +
+    `<b>${escapeHtml(best.ip || "")}</b>${best.speed > 0 ? "，" + best.speed.toFixed(2) + " Mbps" : ""}` +
+    `${best.delay > 0 ? "，" + best.delay.toFixed(2) + " ms" : ""}。` +
+    `这串数据<b>只用于判断值不值得做阶段②</b>，没有写进任何解析或 AdGuard。`;
+  list.innerHTML = nodes.map((n, i) => {
+    const q = [
+      n.speed > 0 ? n.speed.toFixed(2) + " Mbps" : "—",
+      n.delay > 0 ? n.delay.toFixed(2) + " ms" : "—"
+    ].join(" · ");
+    return `<div class="v6-probe-row"><span class="addr">${escapeHtml(n.ip || "")}</span>` +
+      `<span class="pill ${i === 0 ? "ok" : "mut"}">${i === 0 ? "最快" : "候选"}</span>` +
+      `<span class="q">${escapeHtml(q)}</span></div>`;
+  }).join("");
 }
 
 // 过滤统计：只给数量，不列被过滤的地址本身。

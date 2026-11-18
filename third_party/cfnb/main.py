@@ -68,8 +68,23 @@ def log(level, msg, end="\n"):
 def _run_async(coro):
     return asyncio.run(coro)
 
-NODE_PATTERN = re.compile(r"^(\d+\.\d+\.\d+\.\d+):(\d+)#(.+)$")
-IP_PORT_PATTERN = re.compile(r"^(\d+\.\d+\.\d+\.\d+):(\d+)#")
+# 本地补丁（cf-ddns-sidecar）：节点 host 同时接受 IPv4 和 [IPv6]。
+# v6 必须用方括号包住——裸写法 2606:4700::1:443 里地址冒号和端口冒号
+# 无法区分，Go 端 net.SplitHostPort 会报错或把端口并进地址（静默错误）。
+# v4 维持原来的 1.2.3.4:443 写法不变，保证既有测速结果完全兼容。
+_HOST_RE = r"(?:\[[0-9A-Fa-f:]+\]|\d+\.\d+\.\d+\.\d+)"
+NODE_PATTERN = re.compile(rf"^({_HOST_RE}):(\d+)#(.+)$")
+IP_PORT_PATTERN = re.compile(rf"^({_HOST_RE}):(\d+)#")
+
+def _unwrap_host(host):
+    """[2606:4700::1] -> 2606:4700::1，IPv4 原样返回。
+
+    节点串内部带方括号是为了格式无歧义，但传给 asyncio.open_connection、
+    aiohttp resolver、curl --resolve 时都要用裸地址，所以统一在这里去掉。
+    """
+    if host.startswith('[') and host.endswith(']'):
+        return host[1:-1]
+    return host
 
 CN_TO_CODE = {
     "阿富汗": "AF", "奥兰群岛": "AX", "阿尔巴尼亚": "AL", "阿尔及利亚": "DZ",
@@ -396,13 +411,24 @@ def _parse_trace_text(text):
             out[k.strip()] = v.strip()
     return out
 
+def _family_of(ip):
+    """按目标 IP 返回 socket.AF_INET / AF_INET6。
+
+    本地补丁（cf-ddns-sidecar）：原来两个 resolver 把 family 写死成 AF_INET，
+    传入 IPv6 地址时 aiohttp 会用 AF_INET 建 socket，必然失败。改成看地址本身。
+    """
+    try:
+        return socket.AF_INET6 if ipaddress.IPv6Address(ip) else socket.AF_INET
+    except ValueError:
+        return socket.AF_INET
+
 class PinnedResolver(aiohttp.abc.AbstractResolver):
     def __init__(self, ip, port):
         self.ip = ip
         self.port = port
-    async def resolve(self, host, port=0, family=socket.AF_INET):
+    async def resolve(self, host, port=0, family=socket.AF_UNSPEC):
         return [{"hostname": host, "host": self.ip, "port": self.port,
-                 "family": socket.AF_INET, "proto": 0, "flags": 0}]
+                 "family": _family_of(self.ip), "proto": 0, "flags": 0}]
     async def close(self):
         pass
 
@@ -413,9 +439,9 @@ class MutablePinnedResolver(aiohttp.abc.AbstractResolver):
     def set_target(self, ip, port):
         self.ip = ip
         self.port = port
-    async def resolve(self, host, port=0, family=socket.AF_INET):
+    async def resolve(self, host, port=0, family=socket.AF_UNSPEC):
         return [{"hostname": host, "host": self.ip, "port": self.port,
-                 "family": socket.AF_INET, "proto": 0, "flags": 0}]
+                 "family": _family_of(self.ip), "proto": 0, "flags": 0}]
     async def close(self):
         pass
 
@@ -644,6 +670,9 @@ def _parse_json_nodes(data):
         if ip and port and code:
             code_str = str(code).strip()
             normalized = extract_country_code(code_str) or code_str.upper()
+            # 本地补丁：IPv6 地址加方括号，和端口的冒号区分开。
+            if ':' in str(ip) and not str(ip).startswith('['):
+                ip = f"[{ip}]"
             nodes.append(f"{ip}:{port}#{normalized}")
     elif isinstance(data, str):
         nodes.extend(_parse_text_nodes(data))
@@ -674,7 +703,7 @@ async def _resolve_countries_batch_async(ipports):
                     return
                 try:
                     ip, port = ipport.rsplit(':', 1)
-                    resolver.set_target(ip, int(port))
+                    resolver.set_target(_unwrap_host(ip), int(port))
                     async with session.get(
                         f"https://{PROBE_HOST}{PROBE_PATH}",
                         timeout=aiohttp.ClientTimeout(
@@ -720,11 +749,20 @@ def _parse_text_nodes(text):
         # 本地补丁（cf-ddns-sidecar）：部分国内聚合源只给纯 IP 列表，
         # 不带端口也不带国家。补上默认端口 443 后直接采用；
         # 国家标签填占位值即可——本产品已关闭国家过滤，不影响结果。
+        # 裸 IP（不带端口/国家）：IPv4 原样，IPv6 用 ipaddress 验合法后加方括号。
         bare_ip = re.match(r'^(\d+\.\d+\.\d+\.\d+)$', token)
         if bare_ip:
             nodes.append(f"{bare_ip.group(1)}:443#US")
             continue
-        pure_match = re.match(r'^(\d+\.\d+\.\d+\.\d+:\d+)$', token)
+        if ':' in token and '#' not in token:
+            try:
+                ipaddress.IPv6Address(token)   # 确认是合法 v6，不是乱写的冒号串
+                nodes.append(f"[{token}]:443#US")
+                continue
+            except ValueError:
+                pass
+        # ip:port（无国家）：v4 的 1.2.3.4:443 或 v6 的 [2606:4700::1]:443。
+        pure_match = re.match(r'^(' + _HOST_RE + r':\d+)$', token)
         if pure_match:
             pending.append(pure_match.group(1))
             continue
@@ -736,9 +774,8 @@ def _parse_text_nodes(text):
             continue
         ipport = ipport.strip()
         label = label.strip()
-        if ipport.startswith('['):
-            continue
-        if not re.match(r'^\d+\.\d+\.\d+\.\d+:\d+$', ipport):
+        # 本地补丁：不再丢弃 [ 开头——那正是 IPv6 的合法写法。
+        if not re.match(r'^' + _HOST_RE + r':\d+$', ipport):
             continue
         code = extract_country_code(label)
         if code:
@@ -1091,7 +1128,7 @@ async def test_node_async(node_str):
     if not m:
         return None
     ip, port, country = m.groups()
-    min_lat, success = await test_tcp_latency_async(ip, port)
+    min_lat, success = await test_tcp_latency_async(_unwrap_host(ip), port)
     if success == 0 or (success / TCP_PROBES) < MIN_SUCCESS_RATE:
         return None
     return (node_str, min_lat, country, success)
@@ -1126,7 +1163,7 @@ async def check_availability_async(node_str, local_public_ip=None):
     m = IP_PORT_PATTERN.match(node_str)
     if not m:
         return (node_str, False, "unknown", {}, [])
-    ip, port = m.group(1), int(m.group(2))
+    ip, port = _unwrap_host(m.group(1)), int(m.group(2))
     test_rounds = max(3, AVAILABILITY_TEST_ROUNDS)
     total_attempts = (AVAILABILITY_INNER_RETRY_MAX + 1) if AVAILABILITY_INNER_RETRY_ENABLED else 1
     retry_delay = AVAILABILITY_INNER_RETRY_DELAY if AVAILABILITY_INNER_RETRY_ENABLED else 0
@@ -1286,7 +1323,7 @@ async def measure_bandwidth_curl_async(node_str):
     m = IP_PORT_PATTERN.match(node_str)
     if not m:
         return (node_str, 0)
-    ip, port = m.group(1), m.group(2)
+    ip, port = _unwrap_host(m.group(1)), m.group(2)
     port_int = int(port)
     HTTP_PORTS = {80, 8080, 8880, 2052, 2082, 2086, 2095}
     HTTPS_PORTS = {443, 2053, 2083, 2087, 2096, 8443}
