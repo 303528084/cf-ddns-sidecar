@@ -20,6 +20,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -218,8 +219,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ipv6/candidates", s.candidatesGuard)
 	mux.HandleFunc("/api/ipv6/probe", s.auth(s.handleIPv6Probe))
 	mux.HandleFunc("/api/ipv6/probe/result", s.auth(s.handleIPv6ProbeResult))
-	// v6 段链接单独存：只改这一个字段，不经过 /api/config 那套全量保存。
-	mux.HandleFunc("/api/ipv6/source", s.auth(s.handleIPv6Source))
+	// v6 段来源不再是独立接口：它和「优选 IP 段」一样是 /api/config 里的一个
+	// 字段，跟着「保存全部设置」一起存。原来那个 /api/ipv6/source 已删除——
+	// 留着就有两条写入路径，只改一条会覆盖另一条写的内容。
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
 	// 所以即使所有外部数据源都不可达，测速依然能跑。
@@ -788,12 +790,15 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		//   传了 []      → 用户主动清空，恢复用内置官方段。
 		// 若用普通切片，这两种情况都是长度 0，清空就永远生效不了。
 		ExtraSources *[]string `json:"extra_sources"`
-		DDNSEnabled  bool      `json:"ddns_enabled"`
-		DDNSProvider string    `json:"ddns_provider"`
-		DDNSDomain   string    `json:"ddns_domain"`
-		DDNSTTL      int       `json:"ddns_ttl"`
-		DDNSProxied  bool      `json:"ddns_proxied"`
-		DDNSIPCount  int       `json:"ddns_ip_count"`
+		// v6 段来源用指针，理由同上：没传 = 不动（旧客户端、老的导入文件），
+		// 传了空串 = 用户主动清空，要真的清掉。
+		IPv6ProbeURL *string `json:"ipv6_probe_url"`
+		DDNSEnabled  bool    `json:"ddns_enabled"`
+		DDNSProvider string  `json:"ddns_provider"`
+		DDNSDomain   string  `json:"ddns_domain"`
+		DDNSTTL      int     `json:"ddns_ttl"`
+		DDNSProxied  bool    `json:"ddns_proxied"`
+		DDNSIPCount  int     `json:"ddns_ip_count"`
 		// 用指针：「没传」和「传了空串」要区分开。空串归一成 A 是合法的主动选择，
 		// 而旧客户端/老的导入文件里根本没有这个字段——那时必须保持原样不动，
 		// 否则一次「只改域名」的保存就会把用户选的 AAAA 悄悄改回 A。
@@ -850,6 +855,34 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 「IPv6 段链接」逐行校验，错一行就整单退回并指明第几行。
+	//
+	// 只认链接（http:// 或 https://）：这一栏刻意不支持直接写 IP 段，因为
+	// 它的语义就是「去哪里拉一份 v6 段清单」。想手写段请用上面的「优选 IP 段」。
+	// 空行和 # 开头的注释会原样保留（用户拿它分隔/记事），只是不参与拉取。
+	var v6Lines []string
+	if body.IPv6ProbeURL != nil {
+		for i, l := range strings.Split(*body.IPv6ProbeURL, "\n") {
+			t := strings.TrimSpace(l)
+			if t == "" || strings.HasPrefix(t, "#") {
+				if t != "" {
+					v6Lines = append(v6Lines, t)
+				}
+				continue
+			}
+			u, perr := url.Parse(t)
+			if perr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				writeJSON(w, 400, map[string]string{
+					"error": fmt.Sprintf(
+						"「IPv6 段链接」第 %d 行不是合法链接：%s。每行要填 http:// 或 https:// 开头的地址",
+						i+1, t),
+				})
+				return
+			}
+			v6Lines = append(v6Lines, t)
+		}
+	}
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	cfg.AdGuard.URL = strings.TrimSpace(body.AdGuardURL)
@@ -894,6 +927,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 此时保留原值，不能顺手清空——那会把用户辛苦填的段默默删掉。
 	if body.ExtraSources != nil {
 		cfg.Speed.ExtraSources = extraLines
+	}
+	if body.IPv6ProbeURL != nil {
+		// 存成多行字符串（一行一个链接），和字段定义保持一致。
+		cfg.IPv6ProbeURL = strings.Join(v6Lines, "\n")
 	}
 	// 引擎参数：同样「没传就不动」。NormalizeOverrides 会丢掉未知键、把
 	// 类型转成 cfnb 认识的（"443,8443" → []int{443,8443}）、把越界值钳住，
@@ -1376,7 +1413,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 的结果」，可能是上一个小时的，拿它去写解析等于把一个早就不通的地址
 	// 塞进域名。这一轮没测出来就是没测出来，宁可不写（见下面 DDNS 那段的说明）。
 	var v6RoundIPs []string
-	if strings.TrimSpace(cfg.IPv6ProbeURL) != "" {
+	if len(cfg.IPv6SourceURLs()) > 0 {
 		if s.claimIPv6Probe() {
 			s.appendLog("开始 v6 优选…")
 			ips, verr := s.runIPv6Probe()

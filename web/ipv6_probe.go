@@ -1,24 +1,22 @@
 package web
 
-// Cloudflare IPv6 节点探测（阶段①：只测不写）。
+// Cloudflare IPv6 节点优选。
 //
-// 这一整套和主测速是完全隔离的两条路：
+// 这一整套和主测速是两条独立的路：
 //   - 主测速：采样 CF 的 IPv4 段 → engine.Run → res.IPs → 写 AdGuard + DDNS；
-//   - 本探测：采样 CF 的 IPv6 段 → engine.Run → 只存到 s.v6ProbeNodes 供界面显示。
+//   - 本探测：采样 CF 的 IPv6 段 → engine.Run → 结果回给调用方。
 //
-// 探测结果**绝不**进 res.IPs，所以无论探测跑多少次、选出什么 v6 地址，
-// 都不会被写进 AdGuard 重写或 DDNS 解析——这正是阶段①"只测不写"的硬保证。
-// 目的只是回答一个问题：从这台机器连 Cloudflare 的 v6 节点，到底快不快、值不值得
-// 在阶段②把它写进 AAAA。
+// 「只测不写」这条保证现在**只对手动探测成立**：runIPv6Probe 自己不碰
+// AdGuard 和 DDNS，它只把结果存进 s.v6ProbeNodes / cfg.LastIPv6* 供界面显示。
+// 真正写 AAAA 的是 server.go 的 runOnce——它调 runIPv6Probe 拿到**这一轮**的
+// 地址，再和 v4 一起交给 EnsureRecords。也就是说：点「开始探测」永远不会改动
+// 你的解析，只有「立即测速」/ 定时那一轮才会（v1.7.0 起）。
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -34,63 +32,6 @@ import (
 // 一半被 ctx 掐断，界面显示"探测失败"、连已有结果也不给——比不放大采样更糟。
 // 放到 6 分钟：足够 2910 个候选跑完，又比主测速的 10 分钟短，探测卡死时不会长期占着。
 const ipv6ProbeTimeout = 6 * time.Minute
-
-// handleIPv6Source 读写「v6 段链接」这个独立设置。
-//
-// 为什么不做成 /api/config 的一个字段：那个接口是全量保存，前端每次保存
-// 都要提交十几个字段；而这里是探测卡片里的一个独立输入框，点一下只改这一项。
-// 两者共用同一个 config.json，但写入路径分开，互不覆盖。
-func (s *Server) handleIPv6Source(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.mu.Lock()
-		u := s.cfg.IPv6ProbeURL
-		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": u})
-	case http.MethodPost:
-		var body struct {
-			URL string `json:"url"`
-		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
-			return
-		}
-		u := strings.TrimSpace(body.URL)
-		if u != "" {
-			parsed, err := url.Parse(u)
-			if err != nil || parsed.Host == "" ||
-				(parsed.Scheme != "http" && parsed.Scheme != "https") {
-				writeJSON(w, http.StatusBadRequest, map[string]string{
-					"error": "链接要以 http:// 或 https:// 开头，并且带上域名",
-				})
-				return
-			}
-		}
-
-		s.mu.Lock()
-		cfg := s.cfg.Clone()
-		s.mu.Unlock()
-		cfg.IPv6ProbeURL = u
-		// 先落盘再改内存：写失败时界面显示的还是旧值，不会"以为存上了"。
-		if err := cfg.Save(); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "保存失败: " + friendlyErr(err),
-			})
-			return
-		}
-		s.mu.Lock()
-		s.cfg = &cfg
-		s.mu.Unlock()
-		if u == "" {
-			s.appendLog("IPv6 探测来源链接已清空，恢复用内置 CF v6 段")
-		} else {
-			s.appendLog("IPv6 探测来源链接已保存：" + u)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": u})
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
 
 // handleIPv6Candidates 给探测用的测速引擎喂 v6 候选。
 //
@@ -132,34 +73,61 @@ func candidatesTextFromIPv6(count int) string {
 // 每来一次就下一遍外部站点，既慢又容易被对方限流（主测速的 candText 同样是
 // 这个道理）。失败原因直接返回给 runIPv6Probe 写进 v6ProbeErr——用户看到的是
 // "链接拉取失败（HTTP 404）"这种能动手修的话，而不是笼统的"没有产出可用 IP"。
+//
+// 支持一行一个链接（和「优选 IP 段」那边同一套写法）：
+//   - 段按**字符串**去重后再采样，两个链接里出现同一个段不会采出两倍的地址；
+//   - 某一条链接挂了不算整体失败——只要还有别的链接给出段，就照常往下测，
+//     挂掉的那几条写进日志。反过来全部挂掉才报错，并把每条的原因都列出来，
+//     否则用户只知道"失败了"，不知道是哪一条链接坏了。
 func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	s.mu.Lock()
-	u := strings.TrimSpace(s.cfg.IPv6ProbeURL)
+	urls := s.cfg.IPv6SourceURLs()
 	s.mu.Unlock()
-	if u == "" {
+	if len(urls) == 0 {
 		s.unstageIPv6Candidates() // 清掉上一次的暂存，避免"删了链接还在用旧段"
 		return nil
 	}
 
-	text, err := fetchSourceText(ctx, u)
-	if err != nil {
-		return fmt.Errorf("v6 段链接拉取失败（%s）：%w", u, err)
+	allCIDRs := make([]string, 0, 64)
+	seenCIDR := make(map[string]bool, 64)
+	var failed []string
+	for _, u := range urls {
+		text, err := fetchSourceText(ctx, u)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s（拉取失败：%v）", u, err))
+			continue
+		}
+		cidrs, skipped := parseIPv6CIDRs(text)
+		if len(cidrs) == 0 {
+			failed = append(failed, fmt.Sprintf("%s（内容里一个合法的 IPv6 段都没有%s）",
+				u, sampleHint(skipped)))
+			continue
+		}
+		for _, c := range cidrs {
+			if seenCIDR[c] {
+				continue
+			}
+			seenCIDR[c] = true
+			allCIDRs = append(allCIDRs, c)
+		}
 	}
-	cidrs, skipped := parseIPv6CIDRs(text)
-	if len(cidrs) == 0 {
-		return fmt.Errorf("v6 段链接里没认出 IPv6 段（%s）：%s%s",
-			u,
-			"内容里一个合法的 CIDR 都没有",
-			sampleHint(skipped))
+	if len(allCIDRs) == 0 {
+		return fmt.Errorf("v6 段链接一个都没用上：%s", strings.Join(failed, "；"))
 	}
-	nodes := sampleFromIPv6CIDRs(cidrs, ipv6PerPrefix)
+
+	nodes := sampleFromIPv6CIDRs(allCIDRs, ipv6PerPrefix)
 	s.mu.Lock()
 	s.v6CandText = strings.Join(nodes, "\n") + "\n"
 	s.v6CandStaged = true
 	s.mu.Unlock()
 	s.appendLog(fmt.Sprintf(
-		"v6 探测来源链接解析完成（%s）：认出 %d 个 IPv6 段、生成 %d 个候选地址%s",
-		u, len(cidrs), len(nodes), sampleHint(skipped)))
+		"v6 测速来源解析完成：%d 个链接 → 认出 %d 个 IPv6 段 → 生成 %d 个候选地址",
+		len(urls), len(allCIDRs), len(nodes)))
+	// 有链接失败但不影响这一轮：单独说清楚是哪几条，别让用户以为全都生效了。
+	if len(failed) > 0 {
+		s.appendLog(fmt.Sprintf("v6 测速来源里有 %d 条没用上：%s",
+			len(failed), strings.Join(failed, "；")))
+	}
 	return nil
 }
 
@@ -200,6 +168,34 @@ func (s *Server) handleIPv6Probe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
 
+// v6TopN 返回 v6 那一轮要保留多少条结果——和 IPv4 共用「保留候选 IP 数」。
+//
+// 为什么要共用：那一栏的语义是「这批候选留几条给我选」，IPv4 和 IPv6 是
+// 同一个问题的两个族，各留一个数只会让人困惑（用户原话：「设置时显示 10 个，
+// 就是显示 10 个；设置 5 个，就是显示 5 个」）。概览页两张表的行数也因此一致。
+func (s *Server) v6TopN() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg != nil && s.cfg.Speed.TopN > 0 {
+		return s.cfg.Speed.TopN
+	}
+	return 5 // 和 config 的默认值一致；以前 v6 这边写死 10，那是另一个数
+}
+
+// v6BandwidthCandidates 是 v6 这一轮「先按延迟筛几条去真下载测速」。
+//
+// 以前写死 30。改成跟着 TopN 走（但不低于 30）：TopN 调到 30 以上时，如果
+// 仍然只测 30 条，结果表就永远到不了用户要的条数，看起来像「设置没生效」。
+// 不直接跟 Speed.BandwidthCandidates（默认 100）：v6 的候选池只有两千多条、
+// 下载并发又只有 3，照搬 100 会让手动探测慢到没法用来试链接。
+func (s *Server) v6BandwidthCandidates() int {
+	n := s.v6TopN()
+	if n < 30 {
+		return 30
+	}
+	return n
+}
+
 // runIPv6Probe 真正跑 v6 探测，**返回这一轮的 v6 IP 列表**（按质量排序）。
 //
 // 调用前必须已经 claimIPv6Probe 占到坑，结束时由它自己释放。
@@ -233,8 +229,8 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	defer s.unstageIPv6Candidates()
 
 	res, err := engine.Run(ctx, s.enginePath, probeDir, engine.Options{
-		TopN:                10,
-		BandwidthCandidates: 30,
+		TopN:                s.v6TopN(),
+		BandwidthCandidates: s.v6BandwidthCandidates(),
 		CandidatesURL:       s.selfURL + "/api/ipv6/candidates",
 		UseBuiltinSources:   false, // 只用我们喂的 v6 候选，不叠加 v4 聚合源
 		// 按用户定稿的决定②：探测阶段就关掉"过滤 ipv6_only 出口"的开关，

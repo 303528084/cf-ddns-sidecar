@@ -165,14 +165,20 @@ type Config struct {
 	Speed      SpeedConfig           `json:"speed"`
 	DDNS       DDNSConfig            `json:"ddns"`
 
-	// IPv6ProbeURL 是「Cloudflare IPv6 节点探测」单独用的 IPv6 段列表链接。
+	// IPv6ProbeURL 是 v6 测速用的 IPv6 段来源，**一行一个链接**。
+	//
+	// 为什么是一个多行字符串而不是 []string：这一栏原来只收一个链接，字段和
+	// json 键（ipv6_probe_url）都已经写进了用户的 config.json 和备份文件。
+	// 换类型等于所有老配置都要迁移，而多行字符串天然向后兼容——老值里没有换行，
+	// 拆出来就是一条。想取链接列表用 IPv6SourceURLs()，别自己 split。
 	//
 	// 为什么不塞进 Speed.ExtraSources：那里是 IPv4 主测速的来源，解析器只认
 	// IPv4 地址（nodeTokenRe / To4 判断）。v6 段混进去会被静默丢掉，用户看到
-	// 的就是「我明明填了，探测还是只用那一个内置段」。两条链路各自存各自的，
+	// 的就是「我明明填了，测速还是只用那一个内置段」。两条链路各自存各自的，
 	// 改这里不会影响主测速，也不会动 AdGuard / DDNS 的任何写入。
 	//
-	// 空串 = 没设置，探测回退到内置的 CF v6 段（v1.6.7 行为）。
+	// 空 = 自动测速不跑 v6（只测 IPv4）；手动点「开始探测」时仍会回退到
+	// 内置的 CF v6 段（v1.6.7 行为）。
 	IPv6ProbeURL string `json:"ipv6_probe_url,omitempty"`
 
 	// 运行状态（持久化便于重启后回显）
@@ -365,6 +371,26 @@ func NormalizeDomain(s string) string {
 	}
 	s = strings.TrimSuffix(s, ".")
 	return s
+}
+
+// IPv6SourceURLs 把 v6 段来源按行拆成链接列表。
+//
+// 规则和「优选 IP 段」那边保持一致：一行一个，空行和 # 开头的注释行跳过。
+// 返回的每条都已 trim，顺序保持原样（先填的先拉，日志里按这个顺序报错）。
+//
+// 为什么要有这个方法、而不是各处自己 strings.Split：判断「用户到底填没填」
+// 分散在好几个地方（自动流程要不要跑 v6、探测要不要去拉、界面提示怎么写），
+// 每处都自己拆一次迟早会出现「这里认为填了、那里认为没填」的分歧。
+func (c *Config) IPv6SourceURLs() []string {
+	var out []string
+	for _, line := range strings.Split(c.IPv6ProbeURL, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // Save 原子写回磁盘。
