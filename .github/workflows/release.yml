@@ -145,3 +145,64 @@ jobs:
           files: |
             dist-fpk/*.fpk
           fail_on_unmatched_files: true
+
+      # 发完顺手把旧版本清掉，只留最近 3 个。
+      #
+      # 为什么放进工作流而不是手工清：2026-11-18 手工清过一次（删了 22 个 Release +
+      # 23 个 tag），但每发一版就又攒一个，迟早还得再清一遍。规则是确定的
+      # （「只留最近 3 个」），没有理由每次都靠人记着。
+      #
+      # 为什么 continue-on-error：这一步是收尾杂活，失败不应把一次成功的发版
+      # 标成失败——那会让人以为包没打出来。失败时这一步本身仍然显示为失败，
+      # 看得到，不会静默。
+      - name: 清理旧 Release（只留最近 3 个）
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // 只动「形如 vX.Y.Z 的正式发布」。draft、prerelease、以及别的命名
+            // 的 tag 一概不碰——宁可少删，不能误删。
+            //
+            // 排序按语义化版本比数字，不是比字符串：字符串比会把 v1.10.0 排到
+            // v1.9.0 后面，那样被删掉的恰好是更新的那个。
+            const KEEP = 3;
+            const currentTag = '${{ steps.ver.outputs.tag }}';
+
+            const parse = (t) => {
+              const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(t || '');
+              return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+            };
+            const cmpDesc = (a, b) => (b[0] - a[0]) || (b[1] - a[1]) || (b[2] - a[2]);
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const all = await github.paginate(
+              github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const plain = all.filter((r) => !r.draft && !r.prerelease && parse(r.tag_name));
+            plain.sort((a, b) => cmpDesc(parse(a.tag_name), parse(b.tag_name)));
+
+            // 无条件保住刚发的这一版。万一以后给老版本补发（比如给 v1.6.x 出个
+            // 修复），它按版本号排不进前 3，不能被自己的清理逻辑当场删掉。
+            const keep = new Set(plain.slice(0, KEEP).map((r) => r.tag_name));
+            if (currentTag) keep.add(currentTag);
+
+            const doomed = plain.filter((r) => !keep.has(r.tag_name));
+            core.info(`正式 Release 共 ${plain.length} 个；保留 ${[...keep].join(', ') || '(无)'}；待删 ${doomed.length} 个`);
+            if (doomed.length === 0) {
+              core.info('没有需要清理的');
+              return;
+            }
+
+            for (const r of doomed) {
+              core.info(`删除 Release ${r.tag_name}（id ${r.id}，附件 ${r.assets.length} 个）`);
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: r.id });
+              try {
+                await github.rest.git.deleteRef({ owner, repo, ref: `tags/${r.tag_name}` });
+                core.info(`  已删 tag ${r.tag_name}`);
+              } catch (e) {
+                // Release 删了、tag 没删掉不是致命的，但得说一声：下次给同一个
+                // 版本号发版会撞上已存在的 tag。
+                core.warning(`  删 tag ${r.tag_name} 失败（Release 已删）：${e.message}`);
+              }
+            }
+            core.info(`清理完成，删掉 ${doomed.length} 个旧版本`);
