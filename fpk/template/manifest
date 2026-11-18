@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=IPv6 第一步探测：概览页「本机 IPv6 检测」卡片新增「Cloudflare IPv6 节点探测」按钮，可从 CF 官方 v6 段挑节点测速、看速度和延迟，用来判断你的网络值不值得做 AAAA 解析。只测不写——不改动任何解析、AdGuard 或原有测速结果，原有 IPv4 优选功能一行未变
+changelog=IPv6 探测可填自己的 v6 段链接（下载后认出 IPv6 段挑节点，不再只用内置那一段，仍只测不写）；机房位置探测改用测速同款域名+失败重试，减少「位置未知」，保留 10 条时后几条也会探测；国家代码 4 处改成可搜索下拉多选；设置对勾改滑块、拨一下立即保存生效
 disable_authorization_path=true

@@ -369,6 +369,37 @@ func randomIPv6(p ipv6Prefix) netip.Addr {
 	return netip.AddrFrom16(b)
 }
 
+// parseIPv6CIDRs 从「外部链接下载到的正文」里挑出 IPv6 段。
+//
+// 和 parseExtraSources / addToken 是两条完全独立的解析路：那条只认 IPv4
+// （net.ParseCIDR 之后还要求 To4() 非空），把 v6 段交过去会被静默丢掉，
+// 用户就会看到「链接明明填了，探测还是只用那一个内置段」。
+//
+// 这里仍复用 tokenize 做宽容切分——用户贴的列表常混着中文说明、逗号、
+// 分号和 # 注释；认不出的 token 只记下来做日志，不让整批作废。
+// RFC 3849 的文档示例段 2001:db8::/32 直接排除：它不可能路由到 CF，
+// 采样进去只是白花测速时间（真机 IPv6 阶段①就碰到过一次）。
+func parseIPv6CIDRs(text string) (cidrs []string, skipped []string) {
+	docPrefix := netip.MustParsePrefix("2001:db8::/32")
+	seen := make(map[string]bool)
+	for _, tok := range tokenize(text) {
+		p, err := netip.ParsePrefix(tok)
+		if err != nil || !p.Addr().Is6() || p.Overlaps(docPrefix) {
+			if len(skipped) < 5 {
+				skipped = append(skipped, tok)
+			}
+			continue
+		}
+		key := p.Masked().String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		cidrs = append(cidrs, key)
+	}
+	return cidrs, skipped
+}
+
 // candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。
 //
 // 三种情形，语义必须清楚区分：

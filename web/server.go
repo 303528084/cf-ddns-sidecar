@@ -138,6 +138,13 @@ type Server struct {
 	v6ProbeNodes   []engine.Node
 	v6ProbeAt      time.Time
 	v6ProbeErr     string
+	// v6CandText / v6CandStaged 和主测速的 candText 是同一个套路：
+	// 用户在探测卡片里填的链接必须在**开跑前**下载解析一次，不能等引擎
+	// 来拉候选时再下——引擎会重试、可能请求多次，每来一次就重新下载
+	// 一遍外部站点，既慢又容易被对方限流。标志位是为了区分「没暂存」
+	// 和「暂存了一段空文本」（链接里一个 v6 段都没有）。
+	v6CandText   string
+	v6CandStaged bool
 }
 
 // New 构造后台服务。selfURL 形如 http://127.0.0.1:8080，供测速引擎拉取候选列表。
@@ -190,6 +197,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
 	mux.HandleFunc("/api/config", s.auth(s.handleConfig))
+	mux.HandleFunc("/api/switch", s.auth(s.handleSwitch))
 	mux.HandleFunc("/api/config/export", s.auth(s.handleExport))
 	mux.HandleFunc("/api/config/import", s.auth(s.handleImport))
 	mux.HandleFunc("/api/credentials", s.auth(s.handleCredentials))
@@ -210,6 +218,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ipv6/candidates", s.candidatesGuard)
 	mux.HandleFunc("/api/ipv6/probe", s.auth(s.handleIPv6Probe))
 	mux.HandleFunc("/api/ipv6/probe/result", s.auth(s.handleIPv6ProbeResult))
+	// v6 段链接单独存：只改这一个字段，不经过 /api/config 那套全量保存。
+	mux.HandleFunc("/api/ipv6/source", s.auth(s.handleIPv6Source))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
 	// 所以即使所有外部数据源都不可达，测速依然能跑。
@@ -700,6 +710,7 @@ type configResp struct {
 	Candidates      int         `json:"bandwidth_candidates"`
 	IntervalMinutes int         `json:"interval_minutes"`
 	ExtraSources    []string    `json:"extra_sources"`
+	IPv6ProbeURL    string      `json:"ipv6_probe_url"`
 	DDNSEnabled     bool        `json:"ddns_enabled"`
 	DDNSProvider    string      `json:"ddns_provider"`
 	DDNSDomain      string      `json:"ddns_domain"`
@@ -733,6 +744,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Candidates:      c.Speed.BandwidthCandidates,
 			IntervalMinutes: c.Speed.IntervalMinutes,
 			ExtraSources:    c.Speed.ExtraSources,
+			IPv6ProbeURL:    c.IPv6ProbeURL,
 			DDNSEnabled:     c.DDNS.Enabled,
 			DDNSProvider:    c.DDNS.Provider,
 			DDNSDomain:      c.DDNS.Domain,
@@ -1292,7 +1304,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 	//
 	// 用独立于测速的 ctx：测速的预算已经快用完时，沿用它会一条都探不出去，
 	// 那这行日志就成了「探测不到」，反而误导。
-	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitBudget)
+	// 预算按实际结果条数算：10 条要跑两轮，固定的 8 秒会在第二轮被打断。
+	_, exitAllowance := exitProbePlan(len(res.IPs))
+	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
 	colos := s.logExitCountries(exitCtx, res.IPs)
 	exitCancel()
 

@@ -139,6 +139,16 @@ type Config struct {
 	Speed      SpeedConfig           `json:"speed"`
 	DDNS       DDNSConfig            `json:"ddns"`
 
+	// IPv6ProbeURL 是「Cloudflare IPv6 节点探测」单独用的 IPv6 段列表链接。
+	//
+	// 为什么不塞进 Speed.ExtraSources：那里是 IPv4 主测速的来源，解析器只认
+	// IPv4 地址（nodeTokenRe / To4 判断）。v6 段混进去会被静默丢掉，用户看到
+	// 的就是「我明明填了，探测还是只用那一个内置段」。两条链路各自存各自的，
+	// 改这里不会影响主测速，也不会动 AdGuard / DDNS 的任何写入。
+	//
+	// 空串 = 没设置，探测回退到内置的 CF v6 段（v1.6.7 行为）。
+	IPv6ProbeURL string `json:"ipv6_probe_url,omitempty"`
+
 	// 运行状态（持久化便于重启后回显）
 	LastIP   string `json:"last_ip,omitempty"`
 	LastTime string `json:"last_time,omitempty"`

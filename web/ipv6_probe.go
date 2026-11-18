@@ -13,22 +13,94 @@ package web
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
-// handleIPv6Candidates 给探测用的测速引擎喂 CF v6 候选。
-// 固定采样 cloudflareIPv6（2606:4700::/32），不读用户配置、不依赖暂存，
-// 因此和主测速的 /api/candidates 互不干扰。
+// handleIPv6Source 读写「v6 段链接」这个独立设置。
+//
+// 为什么不做成 /api/config 的一个字段：那个接口是全量保存，前端每次保存
+// 都要提交十几个字段；而这里是探测卡片里的一个独立输入框，点一下只改这一项。
+// 两者共用同一个 config.json，但写入路径分开，互不覆盖。
+func (s *Server) handleIPv6Source(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		u := s.cfg.IPv6ProbeURL
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": u})
+	case http.MethodPost:
+		var body struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求格式错误"})
+			return
+		}
+		u := strings.TrimSpace(body.URL)
+		if u != "" {
+			parsed, err := url.Parse(u)
+			if err != nil || parsed.Host == "" ||
+				(parsed.Scheme != "http" && parsed.Scheme != "https") {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "链接要以 http:// 或 https:// 开头，并且带上域名",
+				})
+				return
+			}
+		}
+
+		s.mu.Lock()
+		cfg := s.cfg.Clone()
+		s.mu.Unlock()
+		cfg.IPv6ProbeURL = u
+		// 先落盘再改内存：写失败时界面显示的还是旧值，不会"以为存上了"。
+		if err := cfg.Save(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "保存失败: " + friendlyErr(err),
+			})
+			return
+		}
+		s.mu.Lock()
+		s.cfg = &cfg
+		s.mu.Unlock()
+		if u == "" {
+			s.appendLog("IPv6 探测来源链接已清空，恢复用内置 CF v6 段")
+		} else {
+			s.appendLog("IPv6 探测来源链接已保存：" + u)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": u})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleIPv6Candidates 给探测用的测速引擎喂 v6 候选。
+//
+// 两种来源：用户填了段链接就返回开跑前解析好的暂存内容；没填才回退到
+// 内置的 CF v6 段（v1.6.7 行为）。和主测速的 /api/candidates 完全隔离——
+// 这里给的地址永远只用于探测，不会进 res.IPs，更不会写 AdGuard / DDNS。
 func (s *Server) handleIPv6Candidates(w http.ResponseWriter, r *http.Request) {
 	count := atoiDefault(r.URL.Query().Get("n"), candidateCount)
 	if count > 3000 {
 		count = 3000
 	}
+	s.mu.Lock()
+	text, staged := s.v6CandText, s.v6CandStaged
+	s.mu.Unlock()
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if staged {
+		_, _ = w.Write([]byte(text))
+		return
+	}
 	_, _ = w.Write([]byte(candidatesTextFromIPv6(count)))
 }
 
@@ -40,6 +112,49 @@ func candidatesTextFromIPv6(count int) string {
 		s += node + "\n"
 	}
 	return s
+}
+
+// stageIPv6Candidates 在探测开跑前把用户填的 v6 段链接下载解析一次。
+//
+// 为什么不在 handleIPv6Candidates 里现场下载：引擎会重试、也可能请求多次，
+// 每来一次就下一遍外部站点，既慢又容易被对方限流（主测速的 candText 同样是
+// 这个道理）。失败原因直接返回给 runIPv6Probe 写进 v6ProbeErr——用户看到的是
+// "链接拉取失败（HTTP 404）"这种能动手修的话，而不是笼统的"没有产出可用 IP"。
+func (s *Server) stageIPv6Candidates(ctx context.Context) error {
+	s.mu.Lock()
+	u := strings.TrimSpace(s.cfg.IPv6ProbeURL)
+	s.mu.Unlock()
+	if u == "" {
+		s.unstageIPv6Candidates() // 清掉上一次的暂存，避免"删了链接还在用旧段"
+		return nil
+	}
+
+	text, err := fetchSourceText(ctx, u)
+	if err != nil {
+		return fmt.Errorf("v6 段链接拉取失败（%s）：%w", u, err)
+	}
+	cidrs, skipped := parseIPv6CIDRs(text)
+	if len(cidrs) == 0 {
+		return fmt.Errorf("v6 段链接里没认出 IPv6 段（%s）：%s%s",
+			u,
+			"内容里一个合法的 CIDR 都没有",
+			sampleHint(skipped))
+	}
+	nodes := sampleFromIPv6CIDRs(cidrs, candidateCount)
+	s.mu.Lock()
+	s.v6CandText = strings.Join(nodes, "\n") + "\n"
+	s.v6CandStaged = true
+	s.mu.Unlock()
+	s.appendLog(fmt.Sprintf(
+		"v6 探测来源链接解析完成（%s）：认出 %d 个 IPv6 段、生成 %d 个候选地址%s",
+		u, len(cidrs), len(nodes), sampleHint(skipped)))
+	return nil
+}
+
+func (s *Server) unstageIPv6Candidates() {
+	s.mu.Lock()
+	s.v6CandText, s.v6CandStaged = "", false
+	s.mu.Unlock()
 }
 
 // handleIPv6Probe 触发一次 v6 探测，立即返回；探测在后台协程里跑。
@@ -73,6 +188,17 @@ func (s *Server) runIPv6Probe() {
 	defer cancel()
 
 	probeDir := filepath.Join(s.workDir, "ipv6-probe")
+	// 用户填了链接就在这里下载解析一次；失败要马上说清原因，不进测速环节
+	// ——否则用户只会看到"测速没有产出可用 IP"，根本不知道是链接填错了。
+	if err := s.stageIPv6Candidates(ctx); err != nil {
+		s.mu.Lock()
+		s.v6ProbeErr = err.Error()
+		s.v6ProbeNodes = nil
+		s.mu.Unlock()
+		return
+	}
+	defer s.unstageIPv6Candidates()
+
 	res, err := engine.Run(ctx, s.enginePath, probeDir, engine.Options{
 		TopN:                10,
 		BandwidthCandidates: 30,

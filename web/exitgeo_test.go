@@ -2,10 +2,12 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -149,6 +151,54 @@ func TestTraceViaLocalServer(t *testing.T) {
 	}
 }
 
+// TestTraceThroughHostsFallback 验证「主域名失败→换备用域名补一次」这条路径。
+// 本机连不上真 Cloudflare，用本地 TLS 服务器按 Host 头区分两个域名：
+// main.local 故意返回 500，fb.local 返回正常 trace。穿过的是同一个本地 IP，
+// 只是 SNI/Host 不同——正好复刻真机上「主域名不通、备用能通」的情形。
+func TestTraceThroughHostsFallback(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "main.local" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("loc=JP\ncolo=NRT\n"))
+	}))
+	defer srv.Close()
+
+	addr, ok := srv.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("拿不到监听端口: %T", srv.Listener.Addr())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), traceTimeout+traceFallbackTimeout)
+	defer cancel()
+	loc, colo, err := traceThroughHosts(ctx, "127.0.0.1", addr.Port, "main.local", "fb.local")
+	if err != nil {
+		t.Fatalf("主域名失败后换备用应成功，却报错: %v", err)
+	}
+	if loc != "JP" || colo != "NRT" {
+		t.Fatalf("得到 %q/%q，期望 JP/NRT", loc, colo)
+	}
+}
+
+// TestTraceThroughHostsAllFail 两个域名都失败时必须如实报错，不能编一个机房出来。
+func TestTraceThroughHostsAllFail(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	addr, ok := srv.Listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("拿不到监听端口: %T", srv.Listener.Addr())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), traceTimeout+traceFallbackTimeout)
+	defer cancel()
+	_, _, err := traceThroughHosts(ctx, "127.0.0.1", addr.Port, "main.local", "fb.local")
+	if err == nil {
+		t.Fatal("两个域名都返回 500，却没报错")
+	}
+}
+
 // TestLogExitCountriesNoIP 没有结果时一个字都不该写。
 // 否则一次失败的重试也会留下「各节点实际出口：」这种半句话。
 func TestLogExitCountriesNoIP(t *testing.T) {
@@ -185,5 +235,86 @@ func TestLogExitCountriesDeadline(t *testing.T) {
 	}
 	if strings.Contains(logs[0], "→JP") || strings.Contains(logs[0], "→US") {
 		t.Fatalf("探测失败却编了一个国家出来: %q", logs[0])
+	}
+}
+
+// TestExitProbePlan 探测条数必须跟结果条数走，并且封顶；预算按并发轮数给够。
+// 以前写死 5 条、固定 8 秒，结果一多就既漏探又超时。
+func TestExitProbePlan(t *testing.T) {
+	cases := []struct {
+		total      int
+		wantN      int
+		wantBudget time.Duration
+	}{
+		{0, 0, 0},
+		{5, 5, 14 * time.Second},   // 一轮：主 8 + 备 4 + 2 秒余量
+		{8, 8, 14 * time.Second},   // 8 个并发刚好一轮
+		{10, 10, 26 * time.Second}, // 两轮
+		{20, 20, 38 * time.Second}, // 三轮，正好到上限
+		{100, 20, 38 * time.Second},
+	}
+	for _, tc := range cases {
+		gotN, gotBudget := exitProbePlan(tc.total)
+		if gotN != tc.wantN || gotBudget != tc.wantBudget {
+			t.Errorf("exitProbePlan(%d) = (%d, %v)，期望 (%d, %v)",
+				tc.total, gotN, gotBudget, tc.wantN, tc.wantBudget)
+		}
+	}
+}
+
+// TestLogExitCountriesProbeCount 回归用户报的问题：
+// 「保留候选 IP 数」设成 10 时，后 5 条不能再是「位置未知」。
+func TestLogExitCountriesProbeCount(t *testing.T) {
+	old := traceThrough
+	defer func() { traceThrough = old }()
+	var calls atomic.Int32
+	traceThrough = func(_ context.Context, _ string, _ int) (string, string, error) {
+		calls.Add(1)
+		return "JP", "NRT", nil
+	}
+
+	ips := make([]string, 10)
+	for i := range ips {
+		ips[i] = fmt.Sprintf("127.0.0.%d", i+1)
+	}
+	s := newTestServer("pw")
+	colos := s.logExitCountries(context.Background(), ips)
+
+	if got := int(calls.Load()); got != 10 {
+		t.Fatalf("10 个结果应探 10 次，实际 %d 次", got)
+	}
+	for _, ip := range ips {
+		if colos[ip] != "NRT" {
+			t.Errorf("%s 没拿到机房代码，界面会显示位置未知：%q", ip, colos[ip])
+		}
+	}
+}
+
+// TestLogExitCountriesCap 超过上限时只探前 20 个，并在日志里说清楚，
+// 不能让后半段无声无息地变成「位置未知」。
+func TestLogExitCountriesCap(t *testing.T) {
+	old := traceThrough
+	defer func() { traceThrough = old }()
+	var calls atomic.Int32
+	traceThrough = func(_ context.Context, _ string, _ int) (string, string, error) {
+		calls.Add(1)
+		return "JP", "NRT", nil
+	}
+
+	ips := make([]string, 100)
+	for i := range ips {
+		ips[i] = fmt.Sprintf("10.0.0.%d", i+1)
+	}
+	s := newTestServer("pw")
+	s.logExitCountries(context.Background(), ips)
+
+	if got := int(calls.Load()); got != exitProbesMax {
+		t.Fatalf("应只探 %d 次，实际 %d 次", exitProbesMax, got)
+	}
+	s.mu.Lock()
+	logs := append([]string(nil), s.logs...)
+	s.mu.Unlock()
+	if !strings.Contains(strings.Join(logs, " "), fmt.Sprintf("只探前 %d 个", exitProbesMax)) {
+		t.Fatalf("超过上限却没有日志说明，实际日志：%v", logs)
 	}
 }

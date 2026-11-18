@@ -490,6 +490,9 @@
        靠左放，和上面的标签对齐。数字框本来就是 100% 宽，不受影响。 */
     .adv-row{justify-items:start}
     .adv-row input[type=text],.adv-row input[type=number],.adv-row select{width:100%}
+    /* 国家下拉面板在手机上改成整行宽，不能顶出屏幕右边。 */
+    .cs-wrap{width:100%}
+    .cs-panel{left:0;right:auto;width:100%}
   }
 
   /* ---------- 本机 IPv6 检测（只读） ----------
@@ -523,6 +526,46 @@
   .v6-probe-row .addr{font-family:var(--mono);font-size:12px;color:var(--text);
     word-break:break-all;flex:1;min-width:0}
   .v6-probe-row .q{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  /* v6 段链接：和主测速的「优选 IP 段」分开存，只喂探测这一条路。
+     基础控件样式已在上面全局定义，这里只负责并排和窄屏换行。 */
+  .v6-probe-src{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .v6-probe-src input[type=text]{flex:1;min-width:180px;font-family:var(--mono);font-size:12px;padding:7px 10px}
+  .v6-probe-src .msg{flex:1 1 100%;font-size:11.5px;color:var(--muted);line-height:1.6}
+  .v6-probe-src .msg:empty{display:none}
+  /* 国家代码多选下拉：kind=countries 的四项专用，不让人手填两字母代码。
+     面板挂在按钮下方、浮在内容之上，不能把下面的保存按钮挤走。 */
+  .cs-wrap{position:relative;width:152px}
+  .cs-btn{width:100%;text-align:left;padding:6px 9px;border:1px solid var(--line2);border-radius:8px;
+    background:var(--bg);color:var(--text);font-size:12px;cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cs-btn:hover{border-color:var(--accent)}
+  .cs-panel{position:absolute;right:0;top:calc(100% + 4px);z-index:40;width:250px;
+    max-height:300px;overflow:auto;background:var(--bg);border:1px solid var(--line2);
+    border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.20);padding:8px}
+  .cs-panel.hidden{display:none}
+  .adv-row .cs-panel .cs-search{width:100%;margin:0 0 6px;font-size:12px}
+  .cs-list label{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;
+    font-size:12.5px;cursor:pointer}
+  .cs-list label:hover{background:var(--line2)}
+  /* 开关滑块：把原来的对勾复选框画成滑块，不改 DOM 结构（input 还是 checkbox，
+      Accessibility 和可点区域都保留）。appearance:none 后自己画轨道和圆点。
+      input.tgl[type=checkbox] 的特性和 .adv-row input[type=checkbox] 相同，
+     但这段定义在后面，所以能盖住那条 width:auto。 */
+  input.tgl[type=checkbox]{
+    -webkit-appearance:none;appearance:none;
+    position:relative;flex:none;width:36px;height:20px;margin:0;
+    border:1px solid var(--line2);border-radius:11px;
+    background:var(--line2);cursor:pointer;
+    transition:background .18s,border-color .18s;
+  }
+  input.tgl[type=checkbox]::before{
+    content:"";position:absolute;top:2px;left:2px;
+    width:14px;height:14px;border-radius:50%;background:#fff;
+    box-shadow:0 1px 3px rgba(0,0,0,.28);transition:transform .18s;
+  }
+  input.tgl[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+  input.tgl[type=checkbox]:checked::before{transform:translateX(16px)}
+  input.tgl[type=checkbox]:focus-visible{box-shadow:0 0 0 3px rgba(59,91,219,.28)}
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -771,8 +814,14 @@
           <div class="v6-probe">
             <div class="v6-probe-h">
               <b>Cloudflare IPv6 节点探测</b>
-              <span class="hint">选测：从 CF 官方 v6 段里挑节点跑一次测速，看看 v6 到底快不快</span>
+              <span class="hint">选测：从你填的链接（没填则用 CF 官方 v6 段）里挑地址跑一次测速，只测不写</span>
               <button class="btn sm flat" id="btn-v6probe" onclick="probeIPv6()">开始探测</button>
+            </div>
+            <div class="v6-probe-src">
+              <input type="text" id="v6probe-url" placeholder="链接返回 IPv6 段，例如 2606:4700::/32"
+                     spellcheck="false" autocapitalize="off" autocomplete="off">
+              <button class="btn sm flat" onclick="saveIPv6Source()">保存链接</button>
+              <div class="msg" id="v6probe-src-msg"></div>
             </div>
             <div class="v6-probe-note" id="v6probe-note">还没探测。点「开始探测」跑一次——只测速、不写任何解析。</div>
             <div id="v6probe-list"></div>
@@ -796,7 +845,7 @@
               <button class="btn primary sm" id="dom-add" onclick="doAddDomain()" disabled>添加</button>
             </div>
             <label class="wild">
-              <input type="checkbox" id="dom-wild" onchange="syncWildTag()">
+              <input type="checkbox" class="tgl" id="dom-wild" onchange="syncWildTag()">
               同时匹配所有子域名
               <span class="wtag" id="dom-wild-tag">*.你的域名</span>
             </label>
@@ -852,8 +901,8 @@
         <div class="card-h"><h2>域名解析（DDNS）</h2><span class="sub">把最优 IP 写到你的域名</span></div>
         <div class="card-b">
           <div class="field switch">
-            <input type="checkbox" id="dd-enabled" onchange="renderProvider()">
-            <label for="dd-enabled">启用（测速后自动更新 A 记录）</label>
+              <input type="checkbox" class="tgl" id="dd-enabled" onchange="renderProvider();onToggle('ddns_enabled',this.checked,this)">
+              <label for="dd-enabled">启用（测速后自动更新 A 记录）</label>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -896,7 +945,7 @@
 
           <div class="field" id="dd-proxied-box">
             <div class="switch">
-              <input type="checkbox" id="dd-proxied">
+              <input type="checkbox" class="tgl" id="dd-proxied" onchange="onToggle('ddns_proxied',this.checked,this)">
               <label for="dd-proxied">开启 Cloudflare 云朵（代理）</label>
             </div>
             <div class="hint">
@@ -933,7 +982,7 @@
             <div class="field">
               <label>保留候选 IP 数</label>
               <input type="number" id="sp-topn" min="1" placeholder="5">
-              <div class="hint">候选数越大，失败时可切换的备选越多。</div>
+              <div class="hint">候选数越大，失败时可切换的备选越多。机房位置只显示前 20 条。</div>
             </div>
             <div class="field">
               <label>进入带宽测速的候选数</label>
@@ -1492,6 +1541,7 @@ async function loadConfig() {
   $("sp-topn").value = c.top_n;
   $("sp-bw").value = c.bandwidth_candidates || 100;
   $("sp-sources").value = (c.extra_sources || []).join("\n");
+  $("v6probe-url").value = c.ipv6_probe_url || "";
   renderAdvanced(c);
   $("dd-enabled").checked = !!c.ddns_enabled;
   $("dd-provider").value = c.ddns_provider || "cloudflare";
@@ -1509,6 +1559,127 @@ async function loadConfig() {
 // 或者前端显示了一个后端根本不认的开关，用户改了没反应还查不出原因。
 // 问号里的说明文字同样来自后端，只写一处。
 let ADV = { specs: [], values: {} };
+
+// 国家代码对照表：引擎按两字母代码筛节点，手填很容易写错（香港是 HK、不是 XG）。
+// 这四项一律改成「点开 → 勾国家」，列表里同时给中文名和代码，不用猜。
+// 中国香港 / 中国台湾 / 中国澳门按国内口径写。
+const COUNTRY_OPTIONS = [
+  ["CN","中国"], ["HK","中国香港"], ["TW","中国台湾"], ["MO","中国澳门"],
+  ["JP","日本"], ["KR","韩国"], ["SG","新加坡"], ["IN","印度"],
+  ["TH","泰国"], ["MY","马来西亚"], ["ID","印度尼西亚"], ["PH","菲律宾"],
+  ["VN","越南"], ["KH","柬埔寨"], ["LA","老挝"], ["MM","缅甸"],
+  ["KZ","哈萨克斯坦"], ["UZ","乌兹别克斯坦"], ["PK","巴基斯坦"], ["BD","孟加拉国"],
+  ["NP","尼泊尔"], ["LK","斯里兰卡"], ["MN","蒙古"], ["AF","阿富汗"],
+  ["IQ","伊拉克"], ["IR","伊朗"], ["KP","朝鲜"],
+  ["AE","阿联酋"], ["SA","沙特阿拉伯"], ["QA","卡塔尔"], ["KW","科威特"],
+  ["BH","巴林"], ["OM","阿曼"], ["IL","以色列"], ["JO","约旦"], ["LB","黎巴嫩"],
+  ["SY","叙利亚"], ["YE","也门"],
+  ["DE","德国"], ["FR","法国"], ["GB","英国"], ["NL","荷兰"], ["IT","意大利"],
+  ["ES","西班牙"], ["PT","葡萄牙"], ["CH","瑞士"], ["AT","奥地利"], ["BE","比利时"],
+  ["SE","瑞典"], ["NO","挪威"], ["DK","丹麦"], ["FI","芬兰"], ["IS","冰岛"],
+  ["PL","波兰"], ["CZ","捷克"], ["SK","斯洛伐克"], ["HU","匈牙利"], ["RO","罗马尼亚"],
+  ["BG","保加利亚"], ["GR","希腊"], ["IE","爱尔兰"], ["LU","卢森堡"], ["MT","马耳他"],
+  ["RU","俄罗斯"], ["UA","乌克兰"], ["BY","白俄罗斯"], ["TR","土耳其"], ["CY","塞浦路斯"],
+  ["RS","塞尔维亚"], ["HR","克罗地亚"], ["SI","斯洛文尼亚"], ["BA","波黑"], ["MK","北马其顿"],
+  ["AL","阿尔巴尼亚"], ["EE","爱沙尼亚"], ["LV","拉脱维亚"], ["LT","立陶宛"], ["MD","摩尔多瓦"],
+  ["GE","格鲁吉亚"], ["AM","亚美尼亚"], ["AZ","阿塞拜疆"],
+  ["US","美国"], ["CA","加拿大"], ["MX","墨西哥"], ["CR","哥斯达黎加"], ["PA","巴拿马"],
+  ["GT","危地马拉"], ["HN","洪都拉斯"], ["SV","萨尔瓦多"], ["NI","尼加拉瓜"], ["DO","多米尼加"],
+  ["CU","古巴"], ["JM","牙买加"],
+  ["BR","巴西"], ["AR","阿根廷"], ["CL","智利"], ["CO","哥伦比亚"], ["PE","秘鲁"],
+  ["UY","乌拉圭"], ["EC","厄瓜多尔"], ["VE","委内瑞拉"], ["BO","玻利维亚"], ["PY","巴拉圭"],
+  ["ZA","南非"], ["EG","埃及"], ["NG","尼日利亚"], ["KE","肯尼亚"], ["TZ","坦桑尼亚"],
+  ["MA","摩洛哥"], ["GH","加纳"], ["TN","突尼斯"], ["DZ","阿尔及利亚"], ["ET","埃塞俄比亚"],
+  ["UG","乌干达"], ["SN","塞内加尔"], ["CI","科特迪瓦"], ["CM","喀麦隆"], ["ZW","津巴布韦"],
+  ["BI","布隆迪"], ["CD","刚果（金）"], ["CF","中非共和国"], ["LY","利比亚"],
+  ["SD","苏丹"], ["SO","索马里"],
+  ["AU","澳大利亚"], ["NZ","新西兰"], ["FJ","斐济"]
+];
+
+function countryName(code) {
+  for (let i = 0; i < COUNTRY_OPTIONS.length; i++) {
+    if (COUNTRY_OPTIONS[i][0] === code) return COUNTRY_OPTIONS[i][1];
+  }
+  return code;
+}
+
+// 可多选的下拉：外层 div 带 data-opt，和原生 input 一样进 collectAdvanced。
+function makeCountryPicker(key, cur) {
+  const wrap = document.createElement("div");
+  wrap.className = "cs-wrap";
+  wrap.dataset.opt = key;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "cs-btn";
+  btn.setAttribute("aria-label", "选择国家，可多选");
+  wrap.appendChild(btn);
+
+  const panel = document.createElement("div");
+  panel.className = "cs-panel hidden";
+  const search = document.createElement("input");
+  search.type = "text";
+  search.className = "cs-search";
+  search.placeholder = "搜国家名或代码，如 日本 / JP";
+  panel.appendChild(search);
+  const list = document.createElement("div");
+  list.className = "cs-list";
+  COUNTRY_OPTIONS.forEach(function (item) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = item[0];
+    const txt = document.createElement("span");
+    txt.textContent = item[1] + " · " + item[0];
+    lab.appendChild(cb);
+    lab.appendChild(txt);
+    list.appendChild(lab);
+  });
+  panel.appendChild(list);
+  wrap.appendChild(panel);
+
+  btn.addEventListener("click", function () {
+    const opening = panel.classList.contains("hidden");
+    panel.classList.toggle("hidden", !opening);
+    if (opening) search.focus();
+  });
+  search.addEventListener("input", function () {
+    const q = search.value.trim().toLowerCase();
+    list.querySelectorAll("label").forEach(function (lab) {
+      lab.style.display = (!q || lab.textContent.toLowerCase().indexOf(q) >= 0) ? "" : "none";
+    });
+  });
+  list.addEventListener("change", function () { syncCountryLabel(wrap); });
+  setCountryPicker(wrap, cur);
+  return wrap;
+}
+
+function setCountryPicker(wrap, val) {
+  const raw = Array.isArray(val) ? val : String(val == null ? "" : val).split(/[,，\s]+/);
+  const codes = raw.map(function (x) { return String(x).trim().toUpperCase(); }).filter(Boolean);
+  // 导入的旧配置里可能有列表之外的代码。它们不能因为「界面上没这一项」就被清空。
+  const known = COUNTRY_OPTIONS.map(function (item) { return item[0]; });
+  wrap.dataset.extra = codes.filter(function (c) { return known.indexOf(c) < 0; }).join(",");
+  wrap.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+    cb.checked = codes.indexOf(cb.value) >= 0;
+  });
+  syncCountryLabel(wrap);
+}
+
+function syncCountryLabel(wrap) {
+  const picked = [];
+  wrap.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+    if (cb.checked) picked.push(cb.value);
+  });
+  const extra = wrap.dataset.extra ? wrap.dataset.extra.split(",").filter(Boolean) : [];
+  const all = picked.concat(extra);
+  const btn = wrap.querySelector(".cs-btn");
+  btn.textContent = !all.length ? "选择国家 ▾"
+    : all.length === 1 ? countryName(all[0]) + " " + all[0] + " ▾"
+    : countryName(all[0]) + " " + all[0] + " +" + (all.length - 1) + " ▾";
+  btn.title = all.length ? all.map(function (c) { return countryName(c) + " " + c; }).join("、")
+    : "点开选择国家，可多选";
+}
 
 function advIsSet(key) {
   return Object.prototype.hasOwnProperty.call(ADV.values, key);
@@ -1538,7 +1709,12 @@ function advRow(s) {
   if (s.kind === "bool") {
     ctl = document.createElement("input");
     ctl.type = "checkbox";
+    ctl.className = "tgl";
     ctl.checked = !!cur;
+    // 高级设置的开关点一下就单项保存生效，不用等「保存全部设置」。
+    ctl.addEventListener("change", function () {
+      onToggle(s.key, ctl.checked, ctl);
+    });
   } else if (s.kind === "level") {
     ctl = document.createElement("select");
     (s.options || []).forEach(function (o) {
@@ -1548,6 +1724,8 @@ function advRow(s) {
       ctl.appendChild(op);
     });
     ctl.value = cur;
+  } else if (s.kind === "countries") {
+    ctl = makeCountryPicker(s.key, cur);
   } else if (s.kind === "int" || s.kind === "float") {
     ctl = document.createElement("input");
     ctl.type = "number";
@@ -1611,7 +1789,18 @@ function collectAdvanced() {
     const key = el.dataset.opt;
     const spec = ADV.specs.filter(function (s) { return s.key === key; })[0];
     if (!spec) return;
-    if (spec.kind === "bool") {
+    if (spec.kind === "countries") {
+      // 多选：勾了几个就交几个代码。空数组也要交——用户主动清空就是「一个都不要」。
+      const picked = [];
+      el.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+        if (cb.checked) picked.push(cb.value);
+      });
+      // 旧配置里列表之外的代码原样带回去，别让保存变成静默清空。
+      if (el.dataset.extra) {
+        el.dataset.extra.split(",").filter(Boolean).forEach(function (c) { picked.push(c); });
+      }
+      out[key] = picked;
+    } else if (spec.kind === "bool") {
       out[key] = !!el.checked;
     } else if (spec.kind === "int") {
       const n = parseInt(el.value, 10);
@@ -1633,7 +1822,8 @@ function resetAdvanced() {
     const key = el.dataset.opt;
     const spec = ADV.specs.filter(function (s) { return s.key === key; })[0];
     if (!spec) return;
-    if (spec.kind === "bool") el.checked = !!spec.def;
+    if (spec.kind === "countries") setCountryPicker(el, spec.def);
+    else if (spec.kind === "bool") el.checked = !!spec.def;
     else el.value = advText(spec.def);
   });
   toast("已改回默认值，点「保存全部设置」才生效");
@@ -1694,13 +1884,33 @@ async function loadIPv6() {
 }
 
 // === CF v6 节点探测（阶段①：只测不写）===
+// 段链接单独存：点「保存链接」只改这一项，不走「保存全部设置」那套，
+// 免得为了一个链接把域名、DDNS、引擎参数一起重存一遍。
+async function saveIPv6Source() {
+  const input = $("v6probe-url"), msg = $("v6probe-src-msg");
+  if (!input || !msg) return;
+  const u = input.value.trim();
+  try {
+    const j = await api("/api/ipv6/source", {method: "POST", body: JSON.stringify({url: u})});
+    if (!j || !j.ok) throw new Error((j && j.error) || "保存失败");
+    msg.textContent = u
+      ? "已保存。下次探测会从这里挑 IPv6 段；留空后点保存即可恢复内置段。"
+      : "已清空。探测恢复用内置的 Cloudflare IPv6 段。";
+  } catch (e) {
+    msg.textContent = "保存失败：" + (e.message || String(e));
+  }
+}
+
 // 点一次触发探测（后端异步跑），这里每 3 秒轮询结果，跑完停。
 let v6ProbeTimer = null;
 async function probeIPv6() {
   const btn = $("btn-v6probe"), note = $("v6probe-note"), list = $("v6probe-list");
   if (!btn || !note) return;
   btn.disabled = true;
-  note.innerHTML = "正在从 Cloudflare 的 IPv6 段里挑节点测速…（只测不写，通常 1 分钟内）";
+  const srcURL = ($("v6probe-url") && $("v6probe-url").value.trim()) || "";
+  note.innerHTML = srcURL
+    ? "正在从你设置的链接里挑 IPv6 段测速…（只测不写，通常 1 分钟内）"
+    : "正在从 Cloudflare 的 IPv6 段里挑节点测速…（只测不写，通常 1 分钟内）";
   list.innerHTML = "";
   try {
     const start = await api("/api/ipv6/probe", {method: "POST"});
@@ -2305,6 +2515,44 @@ function toggleRewrites() {
   const box = $("rw-box"), toggle = $("rw-toggle");
   const hidden = box.classList.toggle("hidden");
   toggle.textContent = hidden ? "展开" : "收起";
+}
+
+// onToggle：开关点一下就单项保存。
+// key 两种：引擎参数名（高级设置里的开关）或 ddns_enabled / ddns_proxied。
+// 单项保存只改这一个字段，不碰界面上其他还没保存的输入框——这是「一点就生效」
+// 的前提：若走 saveAll 那套全量提交，会把别人改到一半的数字框一起存了。
+// 保存失败时把滑块拨回原样，避免"看着开了、其实没存上"。
+async function onToggle(key, value, el) {
+  const was = !value;
+  try {
+    await api("/api/switch", {
+      method: "POST",
+      body: JSON.stringify({ key: key, value: value })
+    });
+    // 同步「已改」标记：高级设置的开关来自 ADV.specs，值等于默认就撤掉标记。
+    const spec = ADV.specs.filter(function (s) { return s.key === key; })[0];
+    if (spec) {
+      const same = JSON.stringify(spec.def) === JSON.stringify(value);
+      if (same) delete ADV.values[key];
+      else ADV.values[key] = value;
+      const row = el.closest(".adv-row");
+      if (row) {
+        const lab = row.querySelector(".lab");
+        const old = lab && lab.querySelector(".chg");
+        if (same && old) old.remove();
+        else if (!same && lab && !old) {
+          const tag = document.createElement("span");
+          tag.className = "chg";
+          tag.textContent = "已改";
+          lab.appendChild(tag);
+        }
+      }
+    }
+    toast("已生效");
+  } catch (e) {
+    if (el) el.checked = was;
+    toast("保存失败：" + e.message);
+  }
 }
 
 async function saveAll() {

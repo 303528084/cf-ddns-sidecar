@@ -31,7 +31,7 @@ const (
 	KindText      OptKind = "text"      // 单行文本
 	KindLevel     OptKind = "level"     // 风险等级（枚举）
 	KindPorts     OptKind = "ports"     // 端口列表，界面上一行 "443,8443"
-	KindCountries OptKind = "countries" // 国家代码列表，界面上一行 "HK,JP"
+	KindCountries OptKind = "countries" // 国家代码列表，界面上是可搜索的多选下拉
 )
 
 // OptSpec 描述一个可以覆盖的引擎参数。
@@ -119,12 +119,12 @@ var Schema = []OptSpec{
 	},
 	{
 		Key: "PRE_FILTER_BLOCKED_COUNTRIES", Label: "前置黑名单的国家", Group: "flow", Kind: KindCountries, Def: []string{"CN"},
-		Help: "写两位国家代码，逗号隔开，比如 CN,RU。只有上面那个开关打开时才生效。",
+		Help: "点开下拉勾选国家，可多选，也能搜中文名或代码。不用手填两位代码。只有上面那个开关打开时才生效。",
 	},
 	{
 		Key: "ALLOWED_COUNTRIES", Label: "前置白名单的国家", Group: "flow", Kind: KindCountries, Def: []string{"HK"},
 		Help: "只保留名单里的国家。注意这个名单**默认是 HK**：一旦打开「前置白名单」，" +
-			"非香港节点会全部消失，这是很多人「优选不出东西」的原因。填国家代码，逗号隔开。",
+			"非香港节点会全部消失，这是很多人「优选不出东西」的原因。在下拉里勾选国家，不用手填代码。",
 	},
 	{
 		Key: "FILTER_BLOCKED_COUNTRIES_ENABLED", Label: "前置白名单", Group: "flow", Kind: KindBool, Def: false,
@@ -139,11 +139,11 @@ var Schema = []OptSpec{
 		Key: "BLOCKED_COUNTRIES", Label: "DNS 黑名单的国家", Group: "flow", Kind: KindCountries,
 		Def: []string{"BD", "BI", "BY", "CD", "CF", "CN", "CU", "DE", "ET", "HK", "IR", "KP", "LY", "MO", "NG", "NL", "PK", "RU", "SD", "SO", "SY", "TH", "TW", "UA", "VE", "VN", "YE", "ZW"},
 		Help: "这个名单很长，而且里面包含 CN 和 HK——上游项目按「内容合规」挑的。" +
-			"除非你明确知道要屏蔽哪些地区，否则别动。只有「DNS 黑名单」打开时才生效。",
+			"下拉里可以逐条勾掉或勾上，不用手填代码。除非你明确知道要屏蔽哪些地区，否则别动。只有「DNS 黑名单」打开时才生效。",
 	},
 	{
 		Key: "OUTPUT_ALLOWED_COUNTRIES", Label: "输出白名单的国家", Group: "flow", Kind: KindCountries, Def: []string{"HK"},
-		Help: "写结果文件时只保留名单里的国家。默认只有 HK，所以打开「输出白名单」之前先把这个名单改对。",
+		Help: "写结果文件时只保留名单里的国家。默认只有 HK，所以打开「输出白名单」之前先在下拉里把国家勾对。",
 	},
 	{
 		Key: "OUTPUT_FILTER_COUNTRIES_ENABLED", Label: "输出白名单", Group: "flow", Kind: KindBool, Def: false,

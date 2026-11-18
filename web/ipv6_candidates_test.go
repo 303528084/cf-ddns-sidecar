@@ -60,3 +60,65 @@ func TestSampleFromIPv6CIDRsTinyPrefix(t *testing.T) {
 		t.Fatalf("/128 不应产出地址，实际: %v", got)
 	}
 }
+
+// TestParseIPv6CIDRsFromLink 用用户实际给的那种 CF v6 段列表验证解析：
+// 一行一段、# 注释、全都要认出来；随后采样必须落在这些段里。
+func TestParseIPv6CIDRsFromLink(t *testing.T) {
+	text := `# Cloudflare IPv6 ranges
+2400:cb00:2049::/48
+2400:cb00:f00e::/48
+2606:4700::/32
+2606:4700:10::/48
+2606:4700:130::/48
+2606:4700:3000::/48
+2606:4700:3001::/48
+2606:4700:3002::/48
+2606:4700:3003::/48
+2606:4700:3004::/48
+2606:4700:3005::/48
+2606:4700:3006::/48
+2606:4700:3007::/48`
+	cidrs, skipped := parseIPv6CIDRs(text)
+	if len(cidrs) != 13 {
+		t.Fatalf("应认出 13 段，实际 %d 段: %v（skip %v）", len(cidrs), cidrs, skipped)
+	}
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, s := range cidrs {
+		p, err := netip.ParsePrefix(s)
+		if err != nil || !p.Addr().Is6() {
+			t.Fatalf("解析出非法 v6 段: %s (%v)", s, err)
+		}
+		prefixes = append(prefixes, p)
+	}
+	for _, node := range sampleFromIPv6CIDRs(cidrs, 40) {
+		host := strings.TrimSuffix(strings.TrimPrefix(node, "["), "]:443#US")
+		addr, err := netip.ParseAddr(host)
+		if err != nil {
+			t.Fatalf("采样格式不对: %s (%v)", node, err)
+		}
+		in := false
+		for _, p := range prefixes {
+			if p.Contains(addr) {
+				in = true
+				break
+			}
+		}
+		if !in {
+			t.Fatalf("采样地址不在用户给的段里: %s", host)
+		}
+	}
+}
+
+// TestParseIPv6CIDRsFilters 验证三件会误导人的事：v4 段不能被当 v6 收下、
+// RFC 3849 文档段不能浪费测速时间、重复段只留一条。
+func TestParseIPv6CIDRsFilters(t *testing.T) {
+	text := `104.16.0.0/13, 2001:db8::/32; 2606:4700::/32 | 2606:4700::/32
+这是说明文字`
+	cidrs, skipped := parseIPv6CIDRs(text)
+	if len(cidrs) != 1 || cidrs[0] != "2606:4700::/32" {
+		t.Fatalf("应只留下 2606:4700::/32 一次，实际: %v", cidrs)
+	}
+	if len(skipped) == 0 {
+		t.Fatal("认不出的 token 应留作日志样例，实际一条都没有")
+	}
+}
