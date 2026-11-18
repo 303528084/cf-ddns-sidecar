@@ -91,7 +91,10 @@ func isCloudflareIP(ip net.IP) bool {
 type DomainCheck struct {
 	Domain string `json:"domain"`
 	// OK 表示「确认走 Cloudflare 边缘」。
-	OK bool `json:"ok"`
+	//
+	// 序列化成 `passed` 而不是 `ok`：接口响应里已经有一个 `ok`（表示「这次
+	// 请求本身成功」），两者混在一起，前端写 res.ok 时根本分不清是哪一个。
+	OK bool `json:"passed"`
 	// Unknown 表示「没查出来」——DNS 超时、网络不通、域名暂时解析不了。
 	//
 	// 它和 OK=false 必须分开：OK=false 是「查清楚了，不是 Cloudflare」，

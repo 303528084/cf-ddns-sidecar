@@ -191,9 +191,13 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 
 	// 期望集合：每个要加速的域名 → 当前最优 IP。LastIP 为空时为空表，
 	// 界面上就会把所有现存的都标成「下次测速会被清掉」，这恰好是实话。
-	expected := make(map[string]string, len(cfg.Domains))
+	//
+	// 用 RewriteDomains() 而不是 Domains：勾了包含子域的那些会多一条
+	// `*.域名`，漏掉的话界面会把我们自己写的通配符标成「会被清掉」。
+	names := cfg.RewriteDomains()
+	expected := make(map[string]string, len(names))
 	if cfg.LastIP != "" {
-		for _, d := range cfg.Domains {
+		for _, d := range names {
 			expected[d] = cfg.LastIP
 		}
 	}

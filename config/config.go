@@ -115,12 +115,29 @@ type NodeStat struct {
 	Place string  `json:"place,omitempty"` // 「日本·东京(NRT)」，查不到机房时为空
 }
 
+// DomainMeta 是一个域名的附加信息。零值表示「不包含子域、没有时间」，
+// 和「老配置里没有这一项」是同一个意思，不需要区分。
+type DomainMeta struct {
+	// Wildcard 表示这个域名要连子域一起管：AdGuard 里会多写一条 `*.域名`。
+	Wildcard bool `json:"wildcard,omitempty"`
+	// AddedAt 是添加时间（`2006-01-02 15:04:05`），只给界面显示，不参与任何逻辑。
+	AddedAt string `json:"added_at,omitempty"`
+}
+
 // Config 是全部配置，持久化为 config.json。
 type Config struct {
 	AdGuard AdGuardConfig `json:"adguard"`
 	Domains []string      `json:"domains"` // 要写入 AdGuard 重写的域名列表
-	Speed   SpeedConfig   `json:"speed"`
-	DDNS    DDNSConfig    `json:"ddns"`
+	// DomainMeta 是每个域名的附加信息（是否包含子域、什么时候加的）。
+	//
+	// 没有把 Domains 直接换成结构体切片，是因为 `Domains []string` 这件事
+	// 已经被引擎参数、DDNS 推送、导入导出、老配置全部依赖着——换类型等于
+	// 每一处都要跟着改，风险远大于收益。这里用「主列表 + 旁挂元信息」：
+	// Domains 仍是唯一的权威（有哪些域名），缺条目就当「不包含子域」，
+	// 老配置读进来照样能用。
+	DomainMeta map[string]DomainMeta `json:"domain_meta,omitempty"`
+	Speed      SpeedConfig           `json:"speed"`
+	DDNS       DDNSConfig            `json:"ddns"`
 
 	// 运行状态（持久化便于重启后回显）
 	LastIP   string `json:"last_ip,omitempty"`
@@ -244,6 +261,8 @@ func Load() (*Config, error) {
 	if c.Domains == nil {
 		c.Domains = []string{}
 	}
+	// 手改过的配置可能留下「域名已经不在列表里、元信息还在」的残留。
+	c.PruneDomainMeta()
 	// 校正非法值，避免用户手改配置后行为诡异
 	if c.Speed.IntervalMinutes < 0 {
 		c.Speed.IntervalMinutes = 0
@@ -355,6 +374,47 @@ func (c *Config) Save() error {
 	return nil
 }
 
+// RewriteDomains 返回真正要写进 AdGuard 重写的域名。
+//
+// 勾了「包含子域」的域名会多出一条 `*.域名`：AdGuard Home 的重写支持通配符，
+// 一条 `*.a.com` 能盖住所有子域，比逐条列省事，也不会漏掉用户后来新建的子域。
+//
+// 顺序是「主域名，紧跟它的通配符」，和界面上的顺序一致，日志读起来才对得上。
+func (c Config) RewriteDomains() []string {
+	out := make([]string, 0, len(c.Domains)*2)
+	for _, d := range c.Domains {
+		out = append(out, d)
+		if m, ok := c.DomainMeta[d]; ok && m.Wildcard {
+			out = append(out, "*."+d)
+		}
+	}
+	return out
+}
+
+// PruneDomainMeta 删掉不在 Domains 里的元信息。
+//
+// 不清理的话，用户删掉一个域名再加回来，会「继承」上一次的包含子域设置和
+// 添加时间——看起来像删不掉。所以每次 Load 都按 Domains 对一遍。
+func (c *Config) PruneDomainMeta() {
+	if len(c.DomainMeta) == 0 {
+		return
+	}
+	keep := make(map[string]bool, len(c.Domains))
+	for _, d := range c.Domains {
+		keep[d] = true
+	}
+	for k := range c.DomainMeta {
+		if !keep[k] {
+			delete(c.DomainMeta, k)
+		}
+	}
+	// 清空之后把 map 置 nil：留一个空 map 虽然会被 omitempty 忽略，但
+	// 「有没有这张表」在代码里会被当成两件事，不如统一成没有。
+	if len(c.DomainMeta) == 0 {
+		c.DomainMeta = nil
+	}
+}
+
 // Clone 深拷贝，供并发读快照。
 func (c *Config) Clone() Config {
 	cp := *c
@@ -364,6 +424,15 @@ func (c *Config) Clone() Config {
 		cp.Domains = []string{}
 	} else {
 		cp.Domains = append(make([]string, 0, len(c.Domains)), c.Domains...)
+	}
+	// DomainMeta 是 map，浅拷贝只会拷到同一个底层哈希表——保存配置时一边写、
+	// 测速线程一边读，和下面 EngineOverrides 是同一类问题。
+	if len(c.DomainMeta) > 0 {
+		m := make(map[string]DomainMeta, len(c.DomainMeta))
+		for k, v := range c.DomainMeta {
+			m[k] = v
+		}
+		cp.DomainMeta = m
 	}
 	// LastIPs 同样要拷一份：它是会被写进解析的列表，共享底层数组
 	// 就意味着一个 goroutine 在读、另一个在改，属于最难查的那种问题。

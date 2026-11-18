@@ -155,9 +155,22 @@
   .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500;
     box-shadow:0 2px 6px -1px rgba(59,91,219,.4)}
   .btn.primary:hover{filter:brightness(1.07)}
+  /* 「添加」在检测通过之前必须是**灰的**——用户原话就是「没检测之前，这个
+     添加按钮是灰的，不能点」。只把不透明度降到 .6 还是蓝的，看着像「能点，
+     只是淡了一点」，得换成中性的灰底灰字才一眼看出点不动。 */
+  .btn.primary:disabled{
+    background:var(--line2);border-color:var(--line);color:var(--dim);box-shadow:none;
+  }
   .btn.sm{padding:6px 11px;font-size:12.5px;border-radius:8px}
   .btn.flat{box-shadow:none;background:transparent;border-color:transparent}
   .btn.flat:hover{background:var(--line2)}
+  @media (prefers-color-scheme: dark){
+    /* 深色主题里 --accent 换成了浅蓝（#7d9bff），白字压上去对比度只有
+       2:1 左右，按钮上的字基本糊成一片。改成深色字，对比度立刻回到 8:1。
+       登录页那个「登录」按钮同理。 */
+    .btn.primary{color:#0f1319}
+    .login button.go{color:#0f1319}
+  }
 
   .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;flex:none}
   .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14)}
@@ -200,23 +213,58 @@
   .switch input{width:auto;accent-color:var(--accent)}
   .switch label{margin:0;color:var(--text);font-size:13px;font-weight:400}
 
-  /* 域名行：输入框 + 下面一条「保存后的检查结果」。
-     用 align-items:flex-start 而不是 center，否则下面那条说明一出现，
-     删除按钮就会被拉到整块的正中间，看着像错位。 */
-  .domain-row{display:flex;gap:9px;margin-bottom:9px;align-items:flex-start}
-  .domain-row .dwrap{flex:1;min-width:0}
-  .domain-row input{width:100%}
-  .domain-row button{
-    border:none;background:transparent;color:var(--dim);cursor:pointer;padding:8px;border-radius:8px;flex:none;
+  /* ---------- 域名：上面一个添加框，下面一张已添加列表 ---------- */
+  /* 添加框：输入框 + 「检测」+「添加」并排。添加按钮在检测通过之前是灰的、
+     点不动——不先确认它走 Cloudflare 就不许加，这是明确要的交互。 */
+  .addbox{border:1px solid var(--line);border-radius:12px;padding:13px 14px 12px;background:var(--line2)}
+  .addbox .arow{display:flex;gap:8px;align-items:center}
+  .addbox input[type=text]{flex:1;min-width:0;background:var(--card)}
+  /* 检查结果的颜色只改字和边框，不改底色：写死一个浅红在深色模式下
+     会变成一块刺眼的白斑。 */
+  .addbox input.bad{border-color:var(--err)}
+  .dmsg{font-size:11.5px;line-height:1.7;margin-top:8px}
+  /* 没结论时连那 8px 也不留：空 div 占着高度，添加框看着像底部缺一块 */
+  .dmsg:empty{display:none;margin:0}
+  .dmsg.err{color:var(--err)}
+  .dmsg.warn{color:var(--warn)}
+  .dmsg.ok{color:var(--ok)}
+  .dmsg b{font-weight:600}
+
+  /* 「同时匹配所有子域名」。右边的 *.域名 跟着输入框实时变，
+     让人一眼看出这一勾到底会多写哪一条重写。 */
+  .wild{display:flex;align-items:center;gap:7px;margin-top:10px;font-size:12.5px;color:var(--muted);cursor:pointer}
+  .wild input{width:auto;accent-color:var(--accent);margin:0;cursor:pointer;flex:none}
+  .wild .wtag{
+    font-family:var(--mono);font-size:10.5px;padding:1px 6px;border-radius:5px;
+    background:var(--card);border:1px solid var(--line);color:var(--dim);
+    max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   }
-  .domain-row button:hover{color:var(--err);background:#fef3f2}
-  /* 检查结果的颜色只改字和边框，不改底色：底色的深浅两套主题差别很大，
-     写死一个浅红在深色模式下会变成一块刺眼的白斑。 */
-  .domain-row.bad input{border-color:var(--err)}
-  .domain-row .dmsg{font-size:11.5px;line-height:1.65;margin-top:5px}
-  .domain-row .dmsg.err{color:var(--err)}
-  .domain-row .dmsg.warn{color:var(--warn)}
-  .domain-row .dmsg.ok{color:var(--ok)}
+
+  /* 已添加列表 */
+  .dom-list{margin-top:14px;border:1px solid var(--line2);border-radius:11px;overflow:hidden}
+  .dom-list:empty{display:none}
+  .dom-item{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--line2);background:var(--card)}
+  .dom-item:last-child{border-bottom:none}
+  .dom-item .dname{font-size:13px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dom-item .sp{flex:1}
+  .dom-item .dip{font-size:11px;color:var(--dim);font-family:var(--mono);flex:none}
+  /* 子域开关做成小胶囊：比再塞一个复选框窄，手机上也不会把域名挤成
+     「openai.c…」。 */
+  .wchip{
+    font-size:11px;padding:3px 9px;border-radius:20px;cursor:pointer;flex:none;white-space:nowrap;
+    border:1px solid var(--line);background:var(--card);color:var(--dim);
+    font-family:inherit;transition:.15s;
+  }
+  .wchip:hover{border-color:var(--accent);color:var(--accent)}
+  .wchip.on{background:var(--accent-soft);border-color:#c7d2fe;color:var(--accent);font-weight:500}
+  .wchip:disabled{opacity:.55;cursor:default}
+  .dom-item .del{border:none;background:transparent;color:var(--dim);cursor:pointer;padding:6px;border-radius:7px;flex:none;display:grid;place-items:center}
+  .dom-item .del:hover{color:var(--err);background:#fef3f2}
+  @media (prefers-color-scheme: dark){
+    /* 浅红底在深色下是一块白斑，换成半透明红 */
+    .dom-item .del:hover{background:rgba(248,113,113,.15)}
+    .wchip.on{border-color:#334066}
+  }
 
   /* 告警条 */
   .banner{
@@ -296,7 +344,12 @@
   .toast{
     position:fixed;left:50%;bottom:26px;transform:translate(-50%,16px);z-index:300;
     background:#1b2230;color:#fff;padding:10px 18px;border-radius:11px;font-size:13px;
-    opacity:0;pointer-events:none;transition:.22s;max-width:calc(100vw - 40px);
+    opacity:0;pointer-events:none;transition:.22s;
+    /* width:max-content 是必须的。只有 left:50% 而没有 right 时，固定定位元素
+       的「收缩到合适」是按「从 50% 到右边缘」这段可用宽度算的——390px 的手机
+       上只剩 195px，一句「已保存；还没填 AdGuard 地址…」被折成三行，还正好
+       压在下面那句说明上（2026-11-18 手机截图核对时发现的）。 */
+    width:max-content;max-width:calc(100vw - 40px);
     box-shadow:0 12px 30px -10px rgba(0,0,0,.4);
   }
   .toast.show{opacity:1;transform:translate(-50%,0)}
@@ -487,6 +540,12 @@
     td.c-spd{grid-area:3/2/4/4;margin-top:3px}
     .bar{width:100%}
     table.nodes td.empty{grid-area:auto;text-align:center;padding:18px 0}
+
+    /* 域名列表：390px 下「域名 + 含子域 + IP + 删除」四样并排会把域名
+       挤成「openai.c…」。IP 只是复述同一个值（所有域名都指向它），
+       窄屏先藏起来，把宽度留给域名本身。 */
+    .dom-item .dip{display:none}
+    .dom-item{padding:10px 11px}
   }
 
 </style>
@@ -663,19 +722,31 @@
       <div class="card">
         <div class="card-h"><h2>要加速的域名</h2><span class="sub">这些域名会指向最优 IP</span></div>
         <div class="card-b">
-          <div id="dom-alert" class="hidden"></div>
-          <div class="domains" id="domains"></div>
-          <div class="hero-actions" style="border-top:none;padding-top:6px;margin-top:0">
-            <button class="btn sm" onclick="addDomain()">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-              添加域名
-            </button>
+          <!-- 添加框：先检测，通过之后「添加」才亮 -->
+          <div class="addbox">
+            <div class="arow">
+              <input type="text" id="dom-input" placeholder="例如 openai.com"
+                     autocomplete="off" spellcheck="false" autocapitalize="off"
+                     oninput="domChanged()" onkeydown="domKey(event)">
+              <button class="btn sm" id="dom-check" onclick="checkDomain()">检测</button>
+              <button class="btn primary sm" id="dom-add" onclick="doAddDomain()" disabled>添加</button>
+            </div>
+            <label class="wild">
+              <input type="checkbox" id="dom-wild" onchange="syncWildTag()">
+              同时匹配所有子域名
+              <span class="wtag" id="dom-wild-tag">*.你的域名</span>
+            </label>
+            <div class="dmsg" id="dom-msg"></div>
           </div>
+
+          <div class="dom-list" id="dom-list"></div>
+
           <div class="hint">
             填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。
-            <b>点「保存全部设置」时会逐个检查它是不是真的走 Cloudflare 的边缘</b>——
-            不是的不会保存，下面会写明它解析到了哪个 IP。为什么要拦：本程序会把这个域名
-            指向 Cloudflare 的边缘 IP，域名本身没接 Cloudflare 的话，改完网页是打不开的。
+            <b>先点「检测」确认它真的走 Cloudflare 的边缘，才能点「添加」</b>——
+            为什么要拦：本程序会把这个域名指向 Cloudflare 的边缘 IP，域名本身
+            没接 Cloudflare 的话，改完网页是打不开的。加进来就立刻生效，
+            不用再去点「保存全部设置」。
           </div>
         </div>
       </div>
@@ -1014,6 +1085,10 @@ async function api(path, opts = {}) {
     // 带上状态码：调用方靠它区分「本机就没配好」（400）和「服务商那边报错」（5xx），
     // 这两种情况该说的话完全不同。
     err.status = res.status;
+    // 把响应体也挂上去：域名添加被拒时，body.result.reason 比 body.error
+    // （只有「这个域名没走 Cloudflare」一句）具体得多——它写着解析到了哪个
+    // IP，界面要拿它显示给用户看。
+    err.data = data;
     throw err;
   }
   return data;
@@ -1085,76 +1160,238 @@ async function logout() {
   showLogin();
 }
 
-// ---- 域名列表 ----
-function addDomain(value = "") {
-  const row = document.createElement("div");
-  row.className = "domain-row";
-  // 输入框和它下面那条检查结果放在同一个 wrap 里，删除按钮留在外面——
-  // 这样说明文字换行时不会把按钮挤到奇怪的位置。
-  row.innerHTML = `<div class="dwrap">
-      <input type="text" placeholder="例如 openai.com" value="${value.replace(/"/g, '&quot;')}">
-      <div class="dmsg"></div>
-    </div>
-    <button onclick="this.parentElement.remove()" title="删除">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>
-    </button>`;
-  $("domains").appendChild(row);
-}
-
-// setDomainMsg 往某一行下面写一条检查结果。kind: "" | "ok" | "warn" | "err"
-function setDomainMsg(row, text, kind) {
-  const box = row.querySelector(".dmsg");
-  if (!box) return;
-  box.className = "dmsg" + (kind ? " " + kind : "");
-  box.textContent = text || "";
-  row.classList.toggle("bad", kind === "err");
-}
-
-// clearDomainMsgs 清掉所有行的检查结果。重新检测之前必须清，否则上一轮
-// 的红字会留在这一轮的输入下面，看起来像「刚检测的结论」。
-function clearDomainMsgs() {
-  document.querySelectorAll("#domains .domain-row").forEach(r => setDomainMsg(r, "", ""));
-}
-
-// showDomainResults 把保存接口返回的检查结果贴回每一行。
+// ---- 域名：检测 → 添加 → 列表 ----
 //
-// 后端返回三类：
-//   domains_rejected —— 确认不是走 Cloudflare 的，**没保存**（这就是用户要的
-//                       「不让添加」），标红并说明解析到了哪个 IP；
-//   domains_unknown  —— 查不了（DNS 超时/不通），**照样保存了**，标黄提醒；
-//   domains_kept     —— 通过的，不打扰。
-function showDomainResults(res) {
-  const rejected = (res && res.domains_rejected) || [];
-  const unknown = (res && res.domains_unknown) || [];
-  const byDomain = {};
-  rejected.forEach(r => { byDomain[r.domain] = { r, kind: "err" }; });
-  unknown.forEach(r => { byDomain[r.domain] = { r, kind: "warn" }; });
+// 交互照 cf-dns-select 的样子：上面一个输入框，先「检测」，通过之后
+// 「添加」才从灰变亮；下面列出已经加进来的域名，每个域名能单独切换
+// 「含子域」、单独删掉。
+//
+// 为什么必须先检测才让加：本程序会把这个域名指向 Cloudflare 的边缘 IP，
+// 域名本身没接 Cloudflare 的话，改完网页直接打不开，而用户几乎不可能
+// 自己想到是这个原因。判断在服务端做（/api/domains/check），这个按钮
+// 只负责把结论摆出来——真正的拦截不能放在浏览器里，否则改个 JS 就能绕开。
+//
+// 三个动作都走各自的增量接口（加 / 删 / 切换子域），点一下立刻存盘并写进
+// AdGuard，不用再去点「保存全部设置」。
 
-  document.querySelectorAll("#domains .domain-row").forEach(row => {
-    const input = row.querySelector("input");
-    const d = (input.value || "").trim().toLowerCase();
-    const hit = byDomain[d];
-    if (hit) setDomainMsg(row, hit.r.reason, hit.kind);
-  });
+let DOMS = [];     // 当前列表，来自后端的 domain_rows
+let CHECKED = "";  // 已经检测通过的域名（小写）。输入一变就作废。
+let CHECKING = false;
 
-  if (rejected.length) {
-    // 用常驻横幅而不是 toast：toast 三秒就没了，而这条信息要陪着用户
-    // 去改域名，消失得太快等于没说过。
-    $("dom-alert").classList.remove("hidden");
-    $("dom-alert").innerHTML = '<div class="banner err"><b>有 ' + rejected.length +
-      ' 个域名没保存：它们没走 Cloudflare。</b>' +
-      '本程序会把这个域名指向 Cloudflare 的边缘 IP，域名本身没接 Cloudflare 的话，' +
-      '改完之后网页是打不开的。请改成确实用 Cloudflare 的域名，或者把这几行删掉再保存。' +
-      '</div>';
-  } else if (unknown.length) {
-    $("dom-alert").classList.remove("hidden");
-    $("dom-alert").innerHTML = '<div class="banner warn"><b>有 ' + unknown.length +
-      ' 个域名这次没验成（查不到它的 IP）。</b>已经照原样保存了，' +
-      '等 DNS 恢复后重新保存一次就能确认。</div>';
-  } else {
-    $("dom-alert").classList.add("hidden");
-    $("dom-alert").innerHTML = "";
+// domInput 读输入框并做和前端一致的规范化（去空格、转小写、去掉协议和路径）。
+// 后端还会再规范化一次，这里只是为了「检测」和「添加」用的是同一个字符串。
+function domInput() {
+  return ($("dom-input").value || "").trim().toLowerCase()
+    .replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
+// domMsg 写添加框下面那条结论。parts 是若干段文字，第一段加粗。
+// 全部走 escapeHtml：域名和错误原文都可能带着奇怪字符，不能直接拼进 innerHTML。
+function domMsg(parts, kind) {
+  const box = $("dom-msg");
+  box.className = "dmsg" + (kind ? " " + kind : "");
+  box.innerHTML = (parts || []).map(function (s, i) {
+    return i === 0 ? "<b>" + escapeHtml(s) + "</b>" : escapeHtml(s);
+  }).join("");
+  $("dom-input").classList.toggle("bad", kind === "err");
+}
+
+// syncWildTag 让右边那个 *.域名 跟着输入框实时变。
+function syncWildTag() {
+  const d = domInput();
+  $("dom-wild-tag").textContent = "*." + (d || "你的域名");
+}
+
+// domChanged 在输入变化时调用：上一次的检测结论立刻作废。
+// 不这么做的话，用户把 openai.com 改成 example.com，界面上还留着
+// 「已确认走 Cloudflare」，「添加」也还是亮的——等于绕过了检查。
+function domChanged() {
+  CHECKED = "";
+  $("dom-add").disabled = true;
+  domMsg([], "");
+  syncWildTag();
+}
+
+// domKey：输入框里按回车等于点「检测」，检测通过后再按一次等于「添加」。
+function domKey(e) {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (!$("dom-add").disabled) doAddDomain();
+  else checkDomain();
+}
+
+async function checkDomain() {
+  const d = domInput();
+  if (!d) {
+    domMsg(["先填一个域名。", "例如 openai.com"], "err");
+    $("dom-input").focus();
+    return;
   }
+  if (CHECKING) return;
+  CHECKING = true;
+  CHECKED = "";
+  $("dom-add").disabled = true;
+
+  const btn = $("dom-check");
+  btn.disabled = true;
+  btn.textContent = "检测中…";
+  domMsg(["正在检查 " + d + " 是不是走 Cloudflare 的边缘…"], "warn");
+  try {
+    const r = await api("/api/domains/check", {
+      method: "POST",
+      body: JSON.stringify({ domain: d }),
+    });
+    applyCheck(d, r && r.result);
+  } catch (e) {
+    domMsg(["检测失败：" + e.message], "err");
+  } finally {
+    CHECKING = false;
+    btn.disabled = false;
+    btn.textContent = "检测";
+  }
+}
+
+// applyCheck 把结论画出来，并决定「添加」能不能点。
+//
+// 三种结论（详见 web/cfcheck.go）：
+//   passed=true        → 确认走 Cloudflare，放开「添加」；
+//   unknown=true       → 查不到 IP（DNS 超时/不通），**也放开**：网络抖一下
+//                        就判死刑，等于让人白填一遍，还可能是自己 DNS 的问题；
+//   passed=false 且不 unknown → 确认没走，标红，「添加」保持灰。
+function applyCheck(d, c) {
+  if (!c) {
+    domMsg(["检测没有返回结果，再点一次试试。"], "err");
+    return;
+  }
+  if (c.passed) {
+    CHECKED = d;
+    $("dom-add").disabled = false;
+    // 前半句只给结论，具体理由（解析到哪个 IP、在不在 CF 段里）用服务端那句，
+    // 不再自己复述一遍——否则「没走 Cloudflare」会在同一行里出现两次。
+    domMsg(["可以添加：", c.reason], "ok");
+    return;
+  }
+  if (c.unknown) {
+    CHECKED = d;
+    $("dom-add").disabled = false;
+    domMsg(["没验成，但可以照样添加：", c.reason], "warn");
+    return;
+  }
+  CHECKED = "";
+  $("dom-add").disabled = true;
+  domMsg(["不能添加：", c.reason], "err");
+}
+
+async function doAddDomain() {
+  const d = domInput();
+  if (!d) return;
+  if (CHECKED !== d) {
+    domMsg(["请先点「检测」。"], "warn");
+    return;
+  }
+  const btn = $("dom-add");
+  btn.disabled = true;
+  btn.textContent = "添加中…";
+  try {
+    const r = await api("/api/domains", {
+      method: "POST",
+      body: JSON.stringify({ domain: d, wildcard: $("dom-wild").checked }),
+    });
+    renderDomains(r && r.domains);
+    $("dom-input").value = "";
+    $("dom-wild").checked = false;
+    syncWildTag();
+    CHECKED = "";
+    // 加完之后输入框已经空了，这条结论就当收据留着：它同时说明
+    // 「有没有真的写进 AdGuard」（地址没填 / 还没测速时写不进去）。
+    domMsg(["已添加 " + d + "。", (r && r.note) || ""], "ok");
+  } catch (e) {
+    // 400 = 服务端确认它没走 Cloudflare。此时 e.data.result.reason 比
+    // e.message（只有「这个域名没走 Cloudflare」一句）具体得多，用那个。
+    const c = e.data && e.data.result;
+    if (c) applyCheck(d, c);
+    else domMsg(["添加失败：" + e.message], "err");
+  } finally {
+    btn.disabled = true;
+    btn.textContent = "添加";
+  }
+}
+
+// renderDomains 画已添加列表。rows 来自后端 domain_rows
+// （每个域名带 wildcard / added_at / answer）。
+function renderDomains(rows) {
+  DOMS = rows || [];
+  const box = $("dom-list");
+  box.innerHTML = "";
+  // 空列表什么都不画：上面那句说明已经讲了怎么加，再摆一行「还没有域名」
+  // 只是多一行灰字。
+  DOMS.forEach(function (d) {
+    const row = document.createElement("div");
+    row.className = "dom-item";
+
+    const name = document.createElement("div");
+    name.className = "dname";
+    name.textContent = d.domain;
+    if (d.added_at) name.title = "添加于 " + d.added_at;
+    row.appendChild(name);
+
+    // 子域开关：做成小胶囊而不是复选框，窄屏才不会把域名挤掉。
+    const chip = document.createElement("button");
+    chip.className = "wchip" + (d.wildcard ? " on" : "");
+    chip.textContent = d.wildcard ? "含子域" : "仅本域";
+    chip.title = d.wildcard
+      ? "AdGuard 里同时写了 *." + d.domain + "，点一下改成只管这个域名"
+      : "只写 " + d.domain + "，点一下连子域一起管";
+    chip.onclick = function () { toggleWildcard(d.domain, !d.wildcard, chip); };
+    row.appendChild(chip);
+
+    const sp = document.createElement("div");
+    sp.className = "sp";
+    row.appendChild(sp);
+
+    if (d.answer) {
+      const ip = document.createElement("div");
+      ip.className = "dip";
+      ip.textContent = d.answer;
+      ip.title = "上次测速的最优 IP，AdGuard 里写的就是它";
+      row.appendChild(ip);
+    }
+
+    const del = document.createElement("button");
+    del.className = "del";
+    del.title = "从列表里删掉";
+    del.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+    del.onclick = function () { deleteDomain(d.domain); };
+    row.appendChild(del);
+
+    box.appendChild(row);
+  });
+}
+
+async function toggleWildcard(domain, want, chip) {
+  chip.disabled = true;
+  try {
+    const r = await api("/api/domains/wildcard", {
+      method: "PUT",
+      body: JSON.stringify({ domain: domain, wildcard: want }),
+    });
+    renderDomains(r && r.domains);
+    // 这条 note 说的是「到底有没有写进 AdGuard」，不只是「已保存」——
+    // 地址没填或者还没测速时它会是另一句话，值得让用户看见。
+    if (r && r.note) toast(r.note);
+  } catch (e) {
+    toast(e.message);
+    chip.disabled = false;
+  }
+}
+
+async function deleteDomain(domain) {
+  if (!confirm("从列表里删掉 " + domain + "？\nAdGuard 里对应的重写也会一起清掉。")) return;
+  try {
+    const r = await api("/api/domains?domain=" + encodeURIComponent(domain), { method: "DELETE" });
+    renderDomains(r && r.domains);
+    if (r && r.note) toast(r.note);
+  } catch (e) { toast(e.message); }
 }
 
 // ---- 服务商密钥渲染 ----
@@ -1185,12 +1422,8 @@ async function loadConfig() {
   $("ag-user").value = c.adguard_user || "";
   $("ag-pass").value = "";
   $("ag-pass").placeholder = c.has_adguard_password ? "已保存，留空不修改" : "未设置";
-  $("domains").innerHTML = "";
-  (c.domains || []).forEach(addDomain);
-  if (!(c.domains || []).length) addDomain();
-  // 刚加载出来的域名是「上次保存时验过的」，不该带着上一轮的红字。
-  clearDomainMsgs();
-  $("dom-alert").classList.add("hidden");
+  renderDomains(c.domain_rows || []);
+  syncWildTag();
   $("sp-interval").value = c.interval_minutes;
   $("sp-topn").value = c.top_n;
   $("sp-bw").value = c.bandwidth_candidates || 100;
@@ -1869,19 +2102,19 @@ function toggleRewrites() {
 }
 
 async function saveAll() {
-  const domains = [...document.querySelectorAll("#domains input")]
-    .map(i => i.value.trim()).filter(Boolean);
+  // 域名**不**在这里提交：它由 /api/domains 那几个增量接口管，点「添加」
+  // 就立刻存盘并写进 AdGuard。全量保存时再带上域名，等于每次保存都把整个
+  // 列表重新验一遍（慢，而且网络抖一下就有域名被踢掉）。
+  // 后端的 domains 字段也因此改成了指针：没传 = 不动，不再等于清空。
 
   // 1) 保存主配置
-  let res = null;
   try {
-    res = await api("/api/config", {
+    await api("/api/config", {
       method: "POST",
       body: JSON.stringify({
         adguard_url: $("ag-url").value.trim(),
         adguard_user: $("ag-user").value.trim(),
         adguard_password: $("ag-pass").value,
-        domains,
         top_n: parseInt($("sp-topn").value || "5", 10),
         // 以前这里写死 100，等于每次保存都把用户改过的值按回 100。
         bandwidth_candidates: parseInt($("sp-bw").value || "100", 10) || 100,
@@ -1922,24 +2155,9 @@ async function saveAll() {
     } catch (e) { toast("密钥保存失败：" + e.message); return; }
   }
 
-  // 保存结果里带着「哪些域名没通过 Cloudflare 检查」。这几个**没存进去**，
-  // 所以下面 loadConfig 重建列表时它们不会出现——那正是用户要的「不让添加」，
-  // 但如果列表直接少了几行，用户会以为自己刚才那几行根本没输进去。
-  // 所以重建之后把它们补回列表并标红，让人能就地改。
-  const rejected = (res && res.domains_rejected) || [];
-
-  // 有域名被拒时不弹 toast：顶部那条红色横幅已经把「有几个没保存、为什么」
-  // 说得更清楚，而这个 toast 在手机上正好浮在被拒那一行的红字上面，把最该
-  // 看的那句话挡住三秒。重复一遍信息，还挡住正主，不如不弹。
-  if (!rejected.length) toast("已保存");
+  toast("已保存");
 
   await loadConfig();
-  if (rejected.length) {
-    const have = new Set([...document.querySelectorAll("#domains input")]
-      .map(i => i.value.trim().toLowerCase()));
-    rejected.forEach(r => { if (!have.has(r.domain)) addDomain(r.domain); });
-  }
-  showDomainResults(res);
   credState = await api("/api/credentials");
   renderProvider();
   await loadStatus();

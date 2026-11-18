@@ -189,6 +189,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/password", s.auth(s.handlePassword))
 	mux.HandleFunc("/api/ddns/check", s.auth(s.handleDDNSCheck))
 	mux.HandleFunc("/api/ddns/update", s.auth(s.handleDDNSUpdate))
+	// 域名页的三个即时操作：加 / 删 / 切换包含子域。每个都自己落盘并立刻
+	// 写 AdGuard，不经过 /api/config 那套全量保存。详见 web/domains.go。
+	mux.HandleFunc("/api/domains", s.auth(s.handleDomains))
+	mux.HandleFunc("/api/domains/check", s.auth(s.handleDomainCheck))
+	mux.HandleFunc("/api/domains/wildcard", s.auth(s.handleDomainWildcard))
 	mux.HandleFunc("/api/adguard/rewrites", s.auth(s.handleAdguardRewrites))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
 
@@ -668,16 +673,20 @@ type configResp struct {
 	AdGuardPassword string   `json:"adguard_password"`
 	HasAdGuardPass  bool     `json:"has_adguard_password"`
 	Domains         []string `json:"domains"`
-	TopN            int      `json:"top_n"`
-	Candidates      int      `json:"bandwidth_candidates"`
-	IntervalMinutes int      `json:"interval_minutes"`
-	ExtraSources    []string `json:"extra_sources"`
-	DDNSEnabled     bool     `json:"ddns_enabled"`
-	DDNSProvider    string   `json:"ddns_provider"`
-	DDNSDomain      string   `json:"ddns_domain"`
-	DDNSTTL         int      `json:"ddns_ttl"`
-	DDNSProxied     bool     `json:"ddns_proxied"`
-	DDNSIPCount     int      `json:"ddns_ip_count"`
+	// DomainRows 是 domains 的展开版：多了「包含子域」和添加时间。
+	// 两个都发是故意的——domains 保持原样，别的调用方（导入、脚本）不用改；
+	// 界面要画列表就得知道每个域名的子域开关，而那信息在 domain_meta 里。
+	DomainRows      []domainRow `json:"domain_rows"`
+	TopN            int         `json:"top_n"`
+	Candidates      int         `json:"bandwidth_candidates"`
+	IntervalMinutes int         `json:"interval_minutes"`
+	ExtraSources    []string    `json:"extra_sources"`
+	DDNSEnabled     bool        `json:"ddns_enabled"`
+	DDNSProvider    string      `json:"ddns_provider"`
+	DDNSDomain      string      `json:"ddns_domain"`
+	DDNSTTL         int         `json:"ddns_ttl"`
+	DDNSProxied     bool        `json:"ddns_proxied"`
+	DDNSIPCount     int         `json:"ddns_ip_count"`
 
 	// 高级设置：引擎参数表 + 用户改过的值 + 没给开关的那些及原因。
 	//
@@ -700,6 +709,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			AdGuardUser:     c.AdGuard.Username,
 			HasAdGuardPass:  c.AdGuard.Password != "",
 			Domains:         c.Domains,
+			DomainRows:      domainRows(c),
 			TopN:            c.Speed.TopN,
 			Candidates:      c.Speed.BandwidthCandidates,
 			IntervalMinutes: c.Speed.IntervalMinutes,
@@ -724,13 +734,18 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		AdGuardURL      string   `json:"adguard_url"`
-		AdGuardUser     string   `json:"adguard_user"`
-		AdGuardPassword string   `json:"adguard_password"`
-		Domains         []string `json:"domains"`
-		TopN            int      `json:"top_n"`
-		Candidates      int      `json:"bandwidth_candidates"`
-		IntervalMinutes int      `json:"interval_minutes"`
+		AdGuardURL      string `json:"adguard_url"`
+		AdGuardUser     string `json:"adguard_user"`
+		AdGuardPassword string `json:"adguard_password"`
+		// 域名列表也用指针，但理由和下面 ExtraSources 略有不同：
+		// 域名现在由 /api/domains 那几个小接口增删（点「添加」就生效），
+		// 全量保存时界面**不再提交**这个字段。若还是普通切片，没传就等于
+		// 「传了空列表」→ cfg.Domains 被清空 → 用户点一次「保存全部设置」
+		// 域名全没了。传了的话仍然照旧走检查（导入文件、旧客户端）。
+		Domains         *[]string `json:"domains"`
+		TopN            int       `json:"top_n"`
+		Candidates      int       `json:"bandwidth_candidates"`
+		IntervalMinutes int       `json:"interval_minutes"`
 		// 用指针是为了区分「没传这个字段」和「传了空数组」：
 		//   没传（nil）  → 保持原值，不动用户已设的段（老的导入文件、旧客户端）；
 		//   传了 []      → 用户主动清空，恢复用内置官方段。
@@ -803,9 +818,20 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 三类结果分开处理：确认走 CF 的保存；确认不走的**不保存**（这就是用户
 	// 要的「不让添加」）；查不了的（DNS 超时/不通）**照样保存**，只是在响应
 	// 里标出来——因为当时网络抖了一下就把人家的域名删掉，比放过去糟得多。
-	submitted := normalizeDomains(body.Domains)
-	keptDomains, rejectedDomains, unknownDomains := screenDomains(r.Context(), submitted)
-	cfg.Domains = keptDomains
+	//
+	// 没传 domains 就整段跳过：界面上域名已经由增量接口管着，保存别的设置时
+	// 不该顺手再把这些域名重新验一遍（每验一次都要发网络请求，网络抖一下
+	// 就有域名被踢掉）。
+	var keptDomains []string
+	var rejectedDomains, unknownDomains []DomainCheck
+	if body.Domains != nil {
+		submitted := normalizeDomains(*body.Domains)
+		keptDomains, rejectedDomains, unknownDomains = screenDomains(r.Context(), submitted)
+		cfg.Domains = keptDomains
+		// 列表被整体替换了（界面上可能删过行），元信息要跟着对齐——否则删掉的
+		// 域名会把「包含子域」和添加时间留给下次同名域名。
+		cfg.PruneDomainMeta()
+	}
 	if body.TopN > 0 {
 		cfg.Speed.TopN = body.TopN
 	}
@@ -1257,20 +1283,30 @@ func (s *Server) runOnce(cfg config.Config) error {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	// 1) 写入 AdGuard Home 重写表
-	if cfg.AdGuard.URL != "" && len(cfg.Domains) > 0 {
+	//
+	// 写的是 cfg.RewriteDomains() 而不是 cfg.Domains：勾了「包含子域」的域名
+	// 会多出一条 `*.域名`，AdGuard 的重写支持通配符，一条就盖住所有子域。
+	rewriteNames := cfg.RewriteDomains()
+	if cfg.AdGuard.URL != "" && len(rewriteNames) > 0 {
 		provider, perr := dns.New(cfg.AdGuard.Instance())
 		if perr != nil {
 			s.appendLog("AdGuard 写入失败: " + perr.Error())
 		} else {
-			want := make(map[string]map[string]bool, len(cfg.Domains))
-			for _, d := range cfg.Domains {
+			want := make(map[string]map[string]bool, len(rewriteNames))
+			for _, d := range rewriteNames {
 				want[d] = map[string]bool{best: true}
 			}
 			stats, werr := provider.ReplaceRewrites(want)
 			if werr != nil {
 				s.appendLog("写入 AdGuard 失败: " + werr.Error())
 			} else {
-				s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名）", stats.Written, len(cfg.Domains)))
+				wild := len(rewriteNames) - len(cfg.Domains)
+				if wild > 0 {
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，其中 %d 条子域通配符）",
+						stats.Written, len(cfg.Domains), wild))
+				} else {
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名）", stats.Written, len(cfg.Domains)))
+				}
 			}
 		}
 	} else if cfg.AdGuard.URL == "" {
