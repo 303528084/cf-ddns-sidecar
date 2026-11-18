@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=IPv6 探测可填自己的 v6 段链接（下载后认出 IPv6 段挑节点，不再只用内置那一段，仍只测不写）；机房位置探测改用测速同款域名+失败重试，减少「位置未知」，保留 10 条时后几条也会探测；国家代码 4 处改成可搜索下拉多选；设置对勾改滑块、拨一下立即保存生效
+changelog=修复 IPv6 探测失败：引擎前置端口过滤认不出带方括号的 IPv6 地址，导致所有 v6 候选在测速前被清空、探测必定失败。现已修正，v6 候选能正常进入探测流程
 disable_authorization_path=true

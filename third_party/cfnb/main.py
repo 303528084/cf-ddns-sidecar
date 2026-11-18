@@ -1777,7 +1777,14 @@ def main():
     calibrate_regions(nodes, token_file, cache_file)
     if PRE_FILTER_PORT_ENABLED and PRE_FILTER_PORTS:
         before = len(nodes)
-        nodes = [n for n in nodes if n.split(':')[1].split('#')[0] in PRE_FILTER_PORTS]
+        # 本地补丁（cf-ddns-sidecar）：原来用 n.split(':')[1] 取端口，
+        # v4 的 1.2.3.4:443#US 恰好对；但 v6 节点 [2606:4700::1]:443#US 被
+        # 冒号切碎后第二段是 "4700"，导致 585 个 v6 候选全被误杀（前置端口
+        # 过滤 585→0）。改用 IP_PORT_PATTERN 正则取端口，v4/v6 都正确。
+        def _node_port(node):
+            m = IP_PORT_PATTERN.match(node)
+            return m.group(2) if m else None   # PRE_FILTER_PORTS 里是字符串（见 313 行）
+        nodes = [n for n in nodes if _node_port(n) in PRE_FILTER_PORTS]
         after = len(nodes)
         log("信息", f"前置端口过滤：{before} → {after}")
         if not nodes:
