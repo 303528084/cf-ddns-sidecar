@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=新增「本机 IPv6 检测」（IPv6 第一步，只读）：概览页可查看本机的公网 IPv6 地址、由哪块网卡来的、前缀和 flags。只显示、不改动任何解析或 AdGuard 设置，先看你的网络到底有没有能用的公网 v6。原有功能一行未变
+changelog=IPv6 第一步探测：概览页「本机 IPv6 检测」卡片新增「Cloudflare IPv6 节点探测」按钮，可从 CF 官方 v6 段挑节点测速、看速度和延迟，用来判断你的网络值不值得做 AAAA 解析。只测不写——不改动任何解析、AdGuard 或原有测速结果，原有 IPv4 优选功能一行未变
 disable_authorization_path=true
