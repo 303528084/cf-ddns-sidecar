@@ -491,6 +491,27 @@
     .adv-row{justify-items:start}
     .adv-row input[type=text],.adv-row input[type=number],.adv-row select{width:100%}
   }
+
+  /* ---------- 本机 IPv6 检测（只读） ----------
+     阶段①只显示、不写任何记录。这里不用 table.nodes：那张表在窄屏下有一套
+     专门的 grid-area 布局，套过来会和它的列定义打架。用一组 div 行，天然
+     窄屏堆叠，也能一并列清「地址 / 网卡 / 前缀 / flags / 为什么挑它」——
+     flags 原文是给真机核对用的（见 IPv6 方案第五节）。
+     全部用现成变量，深色模式自动适配，不写死颜色。 */
+  .v6-note{font-size:12.5px;line-height:1.7;margin-bottom:12px;padding:10px 12px;
+    border-radius:9px;background:var(--accent-soft);color:var(--muted)}
+  .v6-note b{color:var(--text);font-weight:600}
+  .v6-row{border:1px solid var(--line2);border-radius:10px;padding:11px 13px;margin-bottom:9px}
+  .v6-row:last-child{margin-bottom:0}
+  .v6-row.pick{border-color:var(--ok);background:var(--ok-soft)}
+  .v6-top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .v6-addr{font-family:var(--mono);font-size:12.5px;color:var(--text);word-break:break-all;flex:1;min-width:0}
+  .v6-meta{font-size:11.5px;color:var(--dim);margin-top:5px;font-variant-numeric:tabular-nums}
+  .v6-meta .sep{color:var(--line);margin:0 5px}
+  .v6-why{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .v6-row.pick .v6-why{color:var(--ok)}
+  .v6-stat{font-size:11.5px;color:var(--dim);margin-top:12px;line-height:1.7}
+  .v6-stat b{color:var(--muted);font-weight:600}
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -714,6 +735,28 @@
           真去问一次 Cloudflare 出口得到的，不是猜的。任何一项没测到就显示「—」，不会补数字。
         </div>
         <div class="hint hidden" id="s-runhint" style="padding:0 16px 12px;margin:0"></div>
+      </section>
+
+      <!-- 本机 IPv6 检测（阶段①：只读显示，不改任何东西） -->
+      <section class="card">
+        <div class="card-h">
+          <h2>本机 IPv6 检测</h2>
+          <span class="sub">只读查看，不写任何解析</span>
+          <div class="right">
+            <button class="btn sm flat" id="btn-v6" onclick="loadIPv6()">重新检测</button>
+          </div>
+        </div>
+        <div class="card-b">
+          <div class="v6-note" id="v6-note">正在读取本机网卡信息…</div>
+          <div id="v6-list"></div>
+          <div class="v6-stat hidden" id="v6-stat"></div>
+          <div class="hint" style="margin-top:12px">
+            这里只<b>显示</b>本机地址，不会改动任何解析或 AdGuard 设置。「挑中」的那条是按
+            「前缀 64 + 网卡名最短」选出的稳定地址；临时地址、链路本地（fe80）、私有段（fc/fd）
+            已被排除，不会出现在列表里。<b>能不能从外网连进来还取决于路由器是否放行</b>——
+            地址有、但手机流量打不开，就是入站没放行。flags 原文留给真机核对。
+          </div>
+        </div>
       </section>
     </section>
 
@@ -1575,6 +1618,81 @@ function resetAdvanced() {
   toast("已改回默认值，点「保存全部设置」才生效");
 }
 
+// 本机 IPv6 检测（阶段①，只读）。
+// 单独加载、不进 3 秒轮询：读 /proc 很便宜，但地址几乎不变，没必要每 3 秒刷一次。
+// 进后台时拉一次，用户点「重新检测」再拉一次。
+async function loadIPv6() {
+  const note = $("v6-note"), list = $("v6-list"), stat = $("v6-stat");
+  if (!note || !list) return;
+  const btn = $("btn-v6");
+  if (btn) btn.disabled = true;
+  try {
+    const j = await api("/api/ipv6");
+    if (!j || !j.ok) {
+      note.innerHTML = `<b>读不到本机网卡信息</b>：${escapeHtml((j && j.error) || "未知原因")}`;
+      list.innerHTML = "";
+      stat.classList.add("hidden");
+      return;
+    }
+    const r = j.report || {};
+    if (!r.available || !Array.isArray(r.candidates) || !r.candidates.length) {
+      note.innerHTML = "<b>没有找到可用的公网 IPv6 地址。</b>" +
+        "这通常意味着运营商没给公网 v6，或地址都被防火墙/临时地址过滤掉了——后面做 AAAA 解析也就没有意义。";
+      list.innerHTML = "";
+      renderV6Stat(r, stat);
+      return;
+    }
+
+    note.innerHTML = `<b>${escapeHtml(r.note || ("找到 " + r.candidates.length + " 条可用地址"))}</b>`;
+    // 挑中的排最前，其余按后端给的顺序。
+    const rows = r.candidates.slice().sort((a, b) => (b.selected ? 1 : 0) - (a.selected ? 1 : 0));
+    list.innerHTML = rows.map(c => {
+      const picked = !!c.selected;
+      const meta = [
+        "网卡 " + escapeHtml(c.interface || "?"),
+        "前缀 /" + (c.prefix || "?"),
+        "flags " + escapeHtml(c.flags_raw || "?"),
+        (c.permanent ? "稳定" : "非永久标记"),
+        (c.scope || "")
+      ].join('<span class="sep">·</span>');
+      return `<div class="v6-row${picked ? " pick" : ""}">
+        <div class="v6-top">
+          <span class="v6-addr">${escapeHtml(c.address || "")}</span>
+          <span class="pill ${picked ? "ok" : "mut"}">${picked ? "挑中" : "候选"}</span>
+        </div>
+        <div class="v6-meta">${meta}</div>
+        <div class="v6-why">${picked ? "为什么挑它：" : ""}${escapeHtml(c.why || "")}</div>
+      </div>`;
+    }).join("");
+    renderV6Stat(r, stat);
+  } catch (e) {
+    note.innerHTML = `<b>检测失败</b>：${escapeHtml(e.message || String(e))}`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 过滤统计：只给数量，不列被过滤的地址本身。
+function renderV6Stat(r, el) {
+  if (!el) return;
+  const f = r.filtered || {};
+  const parts = [];
+  const add = (n, label) => { if (n > 0) parts.push(label + " " + n); };
+  add(f.link_local, "链路本地");
+  add(f.ula, "私有段");
+  add(f.loopback, "回环");
+  add(f.temporary, "临时地址");
+  add(f.deprecated, "已废弃");
+  add(f.tentative, "未检测完");
+  add(f.other, "其他");
+  add(f.bad_line, "格式错误");
+  const excluded = parts.length ? parts.join("、") : "无";
+  const total = typeof r.total === "number" ? r.total : 0;
+  const okN = Array.isArray(r.candidates) ? r.candidates.length : 0;
+  el.innerHTML = `从 <b>${total}</b> 条地址里排除 <b>${total - okN}</b> 条（${escapeHtml(excluded)}），剩 <b>${okN}</b> 条可用。`;
+  el.classList.remove("hidden");
+}
+
 async function loadStatus() {
   const s = await api("/api/status");
   // 开发构建的版本号就是 "dev"，拼上 v 会变成「vdev」这种四不像。
@@ -2193,6 +2311,8 @@ async function boot() {
   enterApp();
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(loadStatus, 3000);
+  // IPv6 只读检测：进后台拉一次即可，不进上面的 3 秒轮询。
+  loadIPv6();
 }
 
 document.addEventListener("keydown", e => {

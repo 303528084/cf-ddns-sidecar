@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=清掉一批历史遗留：双容器时代两个从没生效过的脚本函数、v1.4.x 老数据目录的搬迁通道、日志里「搬卷失败」的过时说明。启动日志不再凭空声称旧位置里还留着一份配置；功能与数据位置一行未变
+changelog=新增「本机 IPv6 检测」（IPv6 第一步，只读）：概览页可查看本机的公网 IPv6 地址、由哪块网卡来的、前缀和 flags。只显示、不改动任何解析或 AdGuard 设置，先看你的网络到底有没有能用的公网 v6。原有功能一行未变
 disable_authorization_path=true

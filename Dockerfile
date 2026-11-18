@@ -16,6 +16,7 @@ COPY config/ config/
 COPY ddns/ ddns/
 COPY dns/ dns/
 COPY engine/ engine/
+COPY ipv6/ ipv6/
 COPY web/ web/
 COPY main.go ./
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \

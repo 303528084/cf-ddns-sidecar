@@ -196,6 +196,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/domains/wildcard", s.auth(s.handleDomainWildcard))
 	mux.HandleFunc("/api/adguard/rewrites", s.auth(s.handleAdguardRewrites))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
+	// 本机 IPv6 只读检测（阶段①）。只读、不改任何状态，但含本机网卡细节，仍需登录。
+	mux.HandleFunc("/api/ipv6", s.auth(s.handleIPv6))
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
 	// 所以即使所有外部数据源都不可达，测速依然能跑。
