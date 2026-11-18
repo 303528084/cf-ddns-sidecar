@@ -112,6 +112,17 @@ func TestColoGeoSanity(t *testing.T) {
 		if g.country == "" || g.city == "" {
 			t.Errorf("%s 的国家或城市为空: %+v", code, g)
 		}
+		// code 是给「按国家筛」用的两位代码，写错的表现是「筛了等于没筛」：
+		// 拿中文名或三位写法去和 HK/JP 比，永远对不上，而且不报错。
+		if len(g.code) != 2 || strings.ToUpper(g.code) != g.code {
+			t.Errorf("%s 的两位国家代码不合法: %q（应是大写两位，如 JP / HK）", code, g.code)
+		}
+		if countryCode(code) != g.code {
+			t.Errorf("%s 用 countryCode() 查不到自己的代码", code)
+		}
+	}
+	if countryCode("ZZZ") != "" {
+		t.Error("表里没有的机房应返回空串，不能瞎猜一个国家")
 	}
 }
 

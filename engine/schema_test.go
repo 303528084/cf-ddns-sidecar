@@ -86,6 +86,50 @@ func TestDangerousKeysNotExposed(t *testing.T) {
 	}
 }
 
+// TestCountrySwitchLabelsMatchEngineSemantics 守「白名单/黑名单这两个开关的标签
+// 别再接反」。
+//
+// 这两个键的名字和实际用途是**反的**：FILTER_COUNTRIES_ENABLED 在引擎里管的是
+// 白名单（ALLOWED_COUNTRIES），FILTER_BLOCKED_COUNTRIES_ENABLED 管的是黑名单
+// （BLOCKED_COUNTRIES）。光看键名很容易摆错——直到 2026-11-18 一直是接反的：
+// 用户以为自己在开「前置白名单」，实际开的是那份含 HK 的黑名单，效果正好相反。
+//
+// 所以这里同时守两件事：① 标签归属；② 每个开关在表里紧挨着它管的那份名单，
+// 顺序错了界面上就会出现「开关和名单隔着好几行」的迷惑排版。
+func TestCountrySwitchLabelsMatchEngineSemantics(t *testing.T) {
+	pairs := []struct{ toggle, list, label string }{
+		{"FILTER_COUNTRIES_ENABLED", "ALLOWED_COUNTRIES", "前置白名单"},
+		{"FILTER_BLOCKED_COUNTRIES_ENABLED", "BLOCKED_COUNTRIES", "DNS 黑名单"},
+	}
+	for _, p := range pairs {
+		spec, ok := Lookup(p.toggle)
+		if !ok {
+			t.Fatalf("%s 不在可覆盖参数表里", p.toggle)
+		}
+		if spec.Label != p.label {
+			t.Errorf("%s 的标签应该是「%s」（引擎就是这么用的），实际是「%s」——"+
+				"接反的话用户在界面上打开白名单、实际打开的是黑名单", p.toggle, p.label, spec.Label)
+		}
+		if _, ok := Lookup(p.list); !ok {
+			t.Fatalf("%s 不在可覆盖参数表里", p.list)
+		}
+	}
+	for i, spec := range Schema {
+		for _, p := range pairs {
+			if spec.Key != p.toggle {
+				continue
+			}
+			next := "(表尾)"
+			if i+1 < len(Schema) {
+				next = Schema[i+1].Key
+			}
+			if next != p.list {
+				t.Errorf("%s 后面应该紧跟 %s，实际是 %s", p.toggle, p.list, next)
+			}
+		}
+	}
+}
+
 func TestNormalizeOverrides(t *testing.T) {
 	got := NormalizeOverrides(map[string]any{
 		// 布尔：原样

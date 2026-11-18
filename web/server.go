@@ -1455,7 +1455,10 @@ func (s *Server) runOnce(cfg config.Config) error {
 			CandidatesURL:       localCandidates,
 			ExtraURLs:           fallbackURLs,
 			UseBuiltinSources:   !custom,
-			Overrides:           cfg.Speed.EngineOverrides,
+			// 用户的高级设置照传，但「按国家筛」那 8 个键要摘掉：候选带的是
+			// 占位标签 `#US`，交给引擎等于按假数据筛（见 country_filter.go）。
+			// 真实位置只有测完才知道，所以筛选挪到下面 colos 之后。
+			Overrides: v4Overrides(cfg),
 		}, s.appendLog)
 	}
 
@@ -1489,15 +1492,10 @@ func (s *Server) runOnce(cfg config.Config) error {
 	s.failCount = 0
 	s.mu.Unlock()
 
-	best := res.Best()
-	s.appendLog("测速完成，最优 IP: " + best)
-
 	// 上面那些 `1. x.x.x.x:443#US` 里的 `#US` **不是真实位置**，是我们为了满足
 	// 引擎的解析格式补的占位值（引擎遇到没有国家标签的裸 IP 会逐条去探测，
-	// 又慢又会把探测失败的节点丢掉）。它在引擎内部只用于国家过滤，而那个功能
-	// 在本产品里是关掉的，所以对结果毫无影响——但原样显示出来会让人以为
-	// 「程序认为这些 IP 都在美国」。这里真去问一次 Cloudflare 出口，补一行
-	// 可信的说法。探不到就不写，绝不编一个。
+	// 又慢又会把探测失败的节点丢掉）。所以引擎侧一律不按国家筛——按占位标签
+	// 筛等于筛假数据——国家筛选改在下面拿到真实位置之后做。
 	//
 	// 用独立于测速的 ctx：测速的预算已经快用完时，沿用它会一条都探不出去，
 	// 那这行日志就成了「探测不到」，反而误导。
@@ -1506,6 +1504,28 @@ func (s *Server) runOnce(cfg config.Config) error {
 	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
 	colos := s.logExitCountries(exitCtx, res.IPs)
 	exitCancel()
+
+	// 国家筛选放在这里，是这一笔改动最核心的取舍：
+	//
+	// 以前那 8 个键是交给引擎的，引擎在**探测之前**按候选自带的 `#US` 筛——
+	// 好处是「不合规的节点根本不测，省一半时间」，坏处是筛的是假标签，等于
+	// 开了也筛不出东西（白名单只勾 HK 时还会一条不剩）。
+	//
+	// 现在改成测完之后按真实机房位置筛，筛得对了，代价是**被筛掉的节点也白测
+	// 了一遍**，一轮会比以前慢。这一点如实写进日志（note 里那句「%d → %d 条」），
+	// 不装作没发生；想快就把国家开关关掉。
+	//
+	// 筛完一条不剩必须走失败分支：返回空列表会让后面把空结果写进
+	// AdGuard / DDNS，比直接报错更难查。
+	if res, err = s.refineResultByCountry(cfg, res, colos, "IPv4"); err != nil {
+		return s.failBeforeRun(err.Error())
+	}
+
+	// 最优 IP 必须在筛完之后再取：筛之前取，被筛掉的那个会一路带到
+	// AdGuard 重写和 DDNS 里，日志上还写着「最优 IP: x」——用户看到的是
+	// 一个他刚明确排除掉的机房。
+	best := res.Best()
+	s.appendLog("测速完成，最优 IP: " + best)
 
 	// 每个 IP 一行「质量数据」，界面直接渲染，不用再算。
 	nodes := buildNodeStats(res, colos)

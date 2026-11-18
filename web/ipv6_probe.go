@@ -218,6 +218,14 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	defer cancel()
 
 	probeDir := filepath.Join(s.workDir, "ipv6-probe")
+	// 「哪些设置交给引擎」和「按哪套国家规则筛」这两件事进来先定死。
+	// 用快照而不是边跑边读配置：一次探测要 1~2 分钟，中途用户点「保存设置」
+	// 会让「按 A 规则测出来的结果」和「按 B 规则筛」拼在一起，事后没人说得清。
+	// （保留候选条数仍由 v6TopN/v6BandwidthCandidates 现取，那两个有默认值兜底。）
+	s.mu.Lock()
+	cfg := s.cfg.Clone()
+	s.mu.Unlock()
+
 	// 用户填了链接就在这里下载解析一次；失败要马上说清原因，不进测速环节
 	// ——否则用户只会看到"测速没有产出可用 IP"，根本不知道是链接填错了。
 	if err := s.stageIPv6Candidates(ctx); err != nil {
@@ -234,9 +242,11 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 		BandwidthCandidates: s.v6BandwidthCandidates(),
 		CandidatesURL:       s.selfURL + "/api/ipv6/candidates",
 		UseBuiltinSources:   false, // 只用我们喂的 v6 候选，不叠加 v4 聚合源
-		// 按用户定稿的决定②：探测阶段就关掉"过滤 ipv6_only 出口"的开关，
-		// 否则 v6 节点会在写结果前被全部剔除，探测永远看不到它们。
-		Overrides: map[string]any{"FILTER_IPV6_AVAILABILITY": false},
+		// 用户的高级设置照传，但国家那几项除外——v6 候选没有真实国家标签，
+		// 交给引擎只会误杀或空转，改由测完按机房位置筛（见 v6_settings.go）。
+		// 里面最后一条会强制压掉"过滤 ipv6_only 出口"（用户定稿的决定②）：
+		// 那个开关一开，v6 节点会在写结果前被全部剔除，探测永远看不到它们。
+		Overrides: v6Overrides(cfg),
 	}, s.appendLog)
 
 	if err != nil {
@@ -265,6 +275,17 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
 	colos := s.logExitColos(exitCtx, res.IPs, "IPv6 ")
 	exitCancel()
+
+	// 国家筛选必须放在这里：候选带的 `#US` 是占位标签，真实位置只有探完
+	// 机房才知道。代价是被筛掉的节点也白测了一遍——日志里如实写出来。
+	if res, err = s.refineResultByCountry(cfg, res, colos, "v6"); err != nil {
+		s.mu.Lock()
+		s.v6ProbeErr = err.Error()
+		s.v6ProbeNodes = nil
+		s.mu.Unlock()
+		return nil, err
+	}
+
 	stats := buildNodeStats(res, colos)
 
 	s.mu.Lock()

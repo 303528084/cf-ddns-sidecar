@@ -114,12 +114,27 @@ var Schema = []OptSpec{
 	},
 	{
 		Key: "PRE_FILTER_BLOCKED_ENABLED", Label: "前置黑名单", Group: "flow", Kind: KindBool, Def: false,
-		Help: "在验证之前就按国家把节点剔掉。**默认关着**，而且是有原因的：聚合源里的国家标签大多不准" +
-			"（那个 #US 是我们为了跑通流程补的占位值，不是真实位置），按它筛很容易把好节点误杀。",
+		Help: "按「前置黑名单的国家」剔节点。**默认关着**。" +
+			"注意它其实也是**测完、探到真实机房位置之后**才剔的（和「DNS 黑名单」同一套办法），" +
+			"不是按候选自带的国家标签——那个 #US 是我们为了跑通流程补的占位值，不是真实位置。" +
+			"查不到位置的节点会留着不动。",
 	},
 	{
 		Key: "PRE_FILTER_BLOCKED_COUNTRIES", Label: "前置黑名单的国家", Group: "flow", Kind: KindCountries, Def: []string{"CN"},
 		Help: "点开下拉勾选国家，可多选，也能搜中文名或代码。不用手填两位代码。只有上面那个开关打开时才生效。",
+	},
+	// 下面这两个开关以前标签接反了：叫「前置白名单」的那个对应引擎的
+	// 黑名单开关，叫「DNS 黑名单」的那个才是白名单开关。引擎自己的日志就是
+	// 铁证——它把白名单那条印成「前置白名单 启用」，把黑名单那条印成
+	// 「DNS黑名单过滤」。接反的后果不是显示难看，而是**开了正好反着来**：
+	// 想只留香港的人打开「前置白名单」，实际打开的是那份含 HK 的黑名单。
+	// 现在按引擎的真实归属摆，并且让每个开关紧挨着它管的那份名单。
+	{
+		Key: "FILTER_COUNTRIES_ENABLED", Label: "前置白名单", Group: "flow", Kind: KindBool, Def: false,
+		Help: "打开后只留下「前置白名单的国家」里那些。**默认关**。" +
+			"注意筛的是**测完之后探到的真实机房位置**——IPv4 和 IPv6 都一样，" +
+			"所以筛不到位置的节点算不通过（没证据是香港就不算数）。" +
+			"代价是被筛掉的节点也测了一遍，一轮会慢一些；想快就把这个开关关掉。",
 	},
 	{
 		Key: "ALLOWED_COUNTRIES", Label: "前置白名单的国家", Group: "flow", Kind: KindCountries, Def: []string{"HK"},
@@ -127,13 +142,10 @@ var Schema = []OptSpec{
 			"非香港节点会全部消失，这是很多人「优选不出东西」的原因。在下拉里勾选国家，不用手填代码。",
 	},
 	{
-		Key: "FILTER_BLOCKED_COUNTRIES_ENABLED", Label: "前置白名单", Group: "flow", Kind: KindBool, Def: false,
-		Help: "打开后只留下「前置白名单的国家」里那些。默认关。",
-	},
-	{
-		Key: "FILTER_COUNTRIES_ENABLED", Label: "DNS 黑名单", Group: "flow", Kind: KindBool, Def: false,
-		Help: "反代验证之后、写结果之前，再按国家剔一次。和「前置黑名单」的区别只是发生得更晚。" +
-			"默认关，理由同上：国家标签不可靠。",
+		Key: "FILTER_BLOCKED_COUNTRIES_ENABLED", Label: "DNS 黑名单", Group: "flow", Kind: KindBool, Def: false,
+		Help: "测完并探到真实机房位置之后，按「DNS 黑名单的国家」再剔一次。" +
+			"默认关。IPv4 和 IPv6 都照这份名单剔，剔的是真实位置；查不到位置的留着不动" +
+			"（不能因为查不到就假定它违规）。",
 	},
 	{
 		Key: "BLOCKED_COUNTRIES", Label: "DNS 黑名单的国家", Group: "flow", Kind: KindCountries,
