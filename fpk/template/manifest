@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=AdGuard 那块多了一条独立的写入通道：把别人维护的 hosts 清单（比如 hosts.gitcdn.top 那种）填进来，每轮测速顺手同步进重写表。它和「加速域名」互不影响——同名时用测速结果那个 IP、清单里那条跳过并记一笔；0.0.0.0 和 127.0.0.1 这种「别解析」的拦截条目不写（跳过并记数），IPv6 地址照写。拉取失败时用上一轮的结果，已有记录一条不删；关掉开关后下一轮会把它写过的记录整批收回，而你自己在 AdGuard 后台加的记录始终不碰。要注意填的是清单文件本身（https://hosts.gitcdn.top/hosts.txt），填根路径那是一个网页、界面会直接提示。
+changelog=修一个「关掉开关像没生效」的问题。上一版关掉 GitHub hosts 源的开关时，要等到下一轮测速（默认 60 分钟）才把记录收回来，中间这段时间记录还在、日志也不给新行，看起来就是开关坏了。现在点一下开关就立刻收回，日志当场写「把 AdGuard 上由它写的 N 条记录收回来」「已关闭 hosts 源，从 AdGuard 收回 N 条」，不用等测速；开关开着但把来源链接清空，也按同样方式收回。其余行为一字未改。
 disable_authorization_path=true

@@ -280,6 +280,22 @@ func mergeHostsWant(want map[string]map[string]bool, cfg config.Config, names []
 	return st
 }
 
+// hostsWantFor 决定「这一块现在该在 AdGuard 上有哪些记录」。
+//
+// 返回值同时有两种含义，和 ReplaceRewrites 的认领语义对齐：
+//   - 给了账本 → 这些域名归 hosts 源管，答案就是清单里那些；
+//   - nil     → **这一块一条都不该有**。开关关掉、或者来源被清空时就是这种，
+//     把账本交给 mergeHostsWant 时会变成「空答案集」，也就是从 AdGuard 收回。
+//
+// 单独提出来是为了能测：`syncRewrites` 要连真 AdGuard，测不动；
+// 而「关掉开关后到底传不传账本」正是这条功能最容易接错的地方。
+func hostsWantFor(cfg config.Config) map[string]string {
+	if !cfg.HostsEnabled || len(cfg.HostsSourceURLs()) == 0 {
+		return nil
+	}
+	return cfg.HostsEntries
+}
+
 // resolveHosts 决定这一轮 hosts 写入用哪些条目。
 //
 // 三种情况分开走，日志也分开说，因为它们对用户意味着完全不同的事：

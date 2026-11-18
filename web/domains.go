@@ -17,6 +17,7 @@ package web
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -106,10 +107,31 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	// hosts 那一块也要带上。少了这一步，用户每加一个加速域名就会把 hosts 源
 	// 写的那几十条**整份删掉**（want 里没有的域名，在认领语义下等于"不该有
 	// 记录"），而界面上只会显示一句"已写入 AdGuard：1 条"。
-	hostsStat := mergeHostsWant(want, cfg, names, cfg.HostsEntries)
+	//
+	// 开关关掉、或者来源被清空时传 nil 进去：这一步就变成**收回**
+	// ——mergeHostsWant 会把账本里那些「不再归它管」的域名给空集合，等于从
+	// AdGuard 上删掉它们。用户关掉开关时立即走这一段（见 web/switch.go），
+	// 不用等到下一轮测速，否则「点完开关什么也没发生」看起来就是没生效。
+	hostsWant := hostsWantFor(cfg)
+	// hostsWant 为 nil ＝ 这一块现在不该有任何记录（开关关掉 / 来源为空），
+	// 于是 mergeHostsWant 会把账本里的域名给空集合，也就是从 AdGuard 收回。
+	hostsOff := hostsWant == nil
+	hostsStat := mergeHostsWant(want, cfg, names, hostsWant)
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {
 		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）"
+	}
+	// 收回成功之后账本要跟着清空，否则下一轮还会以为这些域名仍归它管，
+	// 反复去删一批已经不在的记录。
+	if hostsOff && len(cfg.HostsEntries) > 0 {
+		s.mu.Lock()
+		s.cfg.HostsEntries = nil
+		s.cfg.HostsSyncedAt = ""
+		toSave := s.cfg.Clone()
+		s.mu.Unlock()
+		if err := toSave.Save(); err != nil {
+			log.Printf("保存配置失败: %v", err)
+		}
 	}
 	// 记下这一轮认领的域名。删域名这条路上它特别关键：账本是「下次同步该清
 	// 哪些旧记录」的唯一依据。
@@ -123,6 +145,10 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	}
 	if hostsStat.added > 0 {
 		parts = append(parts, itoa(hostsStat.added)+" 条 hosts 源")
+	}
+	// 关掉开关这一路，重点不是「写进去了几条」，而是「收回来了几条」。
+	if hostsOff && hostsStat.cleared > 0 {
+		return "已关闭 hosts 源，从 AdGuard 收回 " + itoa(hostsStat.cleared) + " 条"
 	}
 	if len(parts) > 0 {
 		msg += "（含 " + strings.Join(parts, "、") + "）"

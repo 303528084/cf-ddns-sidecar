@@ -285,3 +285,30 @@ func TestResolveHostsSuccess(t *testing.T) {
 		t.Error("应该用这一轮的新结果，不该把上一轮的混进来")
 	}
 }
+
+// TestHostsWantForOffMeansClear 锁住「关掉开关 = 账本交给收回逻辑」这条线。
+//
+// 接错的表现很隐蔽：开关关掉、日志一个字不记、记录原封不动留在 AdGuard 上
+// （2026-11-18 真机就是这么反馈的），看起来像开关没生效。
+func TestHostsWantForOffMeansClear(t *testing.T) {
+	cfg := config.Default().Clone()
+	cfg.HostsSource = "https://hosts.gitcdn.top/hosts.txt"
+	cfg.HostsEntries = map[string]string{"a.example.com": "1.2.3.4"}
+
+	cfg.HostsEnabled = true
+	if got := hostsWantFor(cfg); len(got) != 1 {
+		t.Fatalf("开着且填了来源时要交账本，实际 %v", got)
+	}
+
+	cfg.HostsEnabled = false
+	if got := hostsWantFor(cfg); got != nil {
+		t.Fatalf("关掉开关时必须给 nil（＝收回），实际 %v", got)
+	}
+
+	// 开关还开着但来源被清空：同样一条都不该留。
+	cfg.HostsEnabled = true
+	cfg.HostsSource = "  \n# 只剩注释\n"
+	if got := hostsWantFor(cfg); got != nil {
+		t.Fatalf("来源为空时必须给 nil，实际 %v", got)
+	}
+}

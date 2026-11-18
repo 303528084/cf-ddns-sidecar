@@ -78,5 +78,24 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	s.cfg = &cfg
 	s.mu.Unlock()
 
+	// 关掉 hosts 源时立即把它写过的记录收回来，不等到下一轮测速。
+	//
+	// 为什么要专门加这一步：清理由 `mergeHostsWant` 顺手完成（账本里
+	// 「不再归它管」的域名给空集合），而那条路只在测速结束、写 AdGuard 时
+	// 走。用户关掉开关后如果看到几十条记录还在，合理的判断就是「开关没生效」，
+	// 而日志里要等到下一次测速才会给出解释——中间这段时间的沉默本身就是 bug。
+	if key == "hosts_enabled" && !body.Value {
+		if len(cfg.HostsEntries) > 0 {
+			s.appendLog("hosts 源已关闭：把 AdGuard 上由它写的 " +
+				itoa(len(cfg.HostsEntries)) + " 条记录收回来")
+		}
+		note := s.syncRewrites(cfg)
+		s.appendLog(note)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "key": key, "value": body.Value, "message": note,
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": key, "value": body.Value})
 }
