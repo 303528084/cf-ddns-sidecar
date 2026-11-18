@@ -203,6 +203,22 @@ type Config struct {
 	LastIPv6Nodes []NodeStat `json:"last_ipv6_nodes,omitempty"`
 	LastIPv6Time  string     `json:"last_ipv6_time,omitempty"`
 
+	// RewrittenDomains 是「上一次成功写进 AdGuard 重写的域名清单」，也就是
+	// 本工具在 AdGuard 上认领过的域名。它只用来回答一个问题：**哪些旧记录
+	// 现在可以删了**。
+	//
+	// 为什么非要有这个账本：写 AdGuard 从 2026-11-18 起改成「只动自己管的
+	// 域名」，而「自己管的」就是当前域名列表（RewriteDomains）。用户从列表里
+	// 删掉 a.com 之后，a.com 就不在列表里了，程序也就再没理由碰它——AdGuard
+	// 上那条 a.com → 旧 IP 的记录会一直留着，家里设备查 a.com 还是走老地址，
+	// 而界面上什么都看不出来。等于把一个「明目张胆的误删」换成一个「看不见的
+	// 残留」。有这份账本，下次同步就知道「a.com 以前归我管、现在不管了」，
+	// 把它清掉。
+	//
+	// 不删它也不影响别的：账本里的域名如果又加回列表，它立刻变回「自己管的」，
+	// 照常重写，不需要任何迁移。
+	RewrittenDomains []string `json:"rewritten_domains,omitempty"`
+
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
 	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
 	PendingSave bool `json:"-"`
@@ -522,6 +538,12 @@ func (c *Config) Clone() Config {
 	}
 	if len(c.LastIPv6Nodes) > 0 {
 		cp.LastIPv6Nodes = append(make([]NodeStat, 0, len(c.LastIPv6Nodes)), c.LastIPv6Nodes...)
+	}
+	// RewrittenDomains 是「测速线程写、域名页读」的一份账本，同样不能共享底层
+	// 数组：测速那一路会在同步成功后整段替换它，而另一处正在遍历判断哪些域名
+	// 该清——共享底层数组就会边读边改。
+	if len(c.RewrittenDomains) > 0 {
+		cp.RewrittenDomains = append(make([]string, 0, len(c.RewrittenDomains)), c.RewrittenDomains...)
 	}
 	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
 	if len(c.Speed.ExtraSources) > 0 {

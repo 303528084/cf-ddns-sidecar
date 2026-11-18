@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -775,6 +777,36 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// parseV6SourceInput 把「IPv6 段链接」那一栏的原始文本按行校验成链接列表。
+//
+// 只认链接（http:// 或 https://）：这一栏刻意不支持直接写 IP 段，因为它的
+// 语义就是「去哪里拉一份 v6 段清单」。想手写段请用上面的「优选 IP 段」。
+// 空行丢掉；# 开头的注释行原样保留（用户拿它分隔/记事），只是不参与拉取。
+//
+// 为什么要单独一个函数、而不是各写一份：保存配置和导入备份校验的是同一栏，
+// 两份规则各自漂移就会出现「界面存得进、备份导不进」这类没人想得到的分歧。
+func parseV6SourceInput(raw string) ([]string, error) {
+	var out []string
+	for i, l := range strings.Split(raw, "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if strings.HasPrefix(t, "#") {
+			out = append(out, t)
+			continue
+		}
+		u, perr := url.Parse(t)
+		if perr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return nil, fmt.Errorf(
+				"「IPv6 段链接」第 %d 行不是合法链接：%s。每行要填 http:// 或 https:// 开头的地址",
+				i+1, t)
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AdGuardURL      string `json:"adguard_url"`
@@ -860,31 +892,14 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 「IPv6 段链接」逐行校验，错一行就整单退回并指明第几行。
-	//
-	// 只认链接（http:// 或 https://）：这一栏刻意不支持直接写 IP 段，因为
-	// 它的语义就是「去哪里拉一份 v6 段清单」。想手写段请用上面的「优选 IP 段」。
-	// 空行和 # 开头的注释会原样保留（用户拿它分隔/记事），只是不参与拉取。
 	var v6Lines []string
 	if body.IPv6ProbeURL != nil {
-		for i, l := range strings.Split(*body.IPv6ProbeURL, "\n") {
-			t := strings.TrimSpace(l)
-			if t == "" || strings.HasPrefix(t, "#") {
-				if t != "" {
-					v6Lines = append(v6Lines, t)
-				}
-				continue
-			}
-			u, perr := url.Parse(t)
-			if perr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-				writeJSON(w, 400, map[string]string{
-					"error": fmt.Sprintf(
-						"「IPv6 段链接」第 %d 行不是合法链接：%s。每行要填 http:// 或 https:// 开头的地址",
-						i+1, t),
-				})
-				return
-			}
-			v6Lines = append(v6Lines, t)
+		lines, verr := parseV6SourceInput(*body.IPv6ProbeURL)
+		if verr != nil {
+			writeJSON(w, 400, map[string]string{"error": verr.Error()})
+			return
 		}
+		v6Lines = lines
 	}
 
 	s.mu.Lock()
@@ -1033,15 +1048,43 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 			return
 		}
-		existing := config.LoadEnvFile(config.EnvFilePath())
+		// 只收白名单里的密钥名。
+		//
+		// 导入备份那条路早就这么做（`allowedSecretKeys`），这里原来没有：
+		// 同一个原则只在导入侧落实、正常保存侧没落实，等于留了个「往 ddns.env
+		// 里塞任意变量」的口子。而 ddns.env 会被宿主机的生命周期脚本当环境
+		// 文件整个读进去（`config_callback` / `main`），塞进去的键能影响那些脚本。
+		//
+		// 未知键直接退回并点名，不静默丢也不静默写——不管是哪一种，等用户发现
+		// 「填了没生效」时都已经想不起是哪一步了。
+		allowed := make(map[string]bool, 16)
+		for _, k := range config.AllCredentialKeys() {
+			allowed[k] = true
+		}
+		kv := make(map[string]string, len(body))
+		var unknown []string
 		for k, v := range body {
 			v = strings.TrimSpace(v)
 			if v == "" {
 				continue // 留空表示不修改
 			}
-			existing[k] = v
+			if !allowed[k] {
+				unknown = append(unknown, k)
+				continue
+			}
+			kv[k] = v
 		}
-		if err := config.SaveEnvFile(config.EnvFilePath(), existing); err != nil {
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			writeJSON(w, 400, map[string]string{
+				"error": "不认识的密钥项：" + strings.Join(unknown, "、"),
+			})
+			return
+		}
+		// 用 UpdateEnvFile 而不是 SaveEnvFile：后者是整份重写，会把 ddns.env
+		// 里用户自己写的注释、以及被注释掉的备用密钥（`#CF_API_TOKEN=旧的`）
+		// 一起冲掉——这正是 UpdateEnvFile 顶部那段注释在防的事。
+		if err := config.UpdateEnvFile(config.EnvFilePath(), kv); err != nil {
 			writeJSON(w, 500, map[string]string{"error": "保存密钥失败: " + friendlyErr(err)})
 			return
 		}
@@ -1226,6 +1269,72 @@ func rewriteAnswers(bestV4 string, v6IPs []string) map[string]bool {
 		answers[v6IPs[0]] = true
 	}
 	return answers
+}
+
+// keptNote 把「保留了 N 条别人的记录」拼成日志尾巴，没有就返回空串。
+//
+// 这一句是给用户吃的定心丸，也让「本工具会不会顺手删掉我的规则」这件事每次
+// 都有一次可核对的记录，而不是靠我们口头保证。
+func keptNote(kept int) string {
+	if kept <= 0 {
+		return ""
+	}
+	return "，保留了 " + itoa(kept) + " 条不是本工具写的记录"
+}
+
+// rewritePlan 组装这一轮要写进 AdGuard 的完整意图。
+//
+// 两部分：
+//   - 当前域名列表（含「包含子域」派生出来的 *.域名）→ 各自该有的答案；
+//   - 账本里有、但这一轮已经不管的域名 → 空答案集，意思是「把这域名下的记录
+//     全清掉」。这就是用户从列表里删掉一个域名后，AdGuard 上那条旧记录能被
+//     清掉的原因（见 config.Config.RewrittenDomains）。
+//
+// answers 为空（还没测出任何 IP）时**不做清理**：那种情况下空答案集会变成
+// 「把所有域名下的记录都删掉」，把上一轮好好的结果抹了。调用方本来就都会先
+// 拦住「没有 IP 就不写」，这里再兜一层，因为这一层出错是静默的。
+func rewritePlan(cfg config.Config, names []string, answers map[string]bool) map[string]map[string]bool {
+	want := make(map[string]map[string]bool, len(names))
+	for _, d := range names {
+		want[d] = answers
+	}
+	if len(answers) == 0 {
+		return want
+	}
+	for _, d := range cfg.RewrittenDomains {
+		if d == "" {
+			continue
+		}
+		if _, ok := want[d]; ok {
+			continue // 又加回列表了，按当前答案写，不当成要清的
+		}
+		want[d] = map[string]bool{}
+	}
+	return want
+}
+
+// rememberRewritten 把「这一轮真正认领了哪些域名」记进配置并落盘。
+//
+// 只在内容变了的时候写盘：没变还写的话，每一轮测速都会顺手刷新一次
+// config.json 和它的 .bak，等于每轮都覆盖掉「升级出事后能捡回来的那一份」。
+//
+// 失败只打日志、不往上抛：账本没记上不影响这一轮已经写进 AdGuard 的结果，
+// 下一轮同步会自动再记一次（账本是自愈的，不需要人工补救）。
+func (s *Server) rememberRewritten(domains []string) {
+	s.mu.Lock()
+	cur := s.cfg
+	if cur == nil || slices.Equal(cur.RewrittenDomains, domains) {
+		s.mu.Unlock()
+		return
+	}
+	next := cur.Clone()
+	next.RewrittenDomains = domains
+	s.cfg = &next
+	s.mu.Unlock()
+
+	if err := next.Save(); err != nil {
+		s.appendLog("记下 AdGuard 域名清单失败（不影响这次写入，下次同步会再记一次）: " + friendlyErr(err))
+	}
 }
 
 func (s *Server) runOnce(cfg config.Config) error {
@@ -1445,25 +1554,25 @@ func (s *Server) runOnce(cfg config.Config) error {
 		if perr != nil {
 			s.appendLog("AdGuard 写入失败: " + perr.Error())
 		} else {
-			want := make(map[string]map[string]bool, len(rewriteNames))
-			for _, d := range rewriteNames {
-				want[d] = rewriteAnswers(best, v6RoundIPs)
-			}
+			want := rewritePlan(cfg, rewriteNames, rewriteAnswers(best, v6RoundIPs))
 			stats, werr := provider.ReplaceRewrites(want)
 			if werr != nil {
 				s.appendLog("写入 AdGuard 失败: " + werr.Error())
 			} else {
+				// 记下这一轮认领的域名：下次用户从列表里删掉某个域名时，
+				// 靠这份账本才知道 AdGuard 上那条旧记录该清掉。
+				s.rememberRewritten(rewriteNames)
 				wild := len(rewriteNames) - len(cfg.Domains)
 				fam := "仅 IPv4"
 				if len(v6RoundIPs) > 0 {
 					fam = "IPv4 + IPv6"
 				}
 				if wild > 0 {
-					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，其中 %d 条子域通配符，%s）",
-						stats.Written, len(cfg.Domains), wild, fam))
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，其中 %d 条子域通配符，%s）%s",
+						stats.Written, len(cfg.Domains), wild, fam, keptNote(stats.Kept)))
 				} else {
-					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，%s）",
-						stats.Written, len(cfg.Domains), fam))
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，%s）%s",
+						stats.Written, len(cfg.Domains), fam, keptNote(stats.Kept)))
 				}
 			}
 		}

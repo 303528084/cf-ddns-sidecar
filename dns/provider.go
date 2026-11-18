@@ -23,13 +23,24 @@ type RewriteEntry struct {
 
 // SyncStats 记录一次 ReplaceRewrites 的操作统计。
 type SyncStats struct {
-	Written int // 新增或更新的条目数
-	Removed int // 清理的条目数
+	Written int // 本次新增的条目数
+	Removed int // 本次删除的条目数
+	// Kept 是「不归本工具管、原样留着」的条目数。
+	//
+	// 单独记一个数不是为了好看：用户最担心的事就是「我这个工具会不会顺手
+	// 删掉我别处加的规则」。日志里出现「保留了 N 条别人的记录」时，这个担心
+	// 才算被证明过一次，而不是靠我们口头保证。
+	Kept int
 }
 
 // Provider 是一个 DNS 实例的统一操作接口。
-// want 的语义为「期望的完整重写集合」：domain → 允许的 answer 集合
-// （空集合表示该域名不应存在任何记录）。
+// want 的语义为「本工具认领的域名 → 期望的答案集合」：
+//   - want 的**键**就是认领范围，不在这里面的域名一律不碰（用户自己加的、
+//     AdGuard 自带的重写规则都靠这一条保住）；
+//   - want[d] 里没有的答案会被删掉，缺的会被补上；
+//   - want[d] 是**空集合**表示「这个域名不该有任何记录」，用于清掉用户已经
+//     从域名列表里删掉、但 AdGuard 上还留着的旧记录（见
+//     config.Config.RewrittenDomains）。
 type Provider interface {
 	// Name 返回 provider 类型标识。
 	Name() string

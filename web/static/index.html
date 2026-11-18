@@ -299,11 +299,15 @@
     border-bottom:1px solid var(--line2);background:var(--ok-soft)}
   .rw-item:last-child{border-bottom:none}
   .rw-item.stale{background:var(--warn-soft)}
+  /* 不归本工具管的那些：不上色。以前它们全是黄底，看起来像是「马上要被删」，
+     实际一直是安全的——底色跟着真实后果走，界面才不会比实际更吓人。 */
+  .rw-item.foreign{background:transparent}
   .rw-item .d{font-weight:500;min-width:0;word-break:break-all}
   .rw-item .i{color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;word-break:break-all}
   .rw-item .mark{margin-left:auto;font-size:11px;white-space:nowrap;flex:none}
   .rw-item .mark.keep{color:var(--ok)}
   .rw-item .mark.drop{color:var(--warn)}
+  .rw-item .mark.out{color:var(--muted)}
   .rw-empty{padding:16px;font-size:12.5px;color:var(--dim);text-align:center}
 
   /* ---------- 分页 ---------- */
@@ -583,6 +587,18 @@
   input.tgl[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
   input.tgl[type=checkbox]:checked::before{transform:translateX(16px)}
   input.tgl[type=checkbox]:focus-visible{box-shadow:0 0 0 3px rgba(59,91,219,.28)}
+  /* ---------- 备份恢复结果 ----------
+     为什么不用 toast：一段「已恢复 9 项；这 6 项文件里没，保持了原值：…」
+     有一百多字，toast 2.2 秒就消失，等于没说（登录失败那句也是这个理由）。
+     这里给它一个自己的位置，一直留到用户下次操作。 */
+  .imp-box{
+    margin-top:14px;padding:12px 14px;border:1px solid var(--line);
+    border-radius:10px;background:var(--line2);
+  }
+  .imp-box .t{font-weight:600;margin-bottom:4px}
+  .imp-box .ok{color:var(--ok)}
+  .imp-box .gap{color:var(--warn)}
+  .imp-box .kv{color:var(--muted);word-break:break-word}
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -661,6 +677,12 @@
        窄屏先藏起来，把宽度留给域名本身。 */
     .dom-item .dip{display:none}
     .dom-item{padding:10px 11px}
+
+    /* AdGuard 重写表：手机上「域名 + IP + 状态」挤不进一行时，让状态整块
+       换到下一行，而不是把 IP 从中间断开（会出现「104.16.0.」换行成「9」，
+       那种断法比换行难看得多，也容易看错数字）。 */
+    .rw-item{flex-wrap:wrap;row-gap:2px}
+    .rw-item .mark{margin-left:auto}
   }
 
 </style>
@@ -903,9 +925,10 @@
           </div>
           <div id="rw-box" class="hidden">
             <div class="hint" style="margin-top:8px">
-              这就是 AdGuard Home 里当前的 DNS 重写表（原文，不经任何加工）。
-              绿色的行是下次测速后会保留的；<span style="color:var(--warn)">黄色的行是下次测速会被清掉的</span>——
-              因为每次测速都是「清空整张表，再按「要加速的域名」重新写一遍」，你自己手工加的其他记录也会被清掉。
+              AdGuard Home 里当前的重写表（原文）。
+              绿色＝下次同步保留，<span style="color:var(--warn)">黄色＝会被改掉或清掉</span>，
+              <span style="color:var(--muted)">灰色＝不归这个程序管、永远不动</span>。
+              它只碰「要加速的域名」里的那些；同一个域名下你自己加的记录会被覆盖。
             </div>
             <div class="rw-list" id="rw-list"></div>
           </div>
@@ -1096,6 +1119,9 @@
             </div>
             <textarea id="export-text" readonly rows="8" onclick="this.select()"></textarea>
           </div>
+          <!-- 恢复结果的明细留在页面上（toast 会消失，而「有哪些没恢复」
+               恰恰是最该让人看清的一句话）。 -->
+          <div id="import-result" class="hidden"></div>
         </div>
       </div>
     </section>
@@ -2438,19 +2464,50 @@ async function exportConfig() {
   toast("已生成 " + name + "，请到下载目录里找（没反应就手动复制下面那段）");
 }
 
-function pickImport() { $("import-file").click(); }
+function pickImport() {
+  // 旧的结果先撤掉：不撤的话上上次恢复的明细会挂在那里，看起来像这次的结果。
+  $("import-result").classList.add("hidden");
+  $("import-file").click();
+}
+
+// renderImportResult 画出「恢复了什么、哪些因为是老备份而保持了原值」。
+//
+// 为什么值得单独一块地方：恢复这件事，用户唯一能核对的就是这几行字。
+// 只说一句「已恢复」，他没有任何办法知道「记录类型还是不是 A+AAAA」。
+function renderImportResult(restored, kept, warns) {
+  const box = $("import-result");
+  let html = `<div class="t ok">已按文件恢复 ${restored.length} 项设置</div>`;
+  if (restored.length) html += `<div class="kv">${restored.map(escapeHtml).join("、")}</div>`;
+  if (kept.length) {
+    html += `<div class="t gap" style="margin-top:10px">这 ${kept.length} 项文件里没有，保持了原来的值</div>` +
+      `<div class="kv">${kept.map(escapeHtml).join("、")}</div>` +
+      `<div class="kv">老版本导出的备份里没有这些项。如果它们对你有用，请逐项确认一遍再点「保存全部设置」。</div>`;
+  }
+  if (warns.length) {
+    html += `<div class="t gap" style="margin-top:10px">提示</div>` +
+      `<div class="kv">${warns.map(escapeHtml).join("<br>")}</div>`;
+  }
+  box.innerHTML = html;
+  box.className = "imp-box";
+}
 
 async function importConfig(input) {
   const f = input.files && input.files[0];
   if (!f) return;
-  const ok = confirm("恢复会用文件里的内容覆盖当前全部设置：AdGuard 地址与账号、要加速的域名、测速参数、DDNS 服务商和密钥。\n\n后台登录密码不受影响。确定继续吗？");
+  const ok = confirm("恢复会用文件里的内容覆盖当前全部设置：AdGuard 地址与账号、要加速的域名（含「包含子域」）、测速参数、IPv6 段链接、DDNS 服务商与记录类型、密钥。\n\n如果文件里没有某一项（老版本导出的备份），那一项会保持现在的值——恢复完会告诉你具体是哪几项。后台登录密码不受影响。确定继续吗？");
   if (!ok) { input.value = ""; return; }
 
   try {
     const text = await f.text();
     const r = await api("/api/config/import", { method: "POST", body: text });
     const warns = (r && r.warnings) || [];
-    toast(warns.length ? "已恢复，但有提示：" + warns.join("；") : "已恢复全部设置");
+    const kept = (r && r.kept) || [];
+    const restored = (r && r.restored) || [];
+    renderImportResult(restored, kept, warns);
+    // toast 只说一句结论，明细在上面的框里——那才是不会消失、能照着核对的地方。
+    toast(kept.length
+      ? `已恢复 ${restored.length} 项，${kept.length} 项保持原值（明细见下方）`
+      : "已恢复全部设置");
     await loadConfig();
     credState = await api("/api/credentials");
     renderProvider();
@@ -2623,8 +2680,12 @@ async function pushDDNS() {
 }
 
 // ---- AdGuard 重写表预览 ----
-// 为什么要给用户看这个：每次测速都会「清空整张表再重建」，你在 AdGuard 里
-// 自己手工加的重写会被一起清掉。以前这件事只写在代码注释里，用户是受害者。
+// 为什么要给用户看这个：同步会改写「要加速的域名」下的重写记录，同一个域名
+// 下你自己加的记录会被覆盖。以前这件事只写在代码注释里，用户是受害者。
+//
+// 2026-11-18 起后端只动自己认领的域名，所以每条记录有三种结局，界面必须分开
+// 说清楚——把「不归它管」也标成「会被清掉」，会让人白白紧张（而且以前 v6
+// 那条就被错标过：只拿 v4 的 IP 去比对，v6 明明会保留却说会被清掉）。
 async function loadRewrites() {
   const box = $("rw-box"), list = $("rw-list"), toggle = $("rw-toggle");
   box.classList.remove("hidden");
@@ -2637,22 +2698,39 @@ async function loadRewrites() {
     const entries = r.entries || [];
     if (!entries.length) {
       list.innerHTML = `<div class="rw-empty">重写表现在是空的。`
-        + (r.last_ip ? "下次测速成功后会按「要加速的域名」写进去。" : "还没有测出最优 IP，所以下次测速只会清空、不会写入。")
+        + (r.last_ip ? "下次同步成功后会按「要加速的域名」写进去。" : "还没有测出最优 IP，所以现在没有可写的内容。")
         + `</div>`;
       return;
     }
 
-    // 用「域名|IP」拼成的集合判断哪几条会被保留，比嵌套对象取值干净。
-    const expected = r.expected || {};
-    const keep = new Set(Object.keys(expected).map(d => d + "|" + expected[d]));
+    // managed：域名 → 这一轮该有的答案列表（v4、v6 各可能一条）。
+    // stale：以前归本工具管、现在不在域名列表里的域名，下次同步整条清掉。
+    const managed = r.managed || {};
+    const stale = new Set(r.stale || []);
 
     list.innerHTML = entries.map(e => {
-      const kept = keep.has(e.domain + "|" + e.answer);
+      const answers = managed[e.domain];
+      let mark, cls;
+      if (answers) {
+        // 归本工具管：答案对得上、而且是启用状态，才算「保留」。
+        // 停用过的会被删了重写成启用 —— 否则会出现「记录在、但不生效」。
+        const ok = e.enabled && answers.indexOf(e.answer) >= 0;
+        mark = ok ? "保留" : "会被改掉";
+        cls = ok ? "keep" : "drop";
+      } else if (stale.has(e.domain)) {
+        // 「会清掉」而不是「已不在域名列表，会清掉」：后者在手机上会把同一行的
+        // IP 挤到从中间断行（104.16.0. / 9），比少几个字难看得多。
+        mark = "会清掉";
+        cls = "drop";
+      } else {
+        mark = "不归这个程序管";
+        cls = "out";
+      }
       const ip = escapeHtml(e.answer || "（空）") + (e.enabled ? "" : " · 已停用");
-      return `<div class="rw-item ${kept ? "" : "stale"}">`
+      return `<div class="rw-item ${cls === "keep" ? "" : cls === "drop" ? "stale" : "foreign"}">`
         + `<span class="d">${escapeHtml(e.domain || "（空域名）")}</span>`
         + `<span class="i">→ ${ip}</span>`
-        + `<span class="mark ${kept ? "keep" : "drop"}">${kept ? "保留" : "会被清掉"}</span>`
+        + `<span class="mark ${cls}">${mark}</span>`
         + `</div>`;
     }).join("");
   } catch (e) {

@@ -11,6 +11,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
@@ -264,8 +265,20 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAdguardRewrites 把 AdGuard 里现在的重写表读出来，并标出「下次测速会被清掉」
-// 的那些——ReplaceRewrites 会清空整张表再重建，用户有权先看一眼。
+// handleAdguardRewrites 把 AdGuard 里现在的重写表读出来，并标出「下次同步会
+// 保留哪几条、清掉哪几条」——用户有权先看一眼再让它动手。
+//
+// 2026-11-18 起 ReplaceRewrites 只动本工具认领的域名，所以这里返回的东西跟着
+// 分成三份，前端据此标三种状态：
+//
+//	managed  域名 → 这一轮该有的答案列表（v4、v6 可能各一条）→ 匹配就「保留」
+//	stale    以前管过、现在不在域名列表里的域名 → 「会被清掉」
+//	其余     不归本工具管（用户自己加的、AdGuard 自带的）→ 「不动它」
+//
+// 为什么 managed 存的是答案**列表**而不是单个字符串：以前只放 cfg.LastIP，
+// 于是 v6 那条明明会被保留、却在界面上被标成「会被清掉」。用户看到红色标记
+// 会以为 v6 又要被抹掉，而实际什么都没发生——这种「界面比实际更吓人」的谎话
+// 和反过来一样有害。
 func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -292,23 +305,47 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 期望集合：每个要加速的域名 → 当前最优 IP。LastIP 为空时为空表，
-	// 界面上就会把所有现存的都标成「下次测速会被清掉」，这恰好是实话。
+	// 期望集合：每个要加速的域名 → 当前最优 IP（v4 + v6）。
 	//
 	// 用 RewriteDomains() 而不是 Domains：勾了包含子域的那些会多一条
 	// `*.域名`，漏掉的话界面会把我们自己写的通配符标成「会被清掉」。
+	//
+	// LastIP 为空的判断和 syncRewrites 保持一致：那种情况下什么都不写，
+	// 所以 managed 留空，界面上所有现存记录都会被标成「会被清掉」——这恰好
+	// 是实话，因为下一轮测速一旦成功就会按新答案重写。
 	names := cfg.RewriteDomains()
-	expected := make(map[string]string, len(names))
+	managed := make(map[string][]string, len(names))
 	if cfg.LastIP != "" {
+		answers := rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs)
+		sorted := make([]string, 0, len(answers))
+		for a := range answers {
+			sorted = append(sorted, a)
+		}
+		sort.Strings(sorted)
 		for _, d := range names {
-			expected[d] = cfg.LastIP
+			managed[d] = sorted
 		}
 	}
+
+	// 以前管过、现在不在列表里的域名：这些是「下次同步会整条清掉」的。
+	nameSet := make(map[string]bool, len(names))
+	for _, d := range names {
+		nameSet[d] = true
+	}
+	stale := make([]string, 0, len(cfg.RewrittenDomains))
+	for _, d := range cfg.RewrittenDomains {
+		if d != "" && !nameSet[d] {
+			stale = append(stale, d)
+		}
+	}
+	sort.Strings(stale)
+
 	writeJSON(w, 200, map[string]any{
-		"ok":       true,
-		"entries":  entries,
-		"expected": expected,
-		"last_ip":  cfg.LastIP,
+		"ok":      true,
+		"entries": entries,
+		"managed": managed,
+		"stale":   stale,
+		"last_ip": cfg.LastIP,
 	})
 }
 

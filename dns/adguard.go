@@ -167,9 +167,28 @@ func (c *adguardClient) removeRewrite(e agRewrite) error {
 	return nil
 }
 
-// ReplaceRewrites 把实例的重写表完全重置为期望集合 want：
-// 先清空全部现有重写记录，再逐条写入期望集合。
-// 注意：清空的是整张重写表，实例上非本工具管理的重写规则也会被删除。
+// ReplaceRewrites 把重写状态收敛到期望集合 want，**只动 want 里点名的域名**。
+//
+// 2026-11-18 之前这里是「清空整张表、再按 want 全量重建」，两个毛病：
+//
+//  1. 用户在 AdGuard 后台自己加的、或者别的工具写的重写规则，每轮测速都被
+//     一起删掉——而界面上只会说「已写入 AdGuard：N 条」，看起来一切正常。
+//  2. 删光和重建之间有一段窗口，重写表是空的。这段时间里家里设备来查域名
+//     拿不到重写结果，只能回落到正常解析（对「加速」这个目的来说等于白跑）。
+//
+// 现在改成差异收敛：先按域名分组比对现有记录，只删「归本工具管、但答案已经
+// 不对」的那几条，只补「该有还没有」的那几条，答案已经对上的原样不动。
+// 前一个毛病没了（不在这份集合里的域名一条都不碰），后一个窗口也没了
+// （不需要先删后建）。
+//
+// want 的键就是「这个域名归本工具管」的声明。空集合表示「这域名不该有任何
+// 记录」，调用方用它清理用户已经从域名列表里删掉的域名（见
+// config.Config.RewrittenDomains）。
+//
+// 一个无法区分的情况，写在明处：同一个域名下如果用户自己也加了一条重写，
+// 那条会被我们删掉——AdGuard 的重写记录里没有「谁写的」这个字段，只能按
+// 「域名归谁管」划分地盘。域名一旦被本工具接管，它的重写就由本工具全权负责，
+// 界面上要说明白，不能只留在代码注释里。
 func (c *adguardClient) ReplaceRewrites(want map[string]map[string]bool) (SyncStats, error) {
 	var stats SyncStats
 
@@ -178,15 +197,41 @@ func (c *adguardClient) ReplaceRewrites(want map[string]map[string]bool) (SyncSt
 		return stats, fmt.Errorf("获取重写列表失败: %w", err)
 	}
 
-	// 1. 清空现有重写表
+	// 现有记录里「已经写对了的」答案，加的时候用来跳过重复添加。
+	//
+	// 只算**启用**状态的：用户把某条停用过之后，它对我们来说等于不存在，
+	// 该删了重写成启用状态——否则会出现「记录在、但不生效」这种界面上完全
+	// 看不出来的坏状态（重写表里明明有一条，域名就是不解析成那个 IP）。
+	have := make(map[string]map[string]bool, len(want))
 	for _, ent := range list {
+		if _, managed := want[ent.Domain]; !managed {
+			stats.Kept++ // 别人的地盘，只记个数，一个字都不动
+			continue
+		}
+		if ent.Enabled {
+			if have[ent.Domain] == nil {
+				have[ent.Domain] = make(map[string]bool, 2)
+			}
+			have[ent.Domain][ent.Answer] = true
+		}
+	}
+
+	// 1) 删：归本工具管、但答案不在期望集合里（或已停用）的记录。
+	for _, ent := range list {
+		allowed, managed := want[ent.Domain]
+		if !managed {
+			continue
+		}
+		if ent.Enabled && allowed[ent.Answer] {
+			continue // 已经对了，不删了再加，省一次写操作
+		}
 		if err := c.removeRewrite(ent); err != nil {
-			return stats, fmt.Errorf("清空重写规则失败 (%s -> %s): %w", ent.Domain, ent.Answer, err)
+			return stats, fmt.Errorf("删除重写规则失败 (%s -> %s): %w", ent.Domain, ent.Answer, err)
 		}
 		stats.Removed++
 	}
 
-	// 2. 全量写入期望集合（排序保证顺序确定）
+	// 2) 加：want 里有、表里还没有的（排序保证顺序确定，重复跑和日志都稳定）
 	domains := make([]string, 0, len(want))
 	for d := range want {
 		domains = append(domains, d)
@@ -199,6 +244,9 @@ func (c *adguardClient) ReplaceRewrites(want map[string]map[string]bool) (SyncSt
 		}
 		sort.Strings(answers)
 		for _, a := range answers {
+			if have[d][a] {
+				continue
+			}
 			if err := c.addRewrite(d, a); err != nil {
 				return stats, err
 			}

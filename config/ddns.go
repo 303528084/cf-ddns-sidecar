@@ -70,9 +70,22 @@ func SaveEnvFile(path string, kv map[string]string) error {
 }
 
 // UpdateEnvFile 只改指定 key 的行，其余内容（注释、顺序、其他 key）原样保留。
+// 唯一的例外是空行：首尾的空行会被去掉、连续空行会并成一个（老版本每保存
+// 一次末尾就多一个空行，攒下来会让文件读不下去）。
 //
 // 为什么不用 SaveEnvFile 整体重写：ddns.env 里可能有用户自己写的注释和
 // 被注释掉的备用密钥，整体重写会把它们冲掉。
+//
+// 替换落在哪一行，有两条必须守住的规矩（都是 2026-11-18 修备份那次连出来的）：
+//  1. **只改未注释的行**。`#CF_API_TOKEN=旧的` 是用户自己留的备份，`LoadEnvFile`
+//     本来就跳过 `#` 开头的行——去「接管」它既毁了备份，又对生效值毫无影响。
+//  2. **同一个 key 有多个未注释行时，改最后一行**。文件语义上最后一行生效
+//     （`LoadEnvFile` 后写覆盖先写），改中间那行等于「写进了一个不生效的位置」：
+//     界面说保存成功、实际用的还是旧值，这种失败最查不出来。
+//
+// 以前两条都不对（第一条 `strings.TrimPrefix(trimmed, "#")` 就接管注释行，
+// 而且取的是最先匹配的那行），所以「用户把旧令牌注释掉、在下面填新的」这个
+// 最自然的换密钥动作，结果恰好是旧令牌继续生效。
 func UpdateEnvFile(path string, kv map[string]string) error {
 	if len(kv) == 0 {
 		return nil
@@ -82,24 +95,58 @@ func UpdateEnvFile(path string, kv map[string]string) error {
 		return err
 	}
 
-	// 已存在的行就地替换（含被 # 注释掉的同名 key，直接接管）
+	lines := strings.Split(string(existing), "\n")
+	// 去掉首尾空行：不这么做的话每保存一次末尾就多一个空行，越攒越多
+	// （`Split` 结尾的那个空元素会再写成一个换行）。
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	// 连续空行并成一个：老版本每保存一次末尾就多一个空行，这些空行在后来
+	// 追加新 key 之后变成了文件中间的一堆空白（真机 ddns.env 上见过连着一
+	// 二十行）。只动空行，别的字符一个不碰，文件至少还能读。
+	collapsed := lines[:0]
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" && len(collapsed) > 0 &&
+			strings.TrimSpace(collapsed[len(collapsed)-1]) == "" {
+			continue
+		}
+		collapsed = append(collapsed, l)
+	}
+	lines = collapsed
+
+	// 先算出「每个要改的 key 落在第几行」：取最后一条未注释的同名行。
+	lastAt := make(map[string]int, len(kv))
+	for i, line := range lines {
+		t := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		k, _, ok := strings.Cut(t, "=")
+		if !ok {
+			continue
+		}
+		if k = strings.TrimSpace(k); hasKey(kv, k) {
+			lastAt[k] = i // 后出现的覆盖前面，正是「最后一行生效」
+		}
+	}
+	replaceAt := make(map[int]string, len(lastAt))
+	for k, i := range lastAt {
+		replaceAt[i] = k
+	}
+
 	done := make(map[string]bool, len(kv))
 	var b strings.Builder
-	for _, line := range strings.Split(string(existing), "\n") {
-		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		key, _, ok := strings.Cut(strings.TrimPrefix(trimmed, "#"), "=")
-		if ok {
-			key = strings.TrimSpace(key)
-			if v, want := kv[key], hasKey(kv, key); want && !done[key] {
-				b.WriteString(key + "=" + sanitizeEnvValue(v) + "\n")
-				done[key] = true
-				continue
-			}
+	for i, line := range lines {
+		text := strings.TrimSuffix(line, "\r")
+		if k, ok := replaceAt[i]; ok && !done[k] {
+			b.WriteString(k + "=" + sanitizeEnvValue(kv[k]) + "\n")
+			done[k] = true
+			continue
 		}
-		if trimmed == "" && b.Len() == 0 {
-			continue // 去掉文件开头的空行，避免重复写入时越攒越多
-		}
-		b.WriteString(strings.TrimSuffix(line, "\r") + "\n")
+		b.WriteString(text + "\n")
 	}
 
 	// 文件里没有的 key 追加到末尾

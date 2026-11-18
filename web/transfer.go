@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
+	"github.com/303528084/cf-ddns-sidecar/ddns"
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
@@ -33,6 +34,10 @@ const (
 	bundleFormat = 1
 	// maxBundleBytes 是导入文件的大小上限。正常备份只有几 KB。
 	maxBundleBytes = 1 << 20
+	// maxRewrittenDomains 是导入账本时接受的条数上限。见 bundleConfig
+	// 里 RewrittenDomains 的说明：它决定「下次同步能删哪些域名」，从一份
+	// 来路不明的文件里读进几千条，等于授权程序去动几千个域名。
+	maxRewrittenDomains = 200
 )
 
 // bundleConfig 是跟着文件走的那部分配置。
@@ -42,23 +47,58 @@ const (
 //     换台机器后照搬过来只会误导人；
 //   - 以后给 Config 加字段时，不会因为「顺手 Marshal」把不该出门的东西
 //     一起导出去。
+//
+// 显式清单的代价是「加一个设置就得记得来这儿补一行」。忘了不报错、也不
+// 打日志——那个值就静静地从文件里消失，而界面上写着「把全部设置存成一个
+// 文件」（v1.7.4 之前正是这样漏了 6 项：记录类型、IPv6 段链接、同步条数、
+// 橙云开关、TTL、每个域名的「包含子域」）。两条防线：
+//  1. transfer_test.go 里有一组「导出→导入后逐项相同」的用例，Config 里
+//     多一个用户能改的字段，那儿就得多一行断言；
+//  2. 下面凡是「0 / false / 空列表本身就是合法值」的字段，一律用指针。
+//     用零值代表「文件里没有这一项」会把「用户主动清空」和「老文件没这个
+//     字段」混成同一件事，于是要么清不掉、要么一导入就被静默覆盖。
 type bundleConfig struct {
 	AdGuardURL      string   `json:"adguard_url"`
 	AdGuardUsername string   `json:"adguard_username"`
 	AdGuardPassword string   `json:"adguard_password,omitempty"`
 	Domains         []string `json:"domains"`
-	TopN            int      `json:"top_n"`
-	Candidates      int      `json:"bandwidth_candidates"`
-	IntervalMinutes int      `json:"interval_minutes"`
+	// DomainMeta 是每个域名的「包含子域」勾选和添加时间。
+	// 不导出的话，恢复之后所有域名都变回「不包含子域」——AdGuard 里那条
+	// `*.域名` 的重写不再生成，子域突然不走优选 IP 了，而界面看起来
+	// 「恢复成功」。这是最难自己想到的一类故障。
+	DomainMeta      map[string]config.DomainMeta `json:"domain_meta,omitempty"`
+	TopN            int                          `json:"top_n"`
+	Candidates      int                          `json:"bandwidth_candidates"`
+	IntervalMinutes int                          `json:"interval_minutes"`
 	// ExtraSources 以前漏了：用户辛苦填的「优选 IP 段」不在备份里，
 	// 换台机器恢复之后会悄悄退回官方段，而界面看起来「恢复成功」。
 	ExtraSources []string `json:"extra_sources,omitempty"`
 	// EngineOverrides 是高级设置里改过的引擎参数。同样是「不存就丢」的东西，
 	// 而且丢了以后表现是「测速行为变了但界面全是默认值」，最难查。
 	EngineOverrides map[string]any `json:"engine_overrides,omitempty"`
-	DDNSEnabled     bool           `json:"ddns_enabled"`
-	DDNSProvider    string         `json:"ddns_provider"`
-	DDNSDomain      string         `json:"ddns_domain"`
+	// IPv6ProbeURL 是 v6 段链接（一行一个）。指针的理由：用户把这一栏
+	// 清空是合法操作，得和「老文件里没这个字段」分开。
+	IPv6ProbeURL *string `json:"ipv6_probe_url,omitempty"`
+	DDNSEnabled  bool    `json:"ddns_enabled"`
+	DDNSProvider string  `json:"ddns_provider"`
+	DDNSDomain   string  `json:"ddns_domain"`
+	// 下面四项全是「0 / false 也是用户真切能选的值」（TTL 0 = 用各家默认、
+	// 橙云关掉 = 谁都看得见的选项）。所以必须用指针，不能用零值代表缺失。
+	DDNSTTL        *int    `json:"ddns_ttl,omitempty"`
+	DDNSProxied    *bool   `json:"ddns_proxied,omitempty"`
+	DDNSIPCount    *int    `json:"ddns_ip_count,omitempty"`
+	DDNSRecordType *string `json:"ddns_record_type,omitempty"`
+	// RewrittenDomains 是「本工具在 AdGuard 上认领过哪些域名」的账本。
+	//
+	// 它严格说是运行状态，按上面那条原则（不把 last_ip 这类东西带出去）本可以
+	// 不导。但它决定了「下次同步时哪些旧记录可以删」：换机恢复后域名列表被整份
+	// 替换，如果账本不带，那些已经不在这份清单里的域名就会在 AdGuard 上留下
+	// 永久残留，指向换机前的旧 IP——而界面上一切正常。带上它，恢复之后第一次
+	// 同步就能把该清的清掉。
+	//
+	// 限制条数不是洁癖：这个列表只会被本工具自己写，正常长度就是域名数 + 通配符
+	// 数。从一份来路不明的文件里读进几千条，等于授权程序去动几千个域名。
+	RewrittenDomains []string `json:"rewritten_domains,omitempty"`
 }
 
 // bundle 是可导出、也可导入的文件格式。
@@ -99,6 +139,24 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 		domains = []string{}
 	}
 
+	// 域名的附加信息也要拷一份：它和 Domains 共用一张哈希表的话，导出
+	// 期间用户在界面上改了勾选，文件里就会是一半新一半旧的状态。
+	var meta map[string]config.DomainMeta
+	if len(cfg.DomainMeta) > 0 {
+		meta = make(map[string]config.DomainMeta, len(cfg.DomainMeta))
+		for k, v := range cfg.DomainMeta {
+			meta[k] = v
+		}
+	}
+
+	// 指针字段先落到局部变量上再取地址——直接 &cfg.DDNS.TTL 会把这个结构体
+	// 的字段地址带进文件结构里，之后谁改一下 cfg，导出内容就跟着变。
+	ttl := cfg.DDNS.TTL
+	proxied := cfg.DDNS.Proxied
+	ipCount := cfg.DDNS.IPCount
+	recordType := cfg.DDNS.RecordType
+	v6 := cfg.IPv6ProbeURL
+
 	return bundle{
 		App:        bundleApp,
 		Format:     bundleFormat,
@@ -106,18 +164,25 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 		ExportedAt: now.Format(time.RFC3339),
 		Note:       bundleNote,
 		Config: bundleConfig{
-			AdGuardURL:      cfg.AdGuard.URL,
-			AdGuardUsername: cfg.AdGuard.Username,
-			AdGuardPassword: cfg.AdGuard.Password,
-			Domains:         append([]string{}, domains...),
-			TopN:            cfg.Speed.TopN,
-			Candidates:      cfg.Speed.BandwidthCandidates,
-			IntervalMinutes: cfg.Speed.IntervalMinutes,
-			ExtraSources:    append([]string{}, cfg.Speed.ExtraSources...),
-			EngineOverrides: cfg.Speed.EngineOverrides,
-			DDNSEnabled:     cfg.DDNS.Enabled,
-			DDNSProvider:    cfg.DDNS.Provider,
-			DDNSDomain:      cfg.DDNS.Domain,
+			AdGuardURL:       cfg.AdGuard.URL,
+			AdGuardUsername:  cfg.AdGuard.Username,
+			AdGuardPassword:  cfg.AdGuard.Password,
+			Domains:          append([]string{}, domains...),
+			DomainMeta:       meta,
+			TopN:             cfg.Speed.TopN,
+			Candidates:       cfg.Speed.BandwidthCandidates,
+			IntervalMinutes:  cfg.Speed.IntervalMinutes,
+			ExtraSources:     append([]string{}, cfg.Speed.ExtraSources...),
+			EngineOverrides:  cfg.Speed.EngineOverrides,
+			IPv6ProbeURL:     &v6,
+			DDNSEnabled:      cfg.DDNS.Enabled,
+			DDNSProvider:     cfg.DDNS.Provider,
+			DDNSDomain:       cfg.DDNS.Domain,
+			DDNSTTL:          &ttl,
+			DDNSProxied:      &proxied,
+			DDNSIPCount:      &ipCount,
+			DDNSRecordType:   &recordType,
+			RewrittenDomains: append([]string{}, cfg.RewrittenDomains...),
 		},
 		Secrets: secrets,
 	}
@@ -151,6 +216,19 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 		warns = append(warns, fmt.Sprintf("忽略了 %d 个看不懂的域名", dropped))
 	}
 
+	// 账本：同样归一化（去协议前缀、小写、去重），并按条数上限截断。
+	// 通配符 `*.a.com` 会被 normalizeDomains 原样留下，这是必须的——勾了
+	// 「包含子域」的域名，账本里记的就是这条通配符。
+	if n := len(b.Config.RewrittenDomains); n > 0 {
+		b.Config.RewrittenDomains = normalizeDomains(b.Config.RewrittenDomains)
+		if len(b.Config.RewrittenDomains) > maxRewrittenDomains {
+			b.Config.RewrittenDomains = b.Config.RewrittenDomains[:maxRewrittenDomains]
+		}
+		if dropped := n - len(b.Config.RewrittenDomains); dropped > 0 {
+			warns = append(warns, fmt.Sprintf("「上次写进 AdGuard 的域名」有 %d 条看不懂或超出上限，已忽略", dropped))
+		}
+	}
+
 	if b.Config.DDNSProvider != "" {
 		p := strings.ToLower(strings.TrimSpace(b.Config.DDNSProvider))
 		if _, ok := config.RequiredEnvByProvider[p]; ok {
@@ -173,6 +251,73 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 	}
 	if b.Config.IntervalMinutes < 0 {
 		b.Config.IntervalMinutes = 0
+	}
+
+	// 域名的附加信息：键先归一化成域名，再只留还在域名列表里的那些。
+	// 手改过的文件可能留下「域名已经删了、勾选还在」的残留，直接照收会让
+	// 用户删掉一个域名再加回来时「继承」上一次的包含子域设置。
+	if b.Config.DomainMeta != nil {
+		keep := make(map[string]bool, len(b.Config.Domains))
+		for _, d := range b.Config.Domains {
+			keep[d] = true
+		}
+		out := make(map[string]config.DomainMeta, len(b.Config.DomainMeta))
+		stale := 0
+		for k, v := range b.Config.DomainMeta {
+			nk := config.NormalizeDomain(k)
+			if nk == "" || !keep[nk] {
+				stale++
+				continue
+			}
+			out[nk] = v
+		}
+		if stale > 0 {
+			warns = append(warns, fmt.Sprintf("忽略了 %d 条对不上域名的附加设置", stale))
+		}
+		if len(out) == 0 {
+			out = nil // 空表和「没有这张表」要当成同一件事，见 config.PruneDomainMeta
+		}
+		b.Config.DomainMeta = out
+	}
+
+	// DDNS 四项 + v6 段链接：能归一化的归一化，明显填错的就**整项丢掉并
+	// 提示**。丢掉等于「保持当前值」，比按一个猜出来的数写进去安全——用户
+	// 手改文件时打错一位，不该变成解析记录里一个奇怪的数字。
+	if b.Config.DDNSTTL != nil {
+		if v := *b.Config.DDNSTTL; v != 0 && (v < 60 || v > 86400) {
+			warns = append(warns, fmt.Sprintf(
+				"TTL 填的是 %d 秒，只接受 0（各家默认）或 60~86400，这一项已忽略（保持当前设置）", v))
+			b.Config.DDNSTTL = nil
+		}
+	}
+	if b.Config.DDNSIPCount != nil {
+		if v := *b.Config.DDNSIPCount; v < 0 || v > 20 {
+			warns = append(warns, fmt.Sprintf(
+				"「同步几条 IP」填的是 %d，只接受 1~20，这一项已忽略（保持当前设置）", v))
+			b.Config.DDNSIPCount = nil
+		}
+	}
+	if b.Config.DDNSRecordType != nil {
+		// 和保存配置时一样只认 A / AAAA / A+AAAA，但这里不整单退回：
+		// 一个字段写坏就把整份备份拒掉，用户手里那台机器就还是空白的。
+		if m, err := ddns.NormalizeRecordMode(*b.Config.DDNSRecordType); err != nil {
+			warns = append(warns, fmt.Sprintf(
+				"记录类型 %q 不认识（只有 A / AAAA / %s），这一项已忽略（保持当前设置）",
+				*b.Config.DDNSRecordType, ddns.ModeBoth))
+			b.Config.DDNSRecordType = nil
+		} else {
+			b.Config.DDNSRecordType = &m
+		}
+	}
+	if b.Config.IPv6ProbeURL != nil {
+		lines, err := parseV6SourceInput(*b.Config.IPv6ProbeURL)
+		if err != nil {
+			warns = append(warns, err.Error()+"，这一项已忽略（保持当前设置）")
+			b.Config.IPv6ProbeURL = nil
+		} else {
+			joined := strings.Join(lines, "\n")
+			b.Config.IPv6ProbeURL = &joined
+		}
 	}
 
 	// 密钥白名单：不在表里的 key 直接丢掉并提示，别静默吞了。
@@ -254,27 +399,94 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg.Clone()
 	s.mu.Unlock()
 
+	// 记两本账：文件里有、已按文件覆盖的（restored），和文件里没有、保持了
+	// 当前值的（kept）。
+	//
+	// 为什么要把它返回给界面：v1.7.4 之前的备份文件里没有「记录类型」等六项，
+	// 导入时它们只能保持原值——但用户看到的原本只有一句「已恢复」。不说出来，
+	// 他会以为一切都回来了，过几天才发现解析里只剩 IPv4，而那时早就想不起
+	// 是恢复备份导致的。这类「静默少了一部分」正是这个项目吃过最多的亏。
+	restored := make([]string, 0, 16)
+	kept := make([]string, 0, 6)
+	note := func(label string, present bool) {
+		if present {
+			restored = append(restored, label)
+			return
+		}
+		kept = append(kept, label)
+	}
+
 	cfg.AdGuard.URL = strings.TrimSpace(b.Config.AdGuardURL)
 	cfg.AdGuard.Username = strings.TrimSpace(b.Config.AdGuardUsername)
+	note("AdGuard 地址与账号", true)
 	// 备份里没有 AdGuard 密码时保持原值，别把已存的密码清空。
 	if b.Config.AdGuardPassword != "" {
 		cfg.AdGuard.Password = b.Config.AdGuardPassword
 	}
+	note("AdGuard 密码", b.Config.AdGuardPassword != "")
+
 	cfg.Domains = b.Config.Domains
+	note("要加速的域名列表", true)
+	// 域名的附加信息（是否包含子域、添加时间）。用 nil 判断「文件里没有这一
+	// 项」：老文件里没有它，此时保留当前值，不能顺手清空。
+	if b.Config.DomainMeta != nil {
+		cfg.DomainMeta = b.Config.DomainMeta
+	}
+	note("域名后面的「包含子域」标记", b.Config.DomainMeta != nil)
+	// 列表被整体换掉了，元信息必须跟着对齐：残留的条目会让「删掉再加回来」
+	// 的域名继承上一次的勾选。
+	cfg.PruneDomainMeta()
+
+	// 账本（本工具在 AdGuard 上认领过哪些域名）**不进 restored / kept 两本账**：
+	// 它不是用户设的项，界面上列出来只会让人问「这是啥」。但文件里有它时要用，
+	// 否则换机恢复之后，已经不在这份清单里的域名会在 AdGuard 上留下永久残留，
+	// 指向换机前的旧 IP。文件里没有（老备份）就保持当前值，别清空。
+	if len(b.Config.RewrittenDomains) > 0 {
+		cfg.RewrittenDomains = b.Config.RewrittenDomains
+	}
+
 	cfg.Speed.TopN = b.Config.TopN
+	note("保留候选 IP 数", true)
 	cfg.Speed.BandwidthCandidates = b.Config.Candidates
+	note("带宽测速候选数", true)
 	cfg.Speed.IntervalMinutes = b.Config.IntervalMinutes
+	note("测速间隔", true)
 	// ExtraSources / EngineOverrides 用 nil 判断「文件里没有这一项」：
 	// 老版本导出的文件里没有这两个字段，此时保留当前值，不能顺手清空。
 	if b.Config.ExtraSources != nil {
 		cfg.Speed.ExtraSources = b.Config.ExtraSources
 	}
+	note("优选 IP 段", b.Config.ExtraSources != nil)
 	if b.Config.EngineOverrides != nil {
 		cfg.Speed.EngineOverrides = engine.NormalizeOverrides(b.Config.EngineOverrides)
 	}
+	note("高级设置里的引擎参数", b.Config.EngineOverrides != nil)
+	if b.Config.IPv6ProbeURL != nil {
+		cfg.IPv6ProbeURL = *b.Config.IPv6ProbeURL
+	}
+	note("IPv6 段链接", b.Config.IPv6ProbeURL != nil)
+
 	cfg.DDNS.Enabled = b.Config.DDNSEnabled
 	cfg.DDNS.Provider = b.Config.DDNSProvider
 	cfg.DDNS.Domain = b.Config.DDNSDomain
+	note("DDNS 设置（开关/服务商/优选域名）", true)
+	if b.Config.DDNSTTL != nil {
+		cfg.DDNS.TTL = *b.Config.DDNSTTL
+	}
+	note("TTL", b.Config.DDNSTTL != nil)
+	if b.Config.DDNSProxied != nil {
+		cfg.DDNS.Proxied = *b.Config.DDNSProxied
+	}
+	note("Cloudflare 代理开关", b.Config.DDNSProxied != nil)
+	if b.Config.DDNSIPCount != nil {
+		cfg.DDNS.IPCount = *b.Config.DDNSIPCount
+	}
+	note("同步几条 IP", b.Config.DDNSIPCount != nil)
+	if b.Config.DDNSRecordType != nil {
+		cfg.DDNS.RecordType = *b.Config.DDNSRecordType
+	}
+	note("记录类型（A / AAAA / A+AAAA）", b.Config.DDNSRecordType != nil)
+
 	if cfg.DDNS.Provider == "" {
 		cfg.DDNS.Provider = "cloudflare"
 	}
@@ -308,5 +520,12 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	// 恢复出来的间隔可能和原来不同，同样要把定时器叫醒重算。
 	s.wakeScheduler()
 
-	writeJSON(w, 200, map[string]any{"ok": true, "warnings": warns})
+	writeJSON(w, 200, map[string]any{
+		"ok":       true,
+		"warnings": warns,
+		// restored / kept 不只是给界面看的日志：它们回答的是「这次恢复到底
+		// 恢复了多少」。老备份文件里没有的项，一定要出现在 kept 里。
+		"restored": restored,
+		"kept":     kept,
+	})
 }

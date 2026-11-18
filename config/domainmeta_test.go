@@ -149,6 +149,27 @@ func TestCloneCopiesDomainMeta(t *testing.T) {
 	}
 }
 
+// TestCloneCopiesRewrittenDomains 账本也是切片，同样必须各存一份。
+//
+// 它比 DomainMeta 更容易漏：写成「一个字符串列表，拷不拷无所谓」。实际上
+// 测速成功后那一轮会整段替换它，而域名页同时在遍历它判断哪些旧域名该清，
+// 共享底层数组就是边读边改。
+func TestCloneCopiesRewrittenDomains(t *testing.T) {
+	c := Default()
+	c.RewrittenDomains = []string{"a.com", "*.a.com"}
+
+	cp := c.Clone()
+	cp.RewrittenDomains[0] = "changed.com"
+	cp.RewrittenDomains = append(cp.RewrittenDomains, "b.com")
+
+	if c.RewrittenDomains[0] != "a.com" {
+		t.Fatalf("改副本影响到了原对象：%v", c.RewrittenDomains)
+	}
+	if len(c.RewrittenDomains) != 2 {
+		t.Fatalf("往副本里 append 影响到了原对象的长度：%v", c.RewrittenDomains)
+	}
+}
+
 // TestLoadPrunesStaleDomainMeta 验证 Load 会顺手清理元信息。
 //
 // 场景：用户手工编辑 config.json 删掉了一个域名，但 domain_meta 里还留着它。

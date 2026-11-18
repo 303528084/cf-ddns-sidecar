@@ -73,8 +73,10 @@ func decodeDomainBody(r *http.Request) (domain string, wildcard bool, err error)
 // 这几句话都很短，因为它们会原样进 toast（一行放得下才不会被折成两行挡住
 // 下面的说明），也会进日志。
 //
-// 注意 ReplaceRewrites 会**清空整张重写表再重建**（和测速时完全一样），
-// 所以界面上那句「AdGuard 里不在这份清单中的记录会被清掉」仍然成立。
+// 关于 AdGuard 上「谁的地盘」：写重写从 2026-11-18 起只动本工具认领的域名
+// （见 dns.Provider.ReplaceRewrites）。这里的 want 由 rewritePlan 组装，除了
+// 当前域名列表，还包含账本里「以前管过、现在不管了」的域名——用户刚删掉的那
+// 个域名就在里面，所以界面上那句「AdGuard 里对应的重写也会一起清掉」仍然成立。
 func (s *Server) syncRewrites(cfg config.Config) string {
 	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
 		return "已保存；还没填 AdGuard 地址，填好后才会写进去"
@@ -87,21 +89,21 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 		return "已保存；连不上 AdGuard（" + friendlyErr(err) + "）"
 	}
 	names := cfg.RewriteDomains()
-	want := make(map[string]map[string]bool, len(names))
-	for _, d := range names {
-		// 这里用的是「上一次测速结果」而不是「这一轮刚测的」——因为这是个
-		// 改域名清单的动作，本来就没有新一轮结果。v4 用 LastIP、v6 用
-		// LastIPv6IPs，两边对称。
-		//
-		// **必须带上 v6**：ReplaceRewrites 是先清空整张表再按 want 重建，
-		// 只给 v4 的话，用户只是点了一下「加域名」，家里所有 v6 的重写就被
-		// 悄悄删掉了，而界面上只会说「已写入 AdGuard：N 条」。
-		want[d] = rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs)
-	}
+	// 这里用的是「上一次测速结果」而不是「这一轮刚测的」——因为这是个
+	// 改域名清单的动作，本来就没有新一轮结果。v4 用 LastIP、v6 用
+	// LastIPv6IPs，两边对称。
+	//
+	// **必须带上 v6**：want 里没有的答案会被当成多余删掉，只给 v4 的话，
+	// 用户只是点了一下「加域名」，家里所有 v6 的重写就被悄悄删掉了，而界面
+	// 上只会说「已写入 AdGuard：N 条」。
+	want := rewritePlan(cfg, names, rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs))
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {
 		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）"
 	}
+	// 记下这一轮认领的域名。删域名这条路上它特别关键：账本是「下次同步该清
+	// 哪些旧记录」的唯一依据。
+	s.rememberRewritten(names)
 	if extra := len(names) - len(cfg.Domains); extra > 0 {
 		return "已写入 AdGuard：" + itoa(stats.Written) + " 条（含 " + itoa(extra) + " 条子域通配符）"
 	}

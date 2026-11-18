@@ -198,8 +198,13 @@ func TestDDNSCheckMethodGuard(t *testing.T) {
 	}
 }
 
-// TestAdguardRewritesPreview 预览要能如实反映「下次测速会保留哪几条、清掉哪几条」。
-// 这是第 8 项缺口的全部意义：ReplaceRewrites 会清空整张表。
+// TestAdguardRewritesPreview 预览要如实反映「下次同步会保留哪几条、改掉哪几条、
+// 哪几条根本不归本工具管」。
+//
+// 这是第 8 项缺口的全部意义：界面必须和真实行为一致。2026-11-18 之前
+// ReplaceRewrites 会清空整张表，所以「不归本工具管」和「会被清掉」是同一件事；
+// 改成只动自己认领的域名之后，这两种结局必须分开说——把安全的东西标成危险，
+// 和把危险的东西标成安全，一样是骗人。
 func TestAdguardRewritesPreview(t *testing.T) {
 	var gotAuth bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -210,11 +215,14 @@ func TestAdguardRewritesPreview(t *testing.T) {
 			gotAuth = true
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// 三条：一条会被保留、一条同域名但旧 IP（会被清）、一条别人手工加的（也会被清）
+		// 四条：一条会保留、一条同域名但旧 IP（会被改掉）、
+		// 一条别人手工加的（不归本工具管，永远不碰）、
+		// 一条以前管过但现在已从域名列表删掉的（会被清掉）。
 		_, _ = w.Write([]byte(`[
 			{"domain":"openai.com","answer":"104.16.0.1","enabled":true},
 			{"domain":"openai.com","answer":"1.2.3.4","enabled":true},
-			{"domain":"my-printer.lan","answer":"192.168.1.9","enabled":true}
+			{"domain":"my-printer.lan","answer":"192.168.1.9","enabled":true},
+			{"domain":"old.example.com","answer":"104.16.0.9","enabled":true}
 		]`))
 	}))
 	defer srv.Close()
@@ -225,6 +233,11 @@ func TestAdguardRewritesPreview(t *testing.T) {
 		c.AdGuard.Password = "secret"
 		c.Domains = []string{"openai.com", "openrouter.ai"}
 		c.LastIP = "104.16.0.1"
+		// v6 也写上：以前这里只放 v4 的 IP，导致 v6 那条明明会保留、界面上
+		// 却被标成「会被清掉」。
+		c.LastIPv6IPs = []string{"2606:4700::1"}
+		// 账本里记着 old.example.com，但它已经不在 Domains 里了 → 下次同步清掉。
+		c.RewrittenDomains = []string{"openai.com", "openrouter.ai", "old.example.com"}
 	})
 
 	rec := call(s, http.MethodGet, "/api/adguard/rewrites")
@@ -236,29 +249,42 @@ func TestAdguardRewritesPreview(t *testing.T) {
 	}
 
 	var resp struct {
-		OK       bool              `json:"ok"`
-		Entries  []json.RawMessage `json:"entries"`
-		Expected map[string]string `json:"expected"`
-		LastIP   string            `json:"last_ip"`
+		OK      bool                `json:"ok"`
+		Entries []json.RawMessage   `json:"entries"`
+		Managed map[string][]string `json:"managed"`
+		Stale   []string            `json:"stale"`
+		LastIP  string              `json:"last_ip"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("返回的不是合法 JSON: %v，body=%s", err, rec.Body.String())
 	}
-	if !resp.OK || len(resp.Entries) != 3 {
-		t.Fatalf("应原样返回 3 条重写，实际 %d 条", len(resp.Entries))
+	if !resp.OK || len(resp.Entries) != 4 {
+		t.Fatalf("应原样返回 4 条重写，实际 %d 条", len(resp.Entries))
 	}
 	if resp.LastIP != "104.16.0.1" {
 		t.Fatalf("last_ip 不对: %q", resp.LastIP)
 	}
-	// 期望集合是「每个要加速的域名 → 当前最优 IP」，前端靠它判断哪几条会被保留
-	if len(resp.Expected) != 2 || resp.Expected["openai.com"] != "104.16.0.1" {
-		t.Fatalf("expected 不对: %#v", resp.Expected)
+
+	// 归本工具管的两条域名，答案必须同时包含 v4 和 v6
+	for _, d := range []string{"openai.com", "openrouter.ai"} {
+		got := resp.Managed[d]
+		if len(got) != 2 || got[0] != "104.16.0.1" || got[1] != "2606:4700::1" {
+			t.Fatalf("%s 的期望答案应是 v4 + v6 两条，实际 %#v", d, got)
+		}
+	}
+	// 别人手工加的域名绝不能出现在 managed 里——出现了就意味着它会被改掉
+	if _, ok := resp.Managed["my-printer.lan"]; ok {
+		t.Fatal("my-printer.lan 不归本工具管，不该出现在 managed 里")
+	}
+	// 已删掉的域名要单独列出来，前端据此标「会清掉」
+	if len(resp.Stale) != 1 || resp.Stale[0] != "old.example.com" {
+		t.Fatalf("stale 应只有 old.example.com，实际 %#v", resp.Stale)
 	}
 }
 
-// TestAdguardRewritesEmptyExpectedWithoutIP 还没测出 IP 时，期望集合必须是空的：
-// 这时「下次测速会把所有现存记录清掉」就是实话，界面上的黄色标记并不夸张。
-func TestAdguardRewritesEmptyExpectedWithoutIP(t *testing.T) {
+// TestAdguardRewritesEmptyManagedWithoutIP 还没测出 IP 时 managed 必须是空的：
+// 这时「下次同步会把我们写过的记录改掉」也就是实话，界面上的黄色标记并不夸张。
+func TestAdguardRewritesEmptyManagedWithoutIP(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"domain":"openai.com","answer":"104.16.0.1","enabled":true}]`))
 	}))
@@ -271,7 +297,8 @@ func TestAdguardRewritesEmptyExpectedWithoutIP(t *testing.T) {
 	})
 
 	var resp struct {
-		Expected map[string]string `json:"expected"`
+		Managed map[string][]string `json:"managed"`
+		Stale   []string            `json:"stale"`
 	}
 	rec := call(s, http.MethodGet, "/api/adguard/rewrites")
 	if rec.Code != 200 {
@@ -280,8 +307,11 @@ func TestAdguardRewritesEmptyExpectedWithoutIP(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	if len(resp.Expected) != 0 {
-		t.Fatalf("没有最优 IP 时期望集合应为空，实际 %#v", resp.Expected)
+	if len(resp.Managed) != 0 {
+		t.Fatalf("没有最优 IP 时 managed 应为空，实际 %#v", resp.Managed)
+	}
+	if len(resp.Stale) != 0 {
+		t.Fatalf("没有账本时 stale 应为空，实际 %#v", resp.Stale)
 	}
 }
 
