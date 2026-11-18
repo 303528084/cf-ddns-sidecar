@@ -269,3 +269,72 @@ func TestAliyunAndDNSPodQueryCarryRecordType(t *testing.T) {
 		t.Errorf("DNSPod 查询 RecordType 应为 AAAA，实际 %q", dnspodType)
 	}
 }
+
+// TestNormalizeRecordMode：用户选的「同步模式」必须收敛成三种之一。
+//
+// 和 NormalizeRecordType 的区别要钉死：后者只认单族（服务商那边没有
+// 「A+AAAA」这种记录），前者才认「两个都写」。混用会让校验对自己说谎。
+func TestNormalizeRecordMode(t *testing.T) {
+	ok := map[string]string{
+		"":          TypeA, // 老配置没有这个字段
+		"A":         TypeA,
+		"a":         TypeA,
+		"AAAA":      TypeAAAA,
+		" aaaa ":    TypeAAAA,
+		"A+AAAA":    ModeBoth,
+		"a+aaaa":    ModeBoth,
+		"AAAA+A":    ModeBoth, // 顺序反了也认
+		" A + AAAA": ModeBoth, // 带空格也认
+	}
+	for in, want := range ok {
+		got, err := NormalizeRecordMode(in)
+		if err != nil {
+			t.Fatalf("NormalizeRecordMode(%q) 不该报错，实际 %v", in, err)
+		}
+		if got != want {
+			t.Errorf("NormalizeRecordMode(%q) 应得到 %q，实际 %q", in, want, got)
+		}
+	}
+
+	// 非法值必须报错，不能回落成 A：用户以为在写 v6、实际写了 v4，
+	// 这件事不会在任何日志里露头。
+	for _, bad := range []string{"CNAME", "AAAAA", "A+", "A+AAAA+AAAA", "MX"} {
+		if got, err := NormalizeRecordMode(bad); err == nil {
+			t.Errorf("NormalizeRecordMode(%q) 应报错，实际返回 %q", bad, got)
+		}
+	}
+
+	// 关键的一条：ModeBoth 是「同步模式」，不是记录类型，必须被单族那层拒绝。
+	if _, err := NormalizeRecordType(ModeBoth); err == nil {
+		t.Errorf("NormalizeRecordType(%q) 应报错——它只认 A / AAAA，"+
+			"放过去就会有人拿它去查服务商的记录", ModeBoth)
+	}
+}
+
+// TestFamiliesOf：展开结果决定「这一轮到底写几张表」。
+//
+// 展开错了的后果不是报错，是**少写一族而没人知道**——日志里只有一行
+// 「已更新」，用户以为两个都写了。
+func TestFamiliesOf(t *testing.T) {
+	cases := []struct {
+		mode string
+		want []string
+	}{
+		{TypeA, []string{TypeA}},
+		{TypeAAAA, []string{TypeAAAA}},
+		{ModeBoth, []string{TypeA, TypeAAAA}}, // A 在前：日志先说 IPv4
+		{"", []string{TypeA}},                 // 认不出来按 A（读配置的路径不该报错）
+		{"AAAA+A", []string{TypeA, TypeAAAA}},
+	}
+	for _, c := range cases {
+		got := FamiliesOf(c.mode)
+		if len(got) != len(c.want) {
+			t.Fatalf("FamiliesOf(%q) 应得到 %v，实际 %v", c.mode, c.want, got)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("FamiliesOf(%q) 应得到 %v，实际 %v", c.mode, c.want, got)
+			}
+		}
+	}
+}

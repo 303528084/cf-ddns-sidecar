@@ -14,7 +14,53 @@ const (
 	TypeAAAA = "AAAA" // IPv6 地址
 )
 
+// ModeBoth 是「同步模式」，**不是** DNS 记录类型：表示 A 和 AAAA 两族都要写。
+//
+// 它只出现在配置和界面上，永远不会被传给服务商——真正写记录前一定会被
+// FamiliesOf 展开成 TypeA / TypeAAAA 逐个写。之所以要单独一个概念：DNS
+// 协议里没有「A+AAAA」这种记录，硬塞进 NormalizeRecordType 只会让那层
+// 校验对自己说谎。
+const ModeBoth = "A+AAAA"
+
+// NormalizeRecordMode 把用户选的同步模式收敛成 TypeA / TypeAAAA / ModeBoth。
+//
+// 空值一律按 A 处理——老配置文件里没有这个字段，读出来是空串，行为必须和
+// 以前完全一致。**非法值返回错误而不是回落成 A**：用户以为在写 AAAA、
+// 实际写了 A，这种错误不会在任何地方报出来，只有访问变慢才可能被发现。
+func NormalizeRecordMode(m string) (string, error) {
+	switch strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(m), " ", "")) {
+	case "", TypeA:
+		return TypeA, nil
+	case TypeAAAA:
+		return TypeAAAA, nil
+	case ModeBoth, "AAAA+A":
+		// 「AAAA+A」也认，省得用户手写配置文件时顺序反了就被判非法。
+		return ModeBoth, nil
+	default:
+		return "", fmt.Errorf("不支持的记录类型 %q（只有 A / AAAA / %s）", m, ModeBoth)
+	}
+}
+
+// FamiliesOf 把同步模式展开成这一轮要写哪几种记录。
+//
+// 顺序固定 A 在前：写日志、报错时先讲 IPv4，和用户平时看测速结果的顺序一致。
+// 传进任何认不出来的值都当 A——这是给「配置已经读进来了」的路径用的，
+// 那条路不该报错；拦住非法值的是保存时的 NormalizeRecordMode。
+func FamiliesOf(mode string) []string {
+	switch strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(mode), " ", "")) {
+	case TypeAAAA:
+		return []string{TypeAAAA}
+	case ModeBoth, "AAAA+A":
+		return []string{TypeA, TypeAAAA}
+	default:
+		return []string{TypeA}
+	}
+}
+
 // NormalizeRecordType 把调用方传进来的记录类型收敛成 TypeA / TypeAAAA。
+//
+// 注意它**只认单族**：ModeBoth 是同步模式，不是记录类型，传进来会报错。
+// 要按用户选的模式写记录，先用 FamiliesOf 展开再逐个调这里。
 //
 // 空值一律按 A 处理——老配置文件里没有这个字段，读出来是空串，行为必须和
 // 以前完全一致。**非法值返回错误而不是回落成 A**：用户以为在写 AAAA、

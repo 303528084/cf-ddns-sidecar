@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/303528084/cf-ddns-sidecar/ddns"
 )
 
 // AdguardInstance 是 dns 包需要的实例描述（保留该类型以复用 AdGuard 客户端）。
@@ -90,22 +92,29 @@ type DDNSConfig struct {
 	// 0 表示 1 条——老配置文件没有这个字段，行为必须和以前一模一样。
 	IPCount int `json:"ip_count,omitempty"`
 
-	// RecordType 是要写的记录类型：空 = A（IPv4），另一个合法值是 AAAA（IPv6）。
+	// RecordType 是要写的记录类型 / 同步模式：
+	//   空 / "A"  → 只写 A（IPv4）
+	//   "AAAA"    → 只写 AAAA（IPv6）
+	//   "A+AAAA"  → 两族都写（2026-11-18 新增）
 	// 老配置文件没有这个字段，反序列化后是空串，效果等同于 A——升级不会改变
 	// 用户现有记录的任何一行。
+	//
+	// 字段名和 JSON key 保持 record_type 不变：改名会让所有已经存下来的配置
+	// 在升级后「读不出自己选过什么」，一声不响地回到 A。
 	RecordType string `json:"record_type,omitempty"`
 }
 
-// EffectiveRecordType 返回实际要写的记录类型。
+// EffectiveRecordMode 返回实际要写的同步模式：A / AAAA / A+AAAA。
 //
-// 只有明确写了 AAAA 才返回 AAAA，其余（含空串和任何写错的值）都按 A。
-// 这里刻意**不报错**：配置读进来的路径（开机、升级）不该因为一个字段写错就
-// 整体失败；真正拦住非法值的是保存时的校验（见 Validate）。
-func (d DDNSConfig) EffectiveRecordType() string {
-	if strings.EqualFold(strings.TrimSpace(d.RecordType), "AAAA") {
-		return "AAAA"
+// 收敛规则本身在 ddns.NormalizeRecordMode（单一出处，别在这儿再抄一遍
+// switch——抄了就会有两份规则各自漂移）。这里只负责「读进来的路径不报错」：
+// 空串和任何写坏的值都按 A。开机、升级读配置不该因为一个字段写错就整体失败；
+// 真正拦住非法值的是保存 `/api/config` 时的校验。
+func (d DDNSConfig) EffectiveRecordMode() string {
+	if m, err := ddns.NormalizeRecordMode(d.RecordType); err == nil {
+		return m
 	}
-	return "A"
+	return ddns.TypeA
 }
 
 // EffectiveIPCount 返回实际要写几条 A 记录。零值和负数都按 1 条处理。

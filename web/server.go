@@ -756,7 +756,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSTTL:         c.DDNS.TTL,
 			DDNSProxied:     c.DDNS.Proxied,
 			DDNSIPCount:     c.DDNS.EffectiveIPCount(),
-			DDNSRecordType:  c.DDNS.EffectiveRecordType(),
+			DDNSRecordType:  c.DDNS.EffectiveRecordMode(),
 			EngineGroups:    engine.Groups,
 			EngineOptions:   engine.Schema,
 			EngineExcluded:  engine.ExcludedReasons(),
@@ -823,11 +823,12 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// 记录类型：只认 A / AAAA。写错的值**当场退回**，不回落成 A——
-	// 用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，只能等他自己发现访问没变快。
+	// 记录类型 / 同步模式：只认 A / AAAA / A+AAAA。写错的值**当场退回**，
+	// 不回落成 A——用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，
+	// 只能等他自己发现访问没变快。
 	// 没传（旧界面/老备份文件）就保持原样，不当作改成了 A。
 	if body.DDNSRecordType != nil {
-		if _, err := ddns.NormalizeRecordType(*body.DDNSRecordType); err != nil {
+		if _, err := ddns.NormalizeRecordMode(*body.DDNSRecordType); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
@@ -908,7 +909,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.DDNS.Proxied = body.DDNSProxied
 	cfg.DDNS.IPCount = body.DDNSIPCount
 	if body.DDNSRecordType != nil {
-		rt, _ := ddns.NormalizeRecordType(*body.DDNSRecordType) // 上面已校验过
+		rt, _ := ddns.NormalizeRecordMode(*body.DDNSRecordType) // 上面已校验过
 		cfg.DDNS.RecordType = rt
 	}
 
@@ -1436,38 +1437,50 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 点一下「立即更新一次」就能补齐，不用重新跑一次测速。
 	//
 	// 按记录类型选 IP 来源：A 用 v4 排名，AAAA 用**这一轮**的 v6 排名。
-	// 类型是 AAAA 但这一轮没 v6 结果时不动现有 AAAA——绝不能拿 v4 地址去
-	// 顶 AAAA（ddns 包的地址族校验会直接拦下来，但这里先说明白更好读）。
-	ddnsType := cfg.DDNS.EffectiveRecordType()
-	pushSource := res.IPs
-	if ddnsType == ddns.TypeAAAA {
-		pushSource = v6RoundIPs
-	}
-	pushIPs := pickIPs(pushSource, cfg.DDNS.EffectiveIPCount())
-	if len(pushIPs) == 0 {
-		// 走到这里说明这一轮没留下任何可用 IP。绝不能拿空列表去「对齐」——
-		// ddns 包会把它当成「这次没结果，别动」，但日志里得如实说一句。
-		if ddnsType == ddns.TypeAAAA {
-			s.appendLog("域名解析未推送：记录类型是 AAAA，但这一轮没有 v6 结果（现有 AAAA 记录保持不变）")
-		} else {
-			s.appendLog("域名解析未推送：本次没有可用的 IP")
-		}
-	} else if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "" {
+	// 同步模式可能是「两个都写」，所以这里按族循环，一族一次 EnsureRecords——
+	// 两族在服务商那边是两张互不相干的表，一次只能动一张。
+	//
+	// 某一族这轮没结果就**只跳过那一族**，不影响另一族：v6 没测出节点
+	// 不该连累 A 记录也不更新。绝不能拿 v4 地址去顶 AAAA（ddns 包的地址族
+	// 校验会直接拦下来，但这里先说明白更好读）。
+	ddnsMode := cfg.DDNS.EffectiveRecordMode()
+	switch {
+	case cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "":
 		missing := config.MissingCredentials(cfg.DDNS.Provider)
 		if len(missing) > 0 {
 			s.appendLog("域名解析未推送：缺少密钥 " + strings.Join(missing, ", "))
-		} else {
-			creds := config.DDNCredentials()
-			p, derr := ddns.New(cfg.DDNS.Provider, cfg.DDNS.Domain, creds)
-			if derr != nil {
-				s.appendLog("域名解析配置有误: " + derr.Error())
-			} else if derr := p.EnsureRecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS)); derr != nil {
-				s.appendLog("域名解析推送失败: " + derr.Error())
-			} else {
-				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
-					cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), cfg.DDNS.EffectiveRecordType()))
-			}
+			break
 		}
+		creds := config.DDNCredentials()
+		p, derr := ddns.New(cfg.DDNS.Provider, cfg.DDNS.Domain, creds)
+		if derr != nil {
+			s.appendLog("域名解析配置有误: " + derr.Error())
+			break
+		}
+		for _, family := range ddns.FamiliesOf(ddnsMode) {
+			source := res.IPs
+			if family == ddns.TypeAAAA {
+				source = v6RoundIPs
+			}
+			pushIPs := pickIPs(source, cfg.DDNS.EffectiveIPCount())
+			if len(pushIPs) == 0 {
+				// 绝不能拿空列表去「对齐」——ddns 包会把它当成「这次没结果，别动」，
+				// 但日志里得如实说一句，否则用户会以为这一类记录已经更新过了。
+				s.appendLog(fmt.Sprintf("域名解析未推送 %s：%s（现有 %s 记录保持不变）",
+					family, emptySourceReason(family), family))
+				continue
+			}
+			if derr := p.EnsureRecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS, family)); derr != nil {
+				// 一族失败不打断另一族：Cloudflare 令牌权限、华为云的记录集
+				// 覆盖都可能只影响其中一族，另一族没理由跟着不写。
+				s.appendLog(fmt.Sprintf("域名解析推送 %s 失败: %s", family, derr.Error()))
+				continue
+			}
+			s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
+				cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), family))
+		}
+	case len(res.IPs) == 0 && len(v6RoundIPs) == 0:
+		s.appendLog("域名解析未推送：本次没有可用的 IP")
 	}
 
 	// 3) 记录结果

@@ -923,15 +923,16 @@
             <div class="field">
               <label>记录类型</label>
               <select id="dd-record-type" onchange="renderRecordType()">
-                <option value="A">A（IPv4 地址）</option>
-                <option value="AAAA">AAAA（IPv6 地址）</option>
+                <option value="A">A（只写 IPv4）</option>
+                <option value="AAAA">AAAA（只写 IPv6）</option>
+                <option value="A+AAAA">A + AAAA（两个都写）</option>
               </select>
               <div class="hint" id="dd-type-hint"></div>
             </div>
             <div class="field">
               <label>同步几条 IP</label>
               <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
-              <div class="hint">按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。</div>
+              <div class="hint">按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。选「A + AAAA」时两族各写这么多条。</div>
             </div>
             <div class="field" style="grid-column:1/-1">
               <label>记录缓存时间（TTL，秒）</label>
@@ -1536,24 +1537,46 @@ function renderProvider() {
   });
 }
 
+// 记录类型下拉只有这三种取值。用白名单判断，而不是「等于 AAAA 才当 AAAA」：
+// 那样第三种的 A+AAAA 会被静默当成 A 存下去——用户明明选了「两个都写」，
+// 结果只写了 v4，界面上还完全看不出来。静默降级是这个项目里最贵的 bug。
+const RECORD_MODES = ["A", "AAAA", "A+AAAA"];
+function normalizeRecordMode(v) {
+  return RECORD_MODES.indexOf(v) >= 0 ? v : "A";
+}
+
+// modeText 把模式说成一句完整的话，用在结果表里。
+function modeText(mode) {
+  if (mode === "A+AAAA") return "A + AAAA（两族都写）";
+  if (mode === "AAAA") return "AAAA（只写 IPv6）";
+  return "A（只写 IPv4）";
+}
+
 // renderRecordType 让「A / AAAA」相关的说明文字跟着下拉走。
 // 光有一个下拉是不够的：下方两段说明里都写着「A 记录」，切到 AAAA 之后
 // 那些字就变成错的，用户会以为写进域名里的还是 IPv4 地址。
 function renderRecordType() {
-  const t = $("dd-record-type").value === "AAAA" ? "AAAA" : "A";
+  const mode = normalizeRecordMode($("dd-record-type").value);
+  // 两族都写的时候，下方那句「同名的 X 记录会被删掉」里的 X 必须同时提到两族，
+  // 否则用户会以为 AAAA 不在「会被删掉」的范围里。
+  const word = mode === "A+AAAA" ? "A / AAAA" : mode;
   document.querySelectorAll("#page-ddns .dd-type-word").forEach(el => {
-    el.textContent = t;
+    el.textContent = word;
   });
   const hint = $("dd-type-hint");
   if (!hint) return;
-  if (t === "AAAA") {
+  if (mode === "A+AAAA") {
+    hint.innerHTML = "两族都写：A 用普通测速的 IPv4 地址，AAAA 用「IPv6 优选」测出来的 v6 地址。"
+      + "<br><b>哪一种没结果就只跳过那一种</b>——比如这一轮 v6 没测出节点，A 照常更新，"
+      + "AAAA 保持原样（不会被删成空）。";
+  } else if (mode === "AAAA") {
     hint.innerHTML = "AAAA 用的是「IPv6 优选」测出来的 v6 地址，所以要先在探测卡片里把 v6 跑通；"
       + "这一轮没测出 v6 结果时就一条都不写，不会拿旧地址凑数。"
       + "<br><b>注意：</b>选了 AAAA 之后，这个域名下已有的 A 记录不会再自动更新——"
-      + "它不会被删掉，但会一直停在最后一次写入的地址上。";
+      + "它不会被删掉，但会一直停在最后一次写入的地址上。想两族都一直跟着更新，选「A + AAAA」。";
   } else {
     hint.innerHTML = "A 用的是普通测速测出来的 IPv4 地址。同一域名下的 A 和 AAAA 是两套互不影响的记录，"
-      + "可以同时存在；这一版一次只同步其中一族，换类型不会把另一族删掉。";
+      + "可以同时存在；这一档只同步 A，AAAA 不会被删但也不会跟着更新。想两族都跟着更新，选「A + AAAA」。";
   }
 }
 
@@ -1579,7 +1602,7 @@ async function loadConfig() {
   $("dd-count").value = c.ddns_ip_count || 1;
   // 直接改 select 的 value 不会触发 onchange，说明文字得手动刷一次，
   // 否则打开页面时下拉显示 AAAA、下面的说明却还写着 A。
-  $("dd-record-type").value = c.ddns_record_type === "AAAA" ? "AAAA" : "A";
+  $("dd-record-type").value = normalizeRecordMode(c.ddns_record_type);
   renderRecordType();
   $("dd-proxied").checked = !!c.ddns_proxied;
   renderProvider();
@@ -2434,45 +2457,88 @@ function ddLine(k, v) {
 // 绿底告警条。--ok 在深色主题下会自动换色，背景用一个半透明绿跟得上。
 const DD_OK_STYLE = 'style="background:rgba(22,163,74,.12);color:var(--ok)"';
 
+// ddFamilyRow 画出「某一族现在什么样、点立即更新会写成什么样」。
+// 分族画的原因：A 和 AAAA 在服务商那边是两张互不相干的表，只报一个总数
+// 或者只报 A，用户看不出这次动的是哪张——「两个都写」模式下最容易误会。
+function ddFamilyRow(f, multi) {
+  const t = f.type === "AAAA" ? "AAAA" : "A";
+  const fam = t === "AAAA" ? "IPv6" : "IPv4";
+  const cur = Array.isArray(f.current_ips) ? f.current_ips : (f.current_ip ? [f.current_ip] : []);
+  const will = Array.isArray(f.will_write) ? f.will_write : [];
+  let out = "";
+  if (multi) {
+    // 分隔行：借用 .line 的骨架，把左边那格当小标题用。
+    out += `<div class="line" style="margin-top:6px">`
+      + `<span class="k2" style="width:auto;color:var(--text);font-weight:600">${t} 记录 · ${fam}</span></div>`;
+  }
+  if (f.found) {
+    // 「现在指向」可能有多条：一个域名可以有多条 A，只说第一条会让人以为
+    // 其他的丢了。超过 3 条就折成「前三条 + 等 N 条」。
+    const shown = cur.slice(0, 3).join("、") + (cur.length > 3 ? ` 等 ${cur.length} 条` : "");
+    out += ddLine("现在指向", escapeHtml(shown || "（空）"));
+  } else {
+    out += ddLine("现在指向", `还没有这条 ${t} 记录`);
+  }
+  if (f.best_ip) out += ddLine("最优 IP", escapeHtml(f.best_ip));
+  if (will.length) {
+    out += ddLine("点「立即更新」会写入", `<b>${will.length} 条</b>：` + escapeHtml(will.join("、")));
+  } else {
+    out += ddLine("点「立即更新」会写入",
+      `<span style="color:var(--warn)">这一轮没有可用的 ${fam} 地址，这一族会跳过</span>`);
+  }
+  return out;
+}
+
+// ddFamilyVerdict 是「这一族接下来该做什么」。三种模式的补救办法不一样，
+// 所以必须分族说，不能合成一句「成功」了事。
+function ddFamilyVerdict(f, t) {
+  const cur = Array.isArray(f.current_ips) ? f.current_ips : (f.current_ip ? [f.current_ip] : []);
+  const will = Array.isArray(f.will_write) ? f.will_write : [];
+  if (!will.length) {
+    return t === "AAAA"
+      ? "这一轮还没有测出可用的 IPv6 节点，AAAA 这次不会动（现有记录保持原样）。先去探测卡片跑一次 v6 探测。"
+      : "这一轮还没有测出可用 IPv4 地址，A 这次不会动。回去点「立即测速」。";
+  }
+  if (!f.found) return `这条域名还没有 ${t} 记录，下次测速成功后会自己创建；想现在就建，点「立即更新一次」。`;
+  if (cur.length !== will.length) {
+    return `现在是 ${cur.length} 条、按你的设置会变成 ${will.length} 条——点「立即更新一次」就对上。`
+      + (cur.length > will.length ? "（多出来的会被删掉）" : "");
+  }
+  if (cur.join("|") !== will.join("|")) return "指向的 IP 和最优列表不一样——点「立即更新一次」就改过来。";
+  return "指向已经和设置一致，不用动。";
+}
+
 async function checkDDNS() {
   const box = $("dd-result");
   box.innerHTML = `<div class="banner">正在连服务商，稍等…</div>`;
   try {
     const r = await api("/api/ddns/check", { method: "POST" });
     const label = (PROVIDERS[r.provider] || {}).label || r.provider;
-    // 记录类型单列一行：查的是 A 还是 AAAA，直接决定下面「现在指向」那几条
+    // 记录类型单列一行：查的是 A、AAAA 还是两族一起，直接决定下面那几行
     // 地址是从哪一族读出来的。不写出来，用户会拿 A 的地址去跟 AAAA 比。
-    const rt = r.record_type === "AAAA" ? "AAAA" : "A";
+    const mode = normalizeRecordMode(r.record_type);
+    const fams = Array.isArray(r.families) ? r.families : [];
     let rows = ddLine("服务商", escapeHtml(label)) + ddLine("域名", escapeHtml(r.domain))
-      + ddLine("记录类型", rt);
-    // 「现在指向」可能有多条：一个域名可以有多条 A，只说第一条会让人以为
-    // 其他的丢了。超过 3 条就折成「前三条 + 等 N 条」。
-    const cur = Array.isArray(r.current_ips) ? r.current_ips : (r.current_ip ? [r.current_ip] : []);
-    if (r.found) {
-      const shown = cur.slice(0, 3).join("、") + (cur.length > 3 ? ` 等 ${cur.length} 条` : "");
-      rows += ddLine("现在指向", escapeHtml(shown || "（空）"));
-    } else {
-      rows += ddLine("现在指向", `还没有这条 ${rt} 记录`);
-    }
-    if (r.best_ip) rows += ddLine("最优 IP", escapeHtml(r.best_ip));
-    if (Array.isArray(r.will_write) && r.will_write.length) {
-      rows += ddLine("点「立即更新」会写入", `<b>${r.will_write.length} 条</b>：` + escapeHtml(r.will_write.join("、")));
-    }
+      + ddLine("记录类型", escapeHtml(modeText(mode)));
+
+    const verdicts = [];
+    const multi = fams.length > 1;
+    fams.forEach(f => {
+      const t = f.type === "AAAA" ? "AAAA" : "A";
+      rows += ddFamilyRow(f, multi);
+      // 单族时不加「AAAA：」前缀，否则会读成「密钥没问题，AAAA：……」两个冒号。
+      verdicts.push((multi ? `${t}：` : "") + ddFamilyVerdict(f, t));
+    });
 
     // 结论分几种，别说「成功」两个字就完事——每一种接下来该做什么都不一样。
+    // 两族都写时逐族给结论，因为很可能 A 已经对上、AAAA 还没测出来。
     let next;
-    const willCount = Array.isArray(r.will_write) ? r.will_write.length : 0;
-    if (!r.found) {
-      next = `密钥没问题，只是这条域名还没有 ${rt} 记录。下次测速成功后会自己创建；想现在就建，点「立即更新一次」。`;
-    } else if (!r.best_ip) {
-      next = "密钥没问题。现在还没有测出最优 IP，回去点「立即测速」。";
-    } else if (cur.length !== willCount) {
-      next = `密钥没问题，但现在是 ${cur.length} 条、按你的设置会变成 ${willCount} 条——点「立即更新一次」就对上。`
-        + (cur.length > willCount ? "（多出来的会被删掉）" : "");
-    } else if (cur.join("|") !== r.will_write.join("|")) {
-      next = "密钥没问题，但指向的 IP 和最优列表不一样——点「立即更新一次」就改过来。";
+    if (!verdicts.length) {
+      next = "密钥可用，但没读到记录类型，按上面几行看。";
+    } else if (!multi) {
+      next = "密钥没问题，" + escapeHtml(verdicts[0]);
     } else {
-      next = "密钥没问题，指向已经和设置一致，不用动。";
+      next = "密钥没问题，两族的结论分开说：<br>" + verdicts.map(escapeHtml).join("<br>");
     }
     box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>密钥可用</b></div>`
       + `<div class="kv">${rows}</div><div class="hint">${next}</div>`;
@@ -2489,21 +2555,49 @@ async function checkDDNS() {
 
 async function pushDDNS() {
   const box = $("dd-result");
-  // 把「会写几条」写进确认框：这一步会删掉多余的记录，不能让人闭着眼点确定。
+  // 把「会写几条、动哪几族」写进确认框：这一步会删掉多余的记录，
+  // 不能让人闭着眼点确定。
   const n = parseInt($("dd-count").value || "1", 10) || 1;
-  const rt = $("dd-record-type").value === "AAAA" ? "AAAA" : "A";
-  const ok = confirm(`现在就把当前最优 IP 写进域名解析？\n\n${$("dd-domain").value.trim() || "这个域名"} 下会只保留 ${n} 条 ${rt} 记录，其他同名的会被删掉（你以前手工加的也算）。\n这会在服务商那边真的改动记录，不是只读。`);
+  const mode = normalizeRecordMode($("dd-record-type").value);
+  // 两族都写时要说成「各 N 条」，否则会被读成两族加起来 N 条。
+  const keepText = mode === "A+AAAA" ? `A 和 AAAA 各 ${n} 条记录` : `${n} 条 ${mode} 记录`;
+  const dom = $("dd-domain").value.trim() || "这个域名";
+  const ok = confirm(`现在就把当前最优 IP 写进域名解析？\n\n${dom} 下会只保留 ${keepText}，其他同名的会被删掉（你以前手工加的也算）。\n这会在服务商那边真的改动记录，不是只读。`);
   if (!ok) return;
   box.innerHTML = `<div class="banner">正在推送…</div>`;
   try {
     const r = await api("/api/ddns/update", { method: "POST" });
-    const list = Array.isArray(r.ips) ? r.ips : [r.ip];
     // 类型用后端回的，不用下拉里的：下拉可能刚被改过但还没保存，
-    // 而真正写进去的是**已保存**的那个类型。
-    const rt = r.record_type === "AAAA" ? "AAAA" : "A";
-    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新（${list.length} 条 ${rt} 记录）</b>`
-      + `<div class="kv">${ddLine("域名", escapeHtml(r.domain))}${ddLine("现在指向", escapeHtml(list.join("、"))) }</div></div>`
-      + `<div class="hint">服务商那边生效通常要几秒到几分钟（看 TTL）。</div>`;
+    // 而真正写进去的是**已保存**的那个模式。
+    const mode2 = normalizeRecordMode(r.record_type);
+    const results = Array.isArray(r.results) ? r.results : [];
+    let rows = ddLine("域名", escapeHtml(r.domain)) + ddLine("记录类型", escapeHtml(modeText(mode2)));
+    const done = [];
+    const skipped = [];
+    results.forEach(res => {
+      const t = res.type === "AAAA" ? "AAAA" : "A";
+      const ips = Array.isArray(res.ips) ? res.ips : [];
+      if (res.skipped || !ips.length) {
+        skipped.push(t);
+        rows += ddLine(`${t} 记录`, `<span style="color:var(--warn)">跳过：${escapeHtml(res.skipped || "没有可用地址")}</span>`);
+      } else {
+        done.push(`${t} ${ips.length} 条`);
+        rows += ddLine(`${t} 记录（${ips.length} 条）`, escapeHtml(ips.join("、")));
+      }
+    });
+    const title = done.length ? "已更新：" + done.join("，") : "什么都没写成";
+    // 被跳过的族一定要说清「旧记录没被删」——后端算不出地址时压根没调
+    // EnsureRecords，所以那一族的记录原样留着，用户不需要去手工补救。
+    let hint = "服务商那边生效通常要几秒到几分钟（看 TTL）。";
+    if (skipped.length) {
+      hint = `这次 ${skipped.join("、")} 没有写入（原因在表里），那一族的记录原样没动。`
+        + (mode2 === "A+AAAA" && skipped.indexOf("AAAA") >= 0
+          ? "AAAA 想更新得先去探测卡片把 v6 跑通。" : "")
+        + "<br>" + hint;
+    }
+    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>${escapeHtml(title)}</b></div>`
+      + `<div class="kv">${rows}</div>`
+      + `<div class="hint">${hint}</div>`;
     await loadStatus();
   } catch (e) {
     const hint = e.status === 400
@@ -2631,7 +2725,7 @@ async function saveAll() {
         ddns_ip_count: parseInt($("dd-count").value || "1", 10) || 1,
         // 这个字段后端是**用指针收**的：「没传」和「传了空串」意思不一样。
         // 我们这里永远传选择框里的实际值（A 或 AAAA），不传空。
-        ddns_record_type: $("dd-record-type").value === "AAAA" ? "AAAA" : "A",
+        ddns_record_type: normalizeRecordMode($("dd-record-type").value),
         // 非 Cloudflare 时这个框是藏着的，读出来可能是勾着的旧值——
         // 服务商不是 Cloudflare 就一定按 false 交，免得存进去一个用不上的标记。
         ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked,

@@ -44,8 +44,29 @@ func (s *Server) currentDDNS() (ddns.Provider, config.Config, string) {
 // recordOptions 把配置里的 TTL / 云朵翻译成 ddns 包要求的写法。
 // 放一处是为了让「定时推送」和「立即更新一次」写出去的记录一定一致——
 // 两条路各写一份的话，早晚会有一条忘记带 TTL。
-func recordOptions(d config.DDNSConfig) ddns.RecordOptions {
-	return ddns.RecordOptions{Type: d.EffectiveRecordType(), TTL: d.TTL, Proxied: d.Proxied}
+//
+// rtype 必须由调用方逐个族给（A / AAAA），不能从配置里取：配置里存的是
+// 同步模式，可能是「两族都写」，而一条记录一次只能属于一族。
+func recordOptions(d config.DDNSConfig, rtype string) ddns.RecordOptions {
+	return ddns.RecordOptions{Type: rtype, TTL: d.TTL, Proxied: d.Proxied}
+}
+
+// emptySourceReason 说明「这一族为什么一个地址都没有」。
+// 分开说是因为两族的补救办法完全不同：A 没有是测速整体没跑成，
+// AAAA 没有是这一轮 v6 没测出节点（先去看 v6 探测）。
+func emptySourceReason(rtype string) string {
+	if rtype == ddns.TypeAAAA {
+		return "这一轮没有 v6 结果"
+	}
+	return "这一轮没有 v4 结果"
+}
+
+// familyLabel 把记录类型说成人话，用在直接给用户看的句子里。
+func familyLabel(rtype string) string {
+	if rtype == ddns.TypeAAAA {
+		return "IPv6"
+	}
+	return "IPv4"
 }
 
 // pickIPs 按排名取前 n 条，不足 n 条时有多少给多少。
@@ -79,43 +100,74 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := p.Verify(cfg.DDNS.Domain, cfg.DDNS.EffectiveRecordType())
-	if err != nil {
-		s.appendLog("测试域名解析密钥失败: " + err.Error())
-		writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
-		return
+	// 按同步模式逐族校验。单族时就是一次，A+AAAA 时是两次。
+	// 一次校验两族的原因：用户选「两个都写」之后，只报 A 那张表会让他
+	// 以为 AAAA 也一起验过了——密钥或权限问题往往只影响其中一族
+	// （比如 Cloudflare 的令牌权限只给了某个 Zone 的部分类型）。
+	mode := cfg.DDNS.EffectiveRecordMode()
+	families := ddns.FamiliesOf(mode)
+	views := make([]ddnsFamilyView, 0, len(families))
+	for _, family := range families {
+		state, err := p.Verify(cfg.DDNS.Domain, family)
+		if err != nil {
+			s.appendLog(fmt.Sprintf("测试域名解析密钥失败（%s）: %s", family, err.Error()))
+			writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
+			return
+		}
+
+		s.mu.Lock()
+		bestIP, rank := lastRankForType(s.cfg, family)
+		allIPs := pickIPs(rank, cfg.DDNS.EffectiveIPCount())
+		s.mu.Unlock()
+		if len(allIPs) == 0 && bestIP != "" {
+			// 老配置里只有 last_ip（升级前存的），没有列表。
+			allIPs = []string{bestIP}
+		}
+
+		if state.Found {
+			s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 现在指向 %s（共 %d 条 %s 记录）",
+				cfg.DDNS.Domain, strings.Join(state.CurrentIPs, "、"), len(state.CurrentIPs), family))
+		} else {
+			s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 还没有 %s 记录，下次成功后会创建",
+				cfg.DDNS.Domain, family))
+		}
+		views = append(views, ddnsFamilyView{
+			Type:       family,
+			Found:      state.Found,
+			CurrentIP:  state.CurrentIP,
+			CurrentIPs: state.CurrentIPs,
+			BestIP:     bestIP,
+			WillWrite:  allIPs,
+		})
 	}
 
-	s.mu.Lock()
-	bestIP, rank := lastRankForType(s.cfg, cfg.DDNS.EffectiveRecordType())
-	allIPs := pickIPs(rank, cfg.DDNS.EffectiveIPCount())
-	s.mu.Unlock()
-	if len(allIPs) == 0 && bestIP != "" {
-		// 老配置里只有 last_ip（升级前存的），没有列表。
-		allIPs = []string{bestIP}
-	}
-
-	if state.Found {
-		s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 现在指向 %s（共 %d 条 %s 记录）",
-			cfg.DDNS.Domain, strings.Join(state.CurrentIPs, "、"), len(state.CurrentIPs), cfg.DDNS.EffectiveRecordType()))
-	} else {
-		s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 还没有 %s 记录，下次成功后会创建",
-			cfg.DDNS.Domain, cfg.DDNS.EffectiveRecordType()))
-	}
 	writeJSON(w, 200, map[string]any{
 		"ok":          true,
 		"provider":    cfg.DDNS.Provider,
 		"domain":      cfg.DDNS.Domain,
-		"found":       state.Found,
-		"current_ip":  state.CurrentIP,
-		"current_ips": state.CurrentIPs,
-		"best_ip":     bestIP,
-		// 界面上要说清「点立即更新会写几条」，否则用户以为只写最优那条。
-		"will_write": allIPs,
-		// 同样的道理：也要说清「写的是哪一族」。A 和 AAAA 在服务商那边是
-		// 两张互不相干的表，只报域名和 IP 的话，用户看不出这次动的是哪张。
-		"record_type": cfg.DDNS.EffectiveRecordType(),
+		"record_type": mode,
+		"families":    views,
 	})
+}
+
+// ddnsFamilyView 是「某一族现在什么样、点立即更新会写成什么样」。
+//
+// 为什么要分族报：A 和 AAAA 在服务商那边是两张互不相干的表。只报一个总数
+// 或者只报 A，用户看不出这次动的是哪张——「两个都写」模式下尤其容易误会。
+type ddnsFamilyView struct {
+	Type       string   `json:"type"`
+	Found      bool     `json:"found"`
+	CurrentIP  string   `json:"current_ip"`
+	CurrentIPs []string `json:"current_ips"`
+	BestIP     string   `json:"best_ip"`
+	WillWrite  []string `json:"will_write"`
+}
+
+// ddnsFamilyResult 是「这一族这次写成功没有」。
+type ddnsFamilyResult struct {
+	Type    string   `json:"type"`
+	IPs     []string `json:"ips"`
+	Skipped string   `json:"skipped,omitempty"`
 }
 
 // lastRankForType 返回「记录类型对应的上一次排名」和最优那一条。
@@ -146,49 +198,69 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 先把每一族该写什么算出来，再决定动作。算 IP 只读配置，放在锁里一次拿完。
+	mode := cfg.DDNS.EffectiveRecordMode()
+	families := ddns.FamiliesOf(mode)
+
 	s.mu.Lock()
-	lastIP, stored := lastRankForType(s.cfg, cfg.DDNS.EffectiveRecordType())
 	busy := s.running
+	planned := make([]ddnsFamilyResult, 0, len(families))
+	for _, family := range families {
+		lastIP, stored := lastRankForType(s.cfg, family)
+		// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速——
+		// 直接从这一份里截前 5 条就行。
+		ips := pickIPs(stored, cfg.DDNS.EffectiveIPCount())
+		if len(ips) == 0 && lastIP != "" {
+			ips = []string{lastIP} // 升级前存的配置只有单条
+		}
+		planned = append(planned, ddnsFamilyResult{Type: family, IPs: ips})
+	}
 	s.mu.Unlock()
 
-	// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速——
-	// 直接从这一份里截前 5 条就行。
-	ips := pickIPs(stored, cfg.DDNS.EffectiveIPCount())
-	if len(ips) == 0 && lastIP != "" {
-		ips = []string{lastIP} // 升级前存的配置只有单条
-	}
-	if len(ips) == 0 {
-		if cfg.DDNS.EffectiveRecordType() == ddns.TypeAAAA {
-			writeJSON(w, 400, map[string]string{
-				"error": "还没有测出可用的 IPv6 节点。先在探测卡片里跑一次 v6 探测，或者等下一轮自动测速",
-			})
-			return
-		}
-		writeJSON(w, 400, map[string]string{
-			"error": "还没有测出最优 IP。先点「立即测速」；只想验证密钥对不对，用「测试密钥」就够了",
-		})
-		return
-	}
 	// 测速进行中不推：那一轮自己会推，两边同时写同一条记录只会打架。
 	if busy {
 		writeJSON(w, 409, map[string]string{"error": "测速正在进行中，它结束后会自己推送；请稍后再试"})
 		return
 	}
 
-	if err := p.EnsureRecords(cfg.DDNS.Domain, ips, recordOptions(cfg.DDNS)); err != nil {
-		s.appendLog("手动推送域名解析失败: " + err.Error())
-		writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
+	wrote := 0
+	for i := range planned {
+		pl := &planned[i]
+		if len(pl.IPs) == 0 {
+			// 这一族没结果就跳过，**不要**因此放弃另一族：v6 没测出节点
+			// 不该连累 A 记录也不更新。
+			pl.Skipped = "还没有测出可用的 " + familyLabel(pl.Type) + " 节点"
+			continue
+		}
+		if err := p.EnsureRecords(cfg.DDNS.Domain, pl.IPs, recordOptions(cfg.DDNS, pl.Type)); err != nil {
+			s.appendLog(fmt.Sprintf("手动推送域名解析失败（%s）: %s", pl.Type, err.Error()))
+			writeJSON(w, 502, map[string]string{"error": ddnsHint(err)})
+			return
+		}
+		wrote++
+		s.appendLog(fmt.Sprintf("域名解析已手动更新：%s → %s（共 %d 条 %s 记录）",
+			cfg.DDNS.Domain, strings.Join(pl.IPs, "、"), len(pl.IPs), pl.Type))
+	}
+
+	if wrote == 0 {
+		// 一族都没写成，按模式给一句最有用的指引，别只说「失败」——
+		// 三种模式的补救办法不一样。
+		msg := "还没有测出最优 IP。先点「立即测速」；只想验证密钥对不对，用「测试密钥」就够了"
+		switch mode {
+		case ddns.ModeBoth:
+			msg = "还没有测出可用的 IP（IPv4 和 IPv6 都没有）。先点「立即测速」"
+		case ddns.TypeAAAA:
+			msg = "还没有测出可用的 IPv6 节点。先在探测卡片里跑一次 v6 探测，或者等下一轮自动测速"
+		}
+		writeJSON(w, 400, map[string]string{"error": msg})
 		return
 	}
 
-	s.appendLog(fmt.Sprintf("域名解析已手动更新：%s → %s（共 %d 条 %s 记录）",
-		cfg.DDNS.Domain, strings.Join(ips, "、"), len(ips), cfg.DDNS.EffectiveRecordType()))
 	writeJSON(w, 200, map[string]any{
 		"ok":          true,
 		"domain":      cfg.DDNS.Domain,
-		"ips":         ips,
-		"ip":          ips[0],
-		"record_type": cfg.DDNS.EffectiveRecordType(),
+		"record_type": mode,
+		"results":     planned,
 	})
 }
 

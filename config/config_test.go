@@ -162,9 +162,9 @@ func TestLoadIgnoresBrokenBackup(t *testing.T) {
 	}
 }
 
-// TestEffectiveRecordType：老配置（没有 record_type 字段）必须还是按 A 写，
-// 升级不能改变用户现有记录的任何一行；只有明确写了 AAAA 才走 v6。
-func TestEffectiveRecordType(t *testing.T) {
+// TestEffectiveRecordMode：老配置（没有 record_type 字段）必须还是按 A 写，
+// 升级不能改变用户现有记录的任何一行；只有明确写了 AAAA / A+AAAA 才走 v6。
+func TestEffectiveRecordMode(t *testing.T) {
 	cases := map[string]string{
 		"":          "A", // 零值 = 老配置
 		"A":         "A",
@@ -172,11 +172,15 @@ func TestEffectiveRecordType(t *testing.T) {
 		"AAAA":      "AAAA",
 		"aaaa":      "AAAA",
 		"  AAAA ":   "AAAA",
-		"CNAME":     "A", // 读进来的路径不报错，保存时才会拦（见 web/saveConfig）
+		"A+AAAA":    "A+AAAA", // 两族都写
+		"a+aaaa":    "A+AAAA",
+		"AAAA+A":    "A+AAAA", // 顺序反了也认，别让手写配置的人莫名其妙
+		" A + AAAA": "A+AAAA", // 带空格也认
+		"CNAME":     "A",      // 读进来的路径不报错，保存时才会拦（见 web/saveConfig）
 		"TRUST ME ": "A",
 	}
 	for in, want := range cases {
-		got := DDNSConfig{RecordType: in}.EffectiveRecordType()
+		got := DDNSConfig{RecordType: in}.EffectiveRecordMode()
 		if got != want {
 			t.Errorf("RecordType=%q 应得到 %q，实际 %q", in, want, got)
 		}

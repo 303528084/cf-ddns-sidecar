@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=新增 IPv6 优选：测速时可顺带测出 Cloudflare v6 节点，写进 AdGuard 与域名的 AAAA 记录（域名解析页新增「记录类型」，A / AAAA 可选，四家服务商都支持）。同时修掉 v6 探测误报「全部直连」的红字、以及采样量过小导致可用节点难捞出来的问题
+changelog=域名解析的「记录类型」多了第三档 A + AAAA：一轮测速后 A 和 AAAA 两族一起更新，不用再二选一（v1.7.0 里「选了 AAAA 之后 A 记录就不再更新」的取舍已补掉）。某一族没测出结果时只跳过那一族，另一族照常更新、原有记录不会被删；「测试密钥」和「立即更新一次」在 A + AAAA 下按族分别显示现在指向哪儿、会写入几条、哪一族被跳过及原因
 disable_authorization_path=true
