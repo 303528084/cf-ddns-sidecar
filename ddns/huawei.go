@@ -52,25 +52,29 @@ func newHuawei(domain string, creds map[string]string) (Provider, error) {
 
 func (h *huawei) Name() string { return "华为云" }
 
-// queryA 查这条域名的 A 记录（查询与校验共用）。
-func (h *huawei) queryA(domain string) (hwRecordset, bool, error) {
+// queryRecords 查这条域名某一类记录（A 或 AAAA），查询与校验共用。
+func (h *huawei) queryRecords(domain, rtype string) (hwRecordset, bool, error) {
 	q := url.Values{}
 	q.Set("name", domain+".")
-	q.Set("type", "A")
+	q.Set("type", rtype)
 	var list hwListResp
 	if err := h.request(http.MethodGet, huaweiAPIBase+"/v2.1/recordsets", q, nil, &list); err != nil {
 		return hwRecordset{}, false, fmt.Errorf("查询记录失败: %w", err)
 	}
 	for _, rec := range list.Recordsets {
-		if strings.TrimSuffix(rec.Name, ".") == domain && rec.Type == "A" {
+		if strings.TrimSuffix(rec.Name, ".") == domain && rec.Type == rtype {
 			return rec, true, nil
 		}
 	}
 	return hwRecordset{}, false, nil
 }
 
-func (h *huawei) Verify(domain string) (RecordState, error) {
-	rec, found, err := h.queryA(domain)
+func (h *huawei) Verify(domain string, rtype string) (RecordState, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return RecordState{}, err
+	}
+	rec, found, err := h.queryRecords(domain, rtype)
 	if err != nil {
 		return RecordState{}, err
 	}
@@ -84,10 +88,20 @@ func (h *huawei) Verify(domain string) (RecordState, error) {
 	return state, nil
 }
 
-// EnsureARecords 对华为云来说最省事：一个「记录集」本身就是一个值列表，
+// EnsureRecords 对华为云来说最省事：一个「记录集」本身就是一个值列表，
 // 一次 PUT 把 records 整体换掉，多余的自然就没了，不需要逐条删除。
-func (h *huawei) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
-	ips = normalizeIPs(ips)
+//
+// 也正因为整集覆盖，这里绝不能读错类型：A 和 AAAA 在华为云是两个独立的
+// 记录集，查哪一类、写哪一类必须一致，否则会把另一族整个盖掉。
+func (h *huawei) EnsureRecords(domain string, ips []string, opt RecordOptions) error {
+	rtype, err := opt.recordType()
+	if err != nil {
+		return err
+	}
+	ips, err = prepareIPs(ips, rtype)
+	if err != nil {
+		return err
+	}
 	if len(ips) == 0 {
 		return nil
 	}
@@ -96,7 +110,7 @@ func (h *huawei) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 	if ttl <= 0 {
 		ttl = 300
 	}
-	rec, found, err := h.queryA(domain)
+	rec, found, err := h.queryRecords(domain, rtype)
 	if err != nil {
 		return err
 	}
@@ -111,7 +125,7 @@ func (h *huawei) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 	}
 
 	body := map[string]any{
-		"name": domain + ".", "type": "A",
+		"name": domain + ".", "type": rtype,
 		"records": ips, "ttl": ttl,
 	}
 	u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets", huaweiAPIBase, h.zoneID)

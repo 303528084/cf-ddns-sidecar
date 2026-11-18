@@ -285,6 +285,20 @@ func uint32ToIP(v uint32) string {
 }
 
 // ipv6Prefix 存一段 v6 CIDR 采样所需的信息：网络前缀 16 字节、主机位数量。
+const (
+	// ipv6PerPrefix 是每个 v6 段采样的地址数。
+	//
+	// 以前是「总数 600 按段数平分」：用户填 97 个段时每段只剩 6 个，真机实测
+	// 585 个候选里只有 30 个能完成 TCP 握手（约 5%）。参考项目 cf-dns-select
+	// 每个 /48 撒约 540 个，同样的命中率下能捞出几百个可用节点——差距全在采样量。
+	// 改成每段固定 30 个：97 段约 2900 候选，探测从约 1 分钟涨到 3 分钟左右。
+	ipv6PerPrefix = 30
+
+	// maxIPv6Candidates 是探测候选的总上限，防止用户填几百个段时把一次探测
+	// 拖成十几分钟。超出时按段顺序截断（前面的段优先）。
+	maxIPv6Candidates = 20000
+)
+
 // 和 v4 的 cidrEntry（uint32）分开——v6 主机位最多 128 位，uint32 装不下，
 // 用 netip.Addr 的 As16() 拿到完整的 128 位再随机填。
 type ipv6Prefix struct {
@@ -292,14 +306,19 @@ type ipv6Prefix struct {
 	bits int // 主机位数量（128 - ones）
 }
 
-// sampleFromIPv6CIDRs 从 v6 段里随机采样 count 个地址，输出 `[ipv6]:443#US`。
+// sampleFromIPv6CIDRs 每个 v6 段采样 perPrefix 个地址，输出 `[ipv6]:443#US`。
+// 总条数 = perPrefix × 段数，超过 maxIPv6Candidates 时按段顺序截断。
+//
+// 为什么按段固定、不按总数平分：总量固定时段越多每段越少，用户填几十个段
+// 就等于每段只测几个地址，命中率被稀释得很低（真机 97 段 → 每段 6 个 →
+// 585 个候选只通 30 个）。按段固定后每个段都有足够的采样点。
 //
 // 方括号是硬要求：Go 的 parseOutput 用 net.SplitHostPort 拆 host/port，
 // 裸写法 2606:4700::1:443 会因冒号过多拆不开，端口被并进地址（静默错误）。
 // 引擎侧（main.py）已同步改成认 [v6]:port 形式。
-func sampleFromIPv6CIDRs(cidrs []string, count int) []string {
-	if count <= 0 {
-		count = 600
+func sampleFromIPv6CIDRs(cidrs []string, perPrefix int) []string {
+	if perPrefix <= 0 {
+		perPrefix = ipv6PerPrefix
 	}
 	var prefixes []ipv6Prefix
 	for _, s := range cidrs {
@@ -320,31 +339,25 @@ func sampleFromIPv6CIDRs(cidrs []string, count int) []string {
 		return nil
 	}
 
-	seen := make(map[netip.Addr]bool, count)
-	out := make([]string, 0, count)
-	perPrefix := count / len(prefixes)
-	if perPrefix < 4 {
-		perPrefix = 4
+	total := perPrefix * len(prefixes)
+	if total > maxIPv6Candidates {
+		total = maxIPv6Candidates
 	}
+	seen := make(map[netip.Addr]bool, total)
+	out := make([]string, 0, total)
 	for _, p := range prefixes {
-		for i := 0; i < perPrefix && len(out) < count; i++ {
+		got := 0
+		// 每段抽满 perPrefix 个；撞到重复/全零地址就重抽。重抽次数封顶，
+		// 免得 /126 这种只剩几个可用地址的小段原地打转。
+		for tries := 0; tries < perPrefix*3 && got < perPrefix && len(out) < total; tries++ {
 			addr := randomIPv6(p)
 			if addr.IsUnspecified() || seen[addr] {
 				continue
 			}
 			seen[addr] = true
 			out = append(out, "["+addr.String()+"]:443#US")
+			got++
 		}
-	}
-	// 配额没凑够时补一轮（和 v4 的 sampleFromCIDRs 同样的兜底逻辑）。
-	for tries := 0; tries < 3 && len(out) < count; tries++ {
-		p := prefixes[rand.Intn(len(prefixes))]
-		addr := randomIPv6(p)
-		if addr.IsUnspecified() || seen[addr] {
-			continue
-		}
-		seen[addr] = true
-		out = append(out, "["+addr.String()+"]:443#US")
 	}
 	return out
 }

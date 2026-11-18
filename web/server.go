@@ -717,6 +717,11 @@ type configResp struct {
 	DDNSTTL         int         `json:"ddns_ttl"`
 	DDNSProxied     bool        `json:"ddns_proxied"`
 	DDNSIPCount     int         `json:"ddns_ip_count"`
+	// DDNSRecordType 是要写的记录类型：A（IPv4）或 AAAA（IPv6）。
+	// 和上面的开关不同，它有两个合法值，所以用「空 = A」没法表达「用户主动选了 A」；
+	// 真要区分得用指针。这里取值受限、且老界面不会传，用字符串足够：
+	// 前端始终会带上当前值，不存在「漏传就把用户的选择清掉」的问题。
+	DDNSRecordType string `json:"ddns_record_type"`
 
 	// 高级设置：引擎参数表 + 用户改过的值 + 没给开关的那些及原因。
 	//
@@ -751,6 +756,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSTTL:         c.DDNS.TTL,
 			DDNSProxied:     c.DDNS.Proxied,
 			DDNSIPCount:     c.DDNS.EffectiveIPCount(),
+			DDNSRecordType:  c.DDNS.EffectiveRecordType(),
 			EngineGroups:    engine.Groups,
 			EngineOptions:   engine.Schema,
 			EngineExcluded:  engine.ExcludedReasons(),
@@ -788,6 +794,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSTTL      int       `json:"ddns_ttl"`
 		DDNSProxied  bool      `json:"ddns_proxied"`
 		DDNSIPCount  int       `json:"ddns_ip_count"`
+		// 用指针：「没传」和「传了空串」要区分开。空串归一成 A 是合法的主动选择，
+		// 而旧客户端/老的导入文件里根本没有这个字段——那时必须保持原样不动，
+		// 否则一次「只改域名」的保存就会把用户选的 AAAA 悄悄改回 A。
+		DDNSRecordType *string `json:"ddns_record_type"`
 		// 高级设置。同样用指针：没传 = 不动（旧客户端、老导入文件），
 		// 传了空对象 = 用户点了「恢复默认」，要真的清空。
 		EngineOverrides *map[string]any `json:"engine_overrides"`
@@ -812,6 +822,15 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 			"error": "「同步几条 IP」请填 1 到 20 之间的整数",
 		})
 		return
+	}
+	// 记录类型：只认 A / AAAA。写错的值**当场退回**，不回落成 A——
+	// 用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，只能等他自己发现访问没变快。
+	// 没传（旧界面/老备份文件）就保持原样，不当作改成了 A。
+	if body.DDNSRecordType != nil {
+		if _, err := ddns.NormalizeRecordType(*body.DDNSRecordType); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	// 「优选 IP 段」逐行校验，错一行就整单退回并指明第几行。
@@ -888,6 +907,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.DDNS.TTL = body.DDNSTTL
 	cfg.DDNS.Proxied = body.DDNSProxied
 	cfg.DDNS.IPCount = body.DDNSIPCount
+	if body.DDNSRecordType != nil {
+		rt, _ := ddns.NormalizeRecordType(*body.DDNSRecordType) // 上面已校验过
+		cfg.DDNS.RecordType = rt
+	}
 
 	s.cfg = &cfg
 	s.mu.Unlock()
@@ -1140,6 +1163,29 @@ func (s *Server) failBeforeRun(msg string) error {
 	return errors.New(msg)
 }
 
+// rewriteAnswers 返回某个域名这一轮要写进 AdGuard 的答案集合。
+//
+// AdGuard 的重写是「域名 → 答案」一条一条存的，同一个域名可以既有 v4 答案
+// 又有 v6 答案，客户端按自己支持的协议族各取一条。所以两个族要一起给。
+//
+// **只写 v4 是错的**：ReplaceRewrites 是「先把整张重写表清空、再按 want 重建」，
+// want 里没有的答案会被当成多余删掉。只写 v4 就等于每轮都把 v6 那条抹了，
+// 家里支持 v6 的设备永远用不上——而且没有任何报错，只有"怎么没变快"。
+//
+// v6 这一轮没测出来（v6IPs 为空）时只给 v4：此时删掉旧的 v6 答案是对的，
+// 因为那台节点上一轮之后就没人验证过；删了 v6 客户端会回落到 v4，
+// 比留着一条指向不可用地址的 AAAA 安全。
+func rewriteAnswers(bestV4 string, v6IPs []string) map[string]bool {
+	answers := make(map[string]bool, 2)
+	if bestV4 != "" {
+		answers[bestV4] = true
+	}
+	if len(v6IPs) > 0 && v6IPs[0] != "" {
+		answers[v6IPs[0]] = true
+	}
+	return answers
+}
+
 func (s *Server) runOnce(cfg config.Config) error {
 	startedAt := time.Now()
 	defer func() {
@@ -1313,6 +1359,38 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 每个 IP 一行「质量数据」，界面直接渲染，不用再算。
 	nodes := buildNodeStats(res, colos)
 
+	// 0) v6 优选（可选，只有填了「v6 段链接」才跑）
+	//
+	// 放在写入之前的理由：下一步要按记录类型把 v6 也写进 AAAA / AdGuard，
+	// 那两处都需要「这一轮刚测出来的 v6 结果」，而不是上一轮的。
+	//
+	// 三个刻意的约定：
+	//  1. 没填链接 = 完全不跑，行为和以前一模一样（不用多一个开关）。
+	//  2. **失败不牵连 v4**：v6 跑空只是这一块没结果，已经测好的 v4 照旧写。
+	//  3. 手动探测正在跑时跳过这一轮，两个一起跑会互相清掉对方的候选暂存。
+	//     这里不阻塞等待——主测速的预算不该被一个手动操作拖住。
+	// v6RoundIPs 是**这一轮**测出来的 v6 结果（按质量排序），可能为空。
+	//
+	// 写 AdGuard / DDNS 用的都是它，而不是 cfg.LastIPv6——后者是「上一次成功
+	// 的结果」，可能是上一个小时的，拿它去写解析等于把一个早就不通的地址
+	// 塞进域名。这一轮没测出来就是没测出来，宁可不写（见下面 DDNS 那段的说明）。
+	var v6RoundIPs []string
+	if strings.TrimSpace(cfg.IPv6ProbeURL) != "" {
+		if s.claimIPv6Probe() {
+			s.appendLog("开始 v6 优选…")
+			ips, verr := s.runIPv6Probe()
+			if verr != nil {
+				s.appendLog("v6 优选失败（不影响本次 v4 结果）: " + friendlyErr(verr))
+			} else {
+				v6RoundIPs = ips
+			}
+		} else {
+			s.appendLog("v6 探测正在手动进行中，这一轮跳过 v6 优选")
+		}
+	}
+
+	// 时间戳放在 v6 之后取：v6 可能要跑 1~2 分钟，用开始时刻会让「上次测速」
+	// 显示的时间比实际早了整整一段。
 	now := time.Now().Format("2006-01-02 15:04:05")
 
 	// 1) 写入 AdGuard Home 重写表
@@ -1327,18 +1405,23 @@ func (s *Server) runOnce(cfg config.Config) error {
 		} else {
 			want := make(map[string]map[string]bool, len(rewriteNames))
 			for _, d := range rewriteNames {
-				want[d] = map[string]bool{best: true}
+				want[d] = rewriteAnswers(best, v6RoundIPs)
 			}
 			stats, werr := provider.ReplaceRewrites(want)
 			if werr != nil {
 				s.appendLog("写入 AdGuard 失败: " + werr.Error())
 			} else {
 				wild := len(rewriteNames) - len(cfg.Domains)
+				fam := "仅 IPv4"
+				if len(v6RoundIPs) > 0 {
+					fam = "IPv4 + IPv6"
+				}
 				if wild > 0 {
-					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，其中 %d 条子域通配符）",
-						stats.Written, len(cfg.Domains), wild))
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，其中 %d 条子域通配符，%s）",
+						stats.Written, len(cfg.Domains), wild, fam))
 				} else {
-					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名）", stats.Written, len(cfg.Domains)))
+					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，%s）",
+						stats.Written, len(cfg.Domains), fam))
 				}
 			}
 		}
@@ -1351,11 +1434,24 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 写几条由用户设定（默认 1 条）。注意 pushIPs 是「按排名截前 N」，
 	// 而 cfg.LastIPs 存的是**完整排名**——这样用户之后把条数从 1 改成 5，
 	// 点一下「立即更新一次」就能补齐，不用重新跑一次测速。
-	pushIPs := pickIPs(res.IPs, cfg.DDNS.EffectiveIPCount())
+	//
+	// 按记录类型选 IP 来源：A 用 v4 排名，AAAA 用**这一轮**的 v6 排名。
+	// 类型是 AAAA 但这一轮没 v6 结果时不动现有 AAAA——绝不能拿 v4 地址去
+	// 顶 AAAA（ddns 包的地址族校验会直接拦下来，但这里先说明白更好读）。
+	ddnsType := cfg.DDNS.EffectiveRecordType()
+	pushSource := res.IPs
+	if ddnsType == ddns.TypeAAAA {
+		pushSource = v6RoundIPs
+	}
+	pushIPs := pickIPs(pushSource, cfg.DDNS.EffectiveIPCount())
 	if len(pushIPs) == 0 {
 		// 走到这里说明这一轮没留下任何可用 IP。绝不能拿空列表去「对齐」——
 		// ddns 包会把它当成「这次没结果，别动」，但日志里得如实说一句。
-		s.appendLog("域名解析未推送：本次没有可用的 IP")
+		if ddnsType == ddns.TypeAAAA {
+			s.appendLog("域名解析未推送：记录类型是 AAAA，但这一轮没有 v6 结果（现有 AAAA 记录保持不变）")
+		} else {
+			s.appendLog("域名解析未推送：本次没有可用的 IP")
+		}
 	} else if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "" {
 		missing := config.MissingCredentials(cfg.DDNS.Provider)
 		if len(missing) > 0 {
@@ -1365,11 +1461,11 @@ func (s *Server) runOnce(cfg config.Config) error {
 			p, derr := ddns.New(cfg.DDNS.Provider, cfg.DDNS.Domain, creds)
 			if derr != nil {
 				s.appendLog("域名解析配置有误: " + derr.Error())
-			} else if derr := p.EnsureARecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS)); derr != nil {
+			} else if derr := p.EnsureRecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS)); derr != nil {
 				s.appendLog("域名解析推送失败: " + derr.Error())
 			} else {
-				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条）",
-					cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs)))
+				s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
+					cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), cfg.DDNS.EffectiveRecordType()))
 			}
 		}
 	}

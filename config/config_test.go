@@ -161,3 +161,24 @@ func TestLoadIgnoresBrokenBackup(t *testing.T) {
 		t.Fatalf("应退回默认值，实际 TopN=%d", got.Speed.TopN)
 	}
 }
+
+// TestEffectiveRecordType：老配置（没有 record_type 字段）必须还是按 A 写，
+// 升级不能改变用户现有记录的任何一行；只有明确写了 AAAA 才走 v6。
+func TestEffectiveRecordType(t *testing.T) {
+	cases := map[string]string{
+		"":          "A", // 零值 = 老配置
+		"A":         "A",
+		"a":         "A",
+		"AAAA":      "AAAA",
+		"aaaa":      "AAAA",
+		"  AAAA ":   "AAAA",
+		"CNAME":     "A", // 读进来的路径不报错，保存时才会拦（见 web/saveConfig）
+		"TRUST ME ": "A",
+	}
+	for in, want := range cases {
+		got := DDNSConfig{RecordType: in}.EffectiveRecordType()
+		if got != want {
+			t.Errorf("RecordType=%q 应得到 %q，实际 %q", in, want, got)
+		}
+	}
+}

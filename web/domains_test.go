@@ -509,3 +509,54 @@ func TestDomainAddNoteWhenAdGuardMissing(t *testing.T) {
 		t.Errorf("note 应说明 AdGuard 那一步没做，实际 %q", r.Note)
 	}
 }
+
+// TestDomainAddKeepsIPv6Answer 点一下「加域名」不能把家里的 v6 重写顺手抹掉。
+//
+// ReplaceRewrites 是「先清空整张重写表、再按 want 重建」，而这条路径用的是
+// 上一次测速结果（LastIP / LastIPv6IPs）。如果只往 want 里放 v4，用户只是
+// 加了个域名，所有 AAAA 重写就静悄悄没了——界面上还会显示「已写入 N 条」。
+func TestDomainAddKeepsIPv6Answer(t *testing.T) {
+	stubCFLookup(t)
+
+	var mu sync.Mutex
+	var written []string
+	ag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/control/rewrite/list":
+			w.Write([]byte("[]"))
+		case "/control/rewrite/add":
+			var e struct {
+				Domain string `json:"domain"`
+				Answer string `json:"answer"`
+			}
+			json.NewDecoder(r.Body).Decode(&e)
+			mu.Lock()
+			written = append(written, e.Domain+" -> "+e.Answer)
+			mu.Unlock()
+			w.Write([]byte("{}"))
+		default:
+			w.Write([]byte("{}"))
+		}
+	}))
+	defer ag.Close()
+
+	s := newToolsTestServer(t, func(c *config.Config) {
+		c.AdGuard.URL = ag.URL
+		c.LastIP = "104.16.132.229"
+		c.LastIPv6IPs = []string{"2606:4700::1", "2606:4700::2"}
+	})
+
+	rec := sendJSON(t, s, http.MethodPost, "/api/domains", `{"domain":"v6.test","wildcard":false}`)
+	if rec.Code != 200 {
+		t.Fatalf("添加失败：%d %s", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	got := append([]string(nil), written...)
+	mu.Unlock()
+	sort.Strings(got)
+	want := []string{"v6.test -> 104.16.132.229", "v6.test -> 2606:4700::1"}
+	if strings.Join(got, " | ") != strings.Join(want, " | ") {
+		t.Fatalf("AdGuard 收到的重写不对（v6 最优那条必须也在）：\n实际 %v\n期望 %v", got, want)
+	}
+}

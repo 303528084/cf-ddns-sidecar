@@ -39,10 +39,70 @@ func TestSampleFromIPv6CIDRs(t *testing.T) {
 		}
 		seen[host] = true
 	}
-	if len(got) > 20 {
-		t.Fatalf("采样超出请求数量: %d > 20", len(got))
+	// cloudflareIPv6 只有一段，所以「每段 20 个」= 总共正好 20 个。
+	if len(got) != 20 {
+		t.Fatalf("1 段 × 每段 20 个应产出 20 条，实际 %d", len(got))
 	}
 	t.Logf("采样 %d 个 v6 地址，全部落在 %s 内、格式正确、无重复", len(got), cfNet)
+}
+
+// TestSampleFromIPv6CIDRsPerPrefix 回归：采样按「每段 N 个」算，不按总数平分。
+//
+// 这个是 2026-11-18 真机问题的根因回归：以前是「总数 600 按段数平分」，
+// 用户填 97 段时每段只剩 6 个，命中率被稀释到 585 个候选只通 30 个。
+// 现在每段固定 ipv6PerPrefix 个，段越多总量越大，每段都保证有足够采样点。
+func TestSampleFromIPv6CIDRsPerPrefix(t *testing.T) {
+	// 五段必须互不包含，否则 Contains 归属统计会把子段算到大段头上。
+	cidrs := []string{
+		"2400:cb00:2049::/48",
+		"2606:4700:3000::/48",
+		"2606:4700:3100::/48",
+		"2606:4700:130::/48",
+		"2a06:98c1:3100::/48",
+	}
+	const per = 12
+	got := sampleFromIPv6CIDRs(cidrs, per)
+	if len(got) != len(cidrs)*per {
+		t.Fatalf("5 段 × 每段 %d 个应为 %d 条，实际 %d", per, len(cidrs)*per, len(got))
+	}
+	// 每个段都必须被抽满 per 条——这是「按段固定」和「总数平分」的区别所在。
+	counts := make(map[string]int, len(cidrs))
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, s := range cidrs {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			t.Fatalf("测试数据里的段不合法: %s (%v)", s, err)
+		}
+		prefixes = append(prefixes, p)
+	}
+	for _, node := range got {
+		host := strings.TrimSuffix(strings.TrimPrefix(node, "["), "]:443#US")
+		addr, err := netip.ParseAddr(host)
+		if err != nil {
+			t.Fatalf("采样格式不对: %s (%v)", node, err)
+		}
+		for _, p := range prefixes {
+			if p.Contains(addr) {
+				counts[p.String()]++
+				break
+			}
+		}
+	}
+	for _, p := range prefixes {
+		if counts[p.String()] != per {
+			t.Errorf("段 %s 只抽到 %d 条，应为 %d 条", p, counts[p.String()], per)
+		}
+	}
+}
+
+// TestSampleFromIPv6CIDRsCap 总条数不能突破 maxIPv6Candidates，
+// 否则用户填几百个段会把一次探测拖成十几分钟。
+func TestSampleFromIPv6CIDRsCap(t *testing.T) {
+	// 两段各要 maxIPv6Candidates 条 → 总量 2×上限，应被截到上限。
+	got := sampleFromIPv6CIDRs([]string{"2606:4700::/32", "2a06:98c1:3100::/48"}, maxIPv6Candidates)
+	if len(got) != maxIPv6Candidates {
+		t.Fatalf("应截断到 %d 条，实际 %d", maxIPv6Candidates, len(got))
+	}
 }
 
 // TestSampleFromIPv6CIDRsNoV4 确保 v4 段不会被误当成 v6 采样（To4 的坑）。

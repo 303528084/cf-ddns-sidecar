@@ -61,12 +61,15 @@ func inferRoot(domain string) string {
 
 func (a *aliyun) Name() string { return "阿里云" }
 
-// queryAllA 查这条域名下全部的 A 记录（查询与校验共用）。
-func (a *aliyun) queryAllA(domain string) ([]aliyunRecord, error) {
+// queryRecords 查这条域名下某一类记录（A 或 AAAA），查询与校验共用。
+//
+// 注意 Type 是**服务端过滤条件**：查 AAAA 时阿里云只返回 AAAA，
+// 后面的「删多余」也就删不到 A 记录——这正是我们要的安全边界。
+func (a *aliyun) queryRecords(domain, rtype string) ([]aliyunRecord, error) {
 	q := url.Values{}
 	q.Set("Action", "DescribeSubDomainRecords")
 	q.Set("SubDomain", domain)
-	q.Set("Type", "A")
+	q.Set("Type", rtype)
 	var list aliyunRecordsResp
 	if err := a.request(q, &list); err != nil {
 		return nil, fmt.Errorf("查询记录失败: %w", err)
@@ -74,8 +77,12 @@ func (a *aliyun) queryAllA(domain string) ([]aliyunRecord, error) {
 	return list.DomainRecords.Record, nil
 }
 
-func (a *aliyun) Verify(domain string) (RecordState, error) {
-	recs, err := a.queryAllA(domain)
+func (a *aliyun) Verify(domain string, rtype string) (RecordState, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return RecordState{}, err
+	}
+	recs, err := a.queryRecords(domain, rtype)
 	if err != nil {
 		return RecordState{}, err
 	}
@@ -90,17 +97,24 @@ func (a *aliyun) Verify(domain string) (RecordState, error) {
 	return state, nil
 }
 
-func (a *aliyun) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
-	ips = normalizeIPs(ips)
+func (a *aliyun) EnsureRecords(domain string, ips []string, opt RecordOptions) error {
+	rtype, err := opt.recordType()
+	if err != nil {
+		return err
+	}
+	ips, err = prepareIPs(ips, rtype)
+	if err != nil {
+		return err
+	}
 	if len(ips) == 0 {
 		return nil
 	}
-	recs, err := a.queryAllA(domain)
+	recs, err := a.queryRecords(domain, rtype)
 	if err != nil {
 		return err
 	}
 
-	// 先补齐、再删多余：顺序反了的话中间有一瞬间这域名没有任何 A 记录。
+	// 先补齐、再删多余：顺序反了的话中间有一瞬间这域名没有任何记录。
 	have := make(map[string]aliyunRecord, len(recs))
 	for _, r := range recs {
 		have[r.Value] = r
@@ -110,13 +124,13 @@ func (a *aliyun) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 			// 值已经对了，只差 TTL 就顺手改掉。opt.TTL 为 0 表示
 			// 「用账号默认」，那就不去动它——我们并不知道默认值是多少。
 			if opt.TTL > 0 && rec.TTL != opt.TTL {
-				if err := a.updateRecord(domain, rec.RecordID, ip, opt.TTL); err != nil {
+				if err := a.updateRecord(domain, rtype, rec.RecordID, ip, opt.TTL); err != nil {
 					return err
 				}
 			}
 			continue
 		}
-		if err := a.addRecord(domain, ip, opt.TTL); err != nil {
+		if err := a.addRecord(domain, rtype, ip, opt.TTL); err != nil {
 			return err
 		}
 	}
@@ -136,12 +150,12 @@ func (a *aliyun) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 	return nil
 }
 
-func (a *aliyun) addRecord(domain, ip string, ttl int) error {
+func (a *aliyun) addRecord(domain, rtype, ip string, ttl int) error {
 	q := url.Values{}
 	q.Set("Action", "AddDomainRecord")
 	q.Set("DomainName", a.root)
 	q.Set("RR", a.rr(domain))
-	q.Set("Type", "A")
+	q.Set("Type", rtype)
 	q.Set("Value", ip)
 	// TTL 没填就一个字都不传：阿里云这时用账号默认值，也就是升级前的行为。
 	if ttl > 0 {
@@ -150,12 +164,12 @@ func (a *aliyun) addRecord(domain, ip string, ttl int) error {
 	return a.request(q, &struct{}{})
 }
 
-func (a *aliyun) updateRecord(domain, recordID, ip string, ttl int) error {
+func (a *aliyun) updateRecord(domain, rtype, recordID, ip string, ttl int) error {
 	q := url.Values{}
 	q.Set("Action", "UpdateDomainRecord")
 	q.Set("RecordId", recordID)
 	q.Set("RR", a.rr(domain))
-	q.Set("Type", "A")
+	q.Set("Type", rtype)
 	q.Set("Value", ip)
 	if ttl > 0 {
 		q.Set("TTL", strconv.Itoa(ttl))

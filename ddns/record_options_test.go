@@ -70,7 +70,7 @@ func TestCloudflareCreateCarriesTTLAndProxied(t *testing.T) {
 			defer func() { cloudflareAPIBase = old }()
 
 			p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-			if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
+			if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
 				t.Fatal(err)
 			}
 			if body["ttl"] != c.wantTTL {
@@ -100,7 +100,7 @@ func TestCloudflareSkipsWhenNothingToDo(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if writes != 0 {
@@ -129,7 +129,7 @@ func TestCloudflareWritesWhenOnlyProxiedDiffers(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{Proxied: true}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{Proxied: true}); err != nil {
 		t.Fatal(err)
 	}
 	if putCount != 1 {
@@ -160,7 +160,7 @@ func TestCloudflareWritesWhenOnlyTTLDiffers(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{TTL: 600}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, RecordOptions{TTL: 600}); err != nil {
 		t.Fatal(err)
 	}
 	if putCount != 1 {
@@ -192,7 +192,7 @@ func dnspodTTL(t *testing.T, opt RecordOptions) map[string]any {
 	p, _ := newDNSPod("cf.example.com", map[string]string{
 		"TENCENT_SECRET_ID": "id", "TENCENT_SECRET_KEY": "key",
 	})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, opt); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, opt); err != nil {
 		t.Fatal(err)
 	}
 	return body
@@ -228,7 +228,7 @@ func TestHuaweiTTL(t *testing.T) {
 		p, _ := newHuawei("cf.example.com", map[string]string{
 			"HUAWEI_AK": "ak", "HUAWEI_SK": "sk", "HUAWEI_ZONE_ID": "z",
 		})
-		if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
+		if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
 			t.Fatal(err)
 		}
 		srv.Close()
@@ -264,7 +264,7 @@ func TestAliyunTTLSentOnlyWhenSet(t *testing.T) {
 		p, _ := newAliyun("cf.example.com", map[string]string{
 			"ALIYUN_ACCESS_KEY_ID": "id", "ALIYUN_ACCESS_KEY_SECRET": "secret",
 		})
-		if err := p.EnsureARecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
+		if err := p.EnsureRecords("cf.example.com", []string{"1.2.3.4"}, c.opt); err != nil {
 			t.Fatal(err)
 		}
 		srv.Close()

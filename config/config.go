@@ -86,9 +86,26 @@ type DDNSConfig struct {
 	// Proxied 只对 Cloudflare 有效：true 表示开橙色云朵（走 Cloudflare 代理）。
 	Proxied bool `json:"proxied,omitempty"`
 
-	// IPCount 是一次往域名里写几条 A 记录：按测速排名从优到劣取前 N 条。
+	// IPCount 是一次往域名里写几条记录：按测速排名从优到劣取前 N 条。
 	// 0 表示 1 条——老配置文件没有这个字段，行为必须和以前一模一样。
 	IPCount int `json:"ip_count,omitempty"`
+
+	// RecordType 是要写的记录类型：空 = A（IPv4），另一个合法值是 AAAA（IPv6）。
+	// 老配置文件没有这个字段，反序列化后是空串，效果等同于 A——升级不会改变
+	// 用户现有记录的任何一行。
+	RecordType string `json:"record_type,omitempty"`
+}
+
+// EffectiveRecordType 返回实际要写的记录类型。
+//
+// 只有明确写了 AAAA 才返回 AAAA，其余（含空串和任何写错的值）都按 A。
+// 这里刻意**不报错**：配置读进来的路径（开机、升级）不该因为一个字段写错就
+// 整体失败；真正拦住非法值的是保存时的校验（见 Validate）。
+func (d DDNSConfig) EffectiveRecordType() string {
+	if strings.EqualFold(strings.TrimSpace(d.RecordType), "AAAA") {
+		return "AAAA"
+	}
+	return "A"
 }
 
 // EffectiveIPCount 返回实际要写几条 A 记录。零值和负数都按 1 条处理。
@@ -159,6 +176,17 @@ type Config struct {
 	// LastNodes 与 LastIPs 一一对应，多带速度、延迟、机房。
 	// 只给界面看，不参与任何推送逻辑——推送认的仍然是 LastIPs。
 	LastNodes []NodeStat `json:"last_nodes,omitempty"`
+
+	// 上一条 v6 优选的结果。和上面那组 v4 字段是**两套独立的记录**，
+	// 谁失败都不该影响另一个：v6 这一轮跑空时，v4 的结果照旧。
+	//
+	// 为什么要落盘而不是只放内存：v6 优选一次要 1~2 分钟，跑完只存在
+	// 内存里的话，用户升级一次应用、或者容器重启一下，结果就没了，
+	// 打开界面看到「还没有结果」，反而像功能坏了。
+	LastIPv6      string     `json:"last_ipv6,omitempty"`
+	LastIPv6IPs   []string   `json:"last_ipv6_ips,omitempty"`
+	LastIPv6Nodes []NodeStat `json:"last_ipv6_nodes,omitempty"`
+	LastIPv6Time  string     `json:"last_ipv6_time,omitempty"`
 
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
 	// 调用方需要把结果落盘并清掉覆盖标记。不参与序列化。
@@ -452,6 +480,13 @@ func (c *Config) Clone() Config {
 	// LastNodes 和 LastIPs 一样是「测速线程写、状态接口读」，必须各存一份。
 	if len(c.LastNodes) > 0 {
 		cp.LastNodes = append(make([]NodeStat, 0, len(c.LastNodes)), c.LastNodes...)
+	}
+	// v6 那组同理：自动流程和手动探测都可能同时碰它们。
+	if len(c.LastIPv6IPs) > 0 {
+		cp.LastIPv6IPs = append(make([]string, 0, len(c.LastIPv6IPs)), c.LastIPv6IPs...)
+	}
+	if len(c.LastIPv6Nodes) > 0 {
+		cp.LastIPv6Nodes = append(make([]NodeStat, 0, len(c.LastIPv6Nodes)), c.LastIPv6Nodes...)
 	}
 	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
 	if len(c.Speed.ExtraSources) > 0 {

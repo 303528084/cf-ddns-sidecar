@@ -14,6 +14,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,15 @@ import (
 
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
+
+// ipv6ProbeTimeout 是一次 v6 探测的总时限。
+//
+// 原来是 3 分钟，按「总数 600 个候选」定的。改成每段固定 30 个之后，用户填 97 个段
+// 就是 2910 个候选（本机实测确认），TCP 阶段从约 2 秒变成约 20 秒，后面选出的
+// 30 个节点还要各下载一次测带宽（并发只有 3）。3 分钟卡在这种规模上很容易跑到
+// 一半被 ctx 掐断，界面显示"探测失败"、连已有结果也不给——比不放大采样更糟。
+// 放到 6 分钟：足够 2910 个候选跑完，又比主测速的 10 分钟短，探测卡死时不会长期占着。
+const ipv6ProbeTimeout = 6 * time.Minute
 
 // handleIPv6Source 读写「v6 段链接」这个独立设置。
 //
@@ -104,7 +114,9 @@ func (s *Server) handleIPv6Candidates(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(candidatesTextFromIPv6(count)))
 }
 
-// candidatesTextFromIPv6 把 v6 采样结果渲染成每行 `[ipv6]:443#US` 的文本。
+// candidatesTextFromIPv6 把内置段（只有 2606:4700::/32 一段，走不到用户链接时
+// 才用）的采样结果渲染成每行 `[ipv6]:443#US` 的文本。
+// n 在这里是「这一段采多少个」，内置段只有一段，所以 n 就是总条数。
 func candidatesTextFromIPv6(count int) string {
 	out := sampleFromIPv6CIDRs(cloudflareIPv6, count)
 	s := ""
@@ -140,7 +152,7 @@ func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 			"内容里一个合法的 CIDR 都没有",
 			sampleHint(skipped))
 	}
-	nodes := sampleFromIPv6CIDRs(cidrs, candidateCount)
+	nodes := sampleFromIPv6CIDRs(cidrs, ipv6PerPrefix)
 	s.mu.Lock()
 	s.v6CandText = strings.Join(nodes, "\n") + "\n"
 	s.v6CandStaged = true
@@ -157,34 +169,55 @@ func (s *Server) unstageIPv6Candidates() {
 	s.mu.Unlock()
 }
 
+// claimIPv6Probe 占住「v6 探测」这个坑，返回 false 表示别人正在跑。
+//
+// 为什么需要：手动探测（点卡片上的按钮）和定时那一轮现在都会跑 v6，
+// 两边共用同一个暂存区 s.v6CandText、同一个工作目录 ipv6-probe。真撞上了
+// 会互相把对方的候选列表清掉，测出来的东西谁也说不清是哪个的。
+// 所以谁先占到谁跑，另一个安静跳过并在日志里说明。
+func (s *Server) claimIPv6Probe() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.v6ProbeRunning {
+		return false
+	}
+	s.v6ProbeRunning = true
+	s.v6ProbeErr = ""
+	return true
+}
+
 // handleIPv6Probe 触发一次 v6 探测，立即返回；探测在后台协程里跑。
 // 前端随后轮询 /api/ipv6/probe/result 拿结果。异步是为了不让 HTTP 请求
 // 等上几十秒（一次完整测速可能要 1 分钟以上）。
 func (s *Server) handleIPv6Probe(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.v6ProbeRunning {
-		s.mu.Unlock()
+	if !s.claimIPv6Probe() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false, "note": "探测正在进行中"})
 		return
 	}
-	s.v6ProbeRunning = true
-	s.v6ProbeErr = ""
-	s.mu.Unlock()
 
-	go s.runIPv6Probe()
+	go func() { _, _ = s.runIPv6Probe() }()
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
 
-// runIPv6Probe 真正跑 v6 探测。用独立的 workDir，避免覆盖主测速的 config.json/ip.txt。
-func (s *Server) runIPv6Probe() {
+// runIPv6Probe 真正跑 v6 探测，**返回这一轮的 v6 IP 列表**（按质量排序）。
+//
+// 调用前必须已经 claimIPv6Probe 占到坑，结束时由它自己释放。
+//
+// 为什么要把结果返回给调用方、而不是让它们去读 cfg.LastIPv6：LastIPv6 存的
+// 是「上一次成功的结果」，可能是上一个小时的。自动流程要把 v6 写进 AAAA /
+// AdGuard 时必须用**这一轮刚测出来的**，否则会把一个早就不可用的地址写进解析。
+//
+// 用独立的 workDir，避免覆盖主测速的 config.json/ip.txt。超时也是自己的：
+// 主测速那边 ctx 只剩几分钟时不能把 v6 一起拖进去，反之亦然。
+func (s *Server) runIPv6Probe() ([]string, error) {
 	defer func() {
 		s.mu.Lock()
 		s.v6ProbeRunning = false
 		s.mu.Unlock()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), ipv6ProbeTimeout)
 	defer cancel()
 
 	probeDir := filepath.Join(s.workDir, "ipv6-probe")
@@ -195,7 +228,7 @@ func (s *Server) runIPv6Probe() {
 		s.v6ProbeErr = err.Error()
 		s.v6ProbeNodes = nil
 		s.mu.Unlock()
-		return
+		return nil, err
 	}
 	defer s.unstageIPv6Candidates()
 
@@ -209,25 +242,62 @@ func (s *Server) runIPv6Probe() {
 		Overrides: map[string]any{"FILTER_IPV6_AVAILABILITY": false},
 	}, s.appendLog)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err != nil {
-		s.v6ProbeErr = friendlyErr(err)
-		s.v6ProbeNodes = nil
-		return
+		msg := friendlyErr(err)
+		s.mu.Lock()
+		s.v6ProbeErr = msg
+		s.v6ProbeNodes = nil // 失败就清空内存里的旧结果，免得界面显示上一轮的数字
+		s.mu.Unlock()
+		return nil, errors.New(msg)
 	}
+
+	// 成功：内存 + 配置一起更新。
+	//
+	// 落盘这一步是为了「重启之后还看得到」——一次 v6 优选要 1~2 分钟，
+	// 只在内存里的话，升级一次应用就没了，界面显示「还没有结果」像功能坏了。
+	// 注意**只写 LastIPv6***，绝不动 v4 那组：两套结果互相独立，v6 跑空
+	// 不该把 v4 的结果一起抹掉。
+	s.mu.Lock()
 	s.v6ProbeErr = ""
-	s.v6ProbeNodes = res.Nodes // 只存节点，绝不动 res.IPs / res.Best() 的写入路径
+	s.v6ProbeNodes = res.Nodes
 	s.v6ProbeAt = time.Now()
+	s.cfg.LastIPv6 = res.Best()
+	s.cfg.LastIPv6IPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
+	s.cfg.LastIPv6Nodes = buildNodeStats(res, nil) // v6 暂不做出口机房探测，只留速度/延迟
+	s.cfg.LastIPv6Time = s.v6ProbeAt.Format("2006-01-02 15:04:05")
+	toSave := s.cfg.Clone()
+	s.mu.Unlock()
+
+	if err := toSave.Save(); err != nil {
+		s.appendLog("v6 优选结果保存失败（重启后看不到这次结果）: " + friendlyErr(err))
+	}
+	s.appendLog(fmt.Sprintf("v6 优选完成：最优 %s（共 %d 条可用）", res.Best(), len(res.IPs)))
+	// 返回一份独立的切片：调用方会拿它去构造重写/解析集合，别和配置里那份
+	// 共享底层数组。
+	return append([]string(nil), res.IPs...), nil
 }
 
 // handleIPv6ProbeResult 返回最近一次 v6 探测的结果。
+//
+// 内存里没有时回落到配置里的那份（重启、或者上一轮是定时跑的）：界面上
+// 「上一次 v6 结果」这一栏要能一直显示，而不是每次重启就变成空白。
 func (s *Server) handleIPv6ProbeResult(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	running := s.v6ProbeRunning
 	nodes := append([]engine.Node(nil), s.v6ProbeNodes...)
 	at := s.v6ProbeAt
 	errMsg := s.v6ProbeErr
+	if len(nodes) == 0 && s.cfg != nil && len(s.cfg.LastIPv6Nodes) > 0 {
+		nodes = make([]engine.Node, 0, len(s.cfg.LastIPv6Nodes))
+		for _, n := range s.cfg.LastIPv6Nodes {
+			nodes = append(nodes, engine.Node{IP: n.IP, Speed: n.Speed, Delay: n.Delay})
+		}
+		if at.IsZero() {
+			if t, perr := time.ParseInLocation("2006-01-02 15:04:05", s.cfg.LastIPv6Time, time.Local); perr == nil {
+				at = t
+			}
+		}
+	}
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{

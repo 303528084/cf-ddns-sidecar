@@ -1207,7 +1207,14 @@ async def check_availability_async(node_str, local_public_ip=None):
             if not round_ok:
                 return (node_str, False, "unknown", {}, [])
         if best_trace and families:
-            if local_public_ip and best_trace.get("ip") == local_public_ip:
+            # 「trace 里的客户端 IP = 本机公网 IP」原本用来判断「没走节点、是直连」。
+            # 但这条判断在 IPv6 下必然误杀：v6 没有 NAT，我们连的就是 CF 的 anycast
+            # 边缘节点本身，CF 看到的客户端 IP 当然还是本机公网 v6。真机实测两者
+            # 完全相同（240e:341:...），导致 30 个能正常下载 10Mbps 的节点被判 0 通过，
+            # 白跑 3 轮重试（约 47 秒）还打一条红色错误。
+            # 所以只在 IPv4 下做这个比对（v4 有 NAT，走节点才会看到不同 IP）。
+            if (local_public_ip and ":" not in local_public_ip
+                    and best_trace.get("ip") == local_public_ip):
                 return (node_str, False, "unknown", {}, [])
             if len(families) == 2:
                 stack = "dual_stack"

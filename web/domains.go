@@ -89,7 +89,14 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	names := cfg.RewriteDomains()
 	want := make(map[string]map[string]bool, len(names))
 	for _, d := range names {
-		want[d] = map[string]bool{cfg.LastIP: true}
+		// 这里用的是「上一次测速结果」而不是「这一轮刚测的」——因为这是个
+		// 改域名清单的动作，本来就没有新一轮结果。v4 用 LastIP、v6 用
+		// LastIPv6IPs，两边对称。
+		//
+		// **必须带上 v6**：ReplaceRewrites 是先清空整张表再按 want 重建，
+		// 只给 v4 的话，用户只是点了一下「加域名」，家里所有 v6 的重写就被
+		// 悄悄删掉了，而界面上只会说「已写入 AdGuard：N 条」。
+		want[d] = rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs)
 	}
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {

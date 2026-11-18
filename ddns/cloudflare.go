@@ -51,11 +51,11 @@ func newCloudflare(domain string, creds map[string]string) (Provider, error) {
 
 func (c *cloudflare) Name() string { return "Cloudflare" }
 
-// aRecords 查这条域名的 A 记录。查询和校验共用，避免两处各写一遍参数。
-func (c *cloudflare) aRecords(domain string) ([]cfRecord, error) {
+// cfRecords 查这条域名的某一类记录（A 或 AAAA）。查询和校验共用，避免两处各写一遍参数。
+func (c *cloudflare) cfRecords(domain, rtype string) ([]cfRecord, error) {
 	q := url.Values{}
 	q.Set("name", domain)
-	q.Set("type", "A")
+	q.Set("type", rtype)
 	q.Set("per_page", "50")
 
 	var list cfListResp
@@ -70,14 +70,20 @@ func (c *cloudflare) aRecords(domain string) ([]cfRecord, error) {
 	return list.Result, nil
 }
 
-func (c *cloudflare) Verify(domain string) (RecordState, error) {
-	recs, err := c.aRecords(domain)
+func (c *cloudflare) Verify(domain string, rtype string) (RecordState, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return RecordState{}, err
+	}
+	recs, err := c.cfRecords(domain, rtype)
 	if err != nil {
 		return RecordState{}, err
 	}
 	var state RecordState
 	for _, rec := range recs {
-		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
+		// 服务端已按 type 过滤过，这里再判一次是为了不依赖对端行为：
+		// 万一哪天接口忽略了 type 参数，越过这一行的就是「把 A 当成 AAAA 显示」。
+		if strings.EqualFold(rec.Name, domain) && rec.Type == rtype {
 			state.Found = true
 			state.CurrentIPs = append(state.CurrentIPs, rec.Content)
 		}
@@ -88,14 +94,21 @@ func (c *cloudflare) Verify(domain string) (RecordState, error) {
 	return state, nil
 }
 
-func (c *cloudflare) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
-	ips = normalizeIPs(ips)
+func (c *cloudflare) EnsureRecords(domain string, ips []string, opt RecordOptions) error {
+	rtype, err := opt.recordType()
+	if err != nil {
+		return err
+	}
+	ips, err = prepareIPs(ips, rtype)
+	if err != nil {
+		return err
+	}
 	// 空集合不是「把域名清空」，是「这次没结果，别动」。
 	if len(ips) == 0 {
 		return nil
 	}
 
-	list, err := c.aRecords(domain)
+	list, err := c.cfRecords(domain, rtype)
 	if err != nil {
 		return err
 	}
@@ -104,7 +117,7 @@ func (c *cloudflare) EnsureARecords(domain string, ips []string, opt RecordOptio
 	// 先建一张「现在有哪些 IP」的表，避免为每个期望 IP 都遍历一次全表。
 	have := make(map[string]cfRecord, len(list))
 	for _, rec := range list {
-		if strings.EqualFold(rec.Name, domain) && rec.Type == "A" {
+		if strings.EqualFold(rec.Name, domain) && rec.Type == rtype {
 			have[rec.Content] = rec
 		}
 	}
@@ -124,7 +137,7 @@ func (c *cloudflare) EnsureARecords(domain string, ips []string, opt RecordOptio
 			}
 			continue
 		}
-		if err := c.createRecord(domain, ip, ttl, opt.Proxied); err != nil {
+		if err := c.createRecord(domain, rtype, ip, ttl, opt.Proxied); err != nil {
 			return err
 		}
 	}
@@ -133,13 +146,13 @@ func (c *cloudflare) EnsureARecords(domain string, ips []string, opt RecordOptio
 	//
 	// 这一步会删掉用户手工加的、以及上一次写入但这次掉出前 N 名的记录。
 	// 用户明确选了「不要原有记录」，所以这是要的行为；但顺序必须放在补齐
-	// 之后，否则中间那一瞬间域名没有任何 A 记录。
+	// 之后，否则中间那一瞬间域名没有任何记录。
 	want := make(map[string]bool, len(ips))
 	for _, ip := range ips {
 		want[ip] = true
 	}
 	for _, rec := range list {
-		if !strings.EqualFold(rec.Name, domain) || rec.Type != "A" || want[rec.Content] {
+		if !strings.EqualFold(rec.Name, domain) || rec.Type != rtype || want[rec.Content] {
 			continue
 		}
 		if err := c.deleteRecord(rec.ID); err != nil {
@@ -163,11 +176,11 @@ func (c *cloudflare) putRecord(rec cfRecord) error {
 	return nil
 }
 
-func (c *cloudflare) createRecord(domain, ip string, ttl int, proxied bool) error {
+func (c *cloudflare) createRecord(domain, rtype, ip string, ttl int, proxied bool) error {
 	var wr cfWriteResp
 	if err := c.do(http.MethodPost,
 		fmt.Sprintf("%s/zones/%s/dns_records", cloudflareAPIBase, c.zoneID),
-		map[string]any{"name": domain, "type": "A", "content": ip, "ttl": ttl, "proxied": proxied},
+		map[string]any{"name": domain, "type": rtype, "content": ip, "ttl": ttl, "proxied": proxied},
 		&wr); err != nil {
 		return err
 	}

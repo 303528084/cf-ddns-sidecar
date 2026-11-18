@@ -79,7 +79,7 @@ func TestCloudflareEmptyListTouchesNothing(t *testing.T) {
 	p := withCF(t, srv)
 
 	for _, ips := range [][]string{nil, {}, {"  ", ""}} {
-		if err := p.EnsureARecords("cf.example.com", ips, RecordOptions{}); err != nil {
+		if err := p.EnsureRecords("cf.example.com", ips, RecordOptions{}); err != nil {
 			t.Fatalf("空列表不该报错: %v", err)
 		}
 	}
@@ -95,7 +95,7 @@ func TestCloudflareWritesAllIPs(t *testing.T) {
 	p := withCF(t, srv)
 
 	ips := []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"}
-	if err := p.EnsureARecords("cf.example.com", ips, RecordOptions{TTL: 600}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", ips, RecordOptions{TTL: 600}); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.methods) != 5 {
@@ -120,7 +120,7 @@ func TestCloudflareRemovesOnlyStale(t *testing.T) {
 	defer srv.Close()
 	p := withCF(t, srv)
 
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.methods) != 1 || rec.methods[0] != "DELETE" {
@@ -138,7 +138,7 @@ func TestCloudflareAddsBeforeDeleting(t *testing.T) {
 	defer srv.Close()
 	p := withCF(t, srv)
 
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.methods) != 3 {
@@ -157,7 +157,7 @@ func TestCloudflareIgnoresOtherNames(t *testing.T) {
 	defer srv.Close()
 	p := withCF(t, srv)
 
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, pth := range rec.paths {
@@ -168,7 +168,7 @@ func TestCloudflareIgnoresOtherNames(t *testing.T) {
 }
 
 // 阿里云：补齐缺失的、删掉多余的。
-func TestAliyunEnsureARecords(t *testing.T) {
+func TestAliyunEnsureRecords(t *testing.T) {
 	var added, deleted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -195,7 +195,7 @@ func TestAliyunEnsureARecords(t *testing.T) {
 	p, _ := newAliyun("cf.example.com", map[string]string{
 		"ALIYUN_ACCESS_KEY_ID": "id", "ALIYUN_ACCESS_KEY_SECRET": "secret",
 	})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(added) != 1 || added[0] != "2.2.2.2" {
@@ -207,7 +207,7 @@ func TestAliyunEnsureARecords(t *testing.T) {
 }
 
 // DNSPod：补齐缺失的、删掉多余的。
-func TestDNSPodEnsureARecords(t *testing.T) {
+func TestDNSPodEnsureRecords(t *testing.T) {
 	var created, deleted int
 	var createdValues []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +239,7 @@ func TestDNSPodEnsureARecords(t *testing.T) {
 	p, _ := newDNSPod("cf.example.com", map[string]string{
 		"TENCENT_SECRET_ID": "id", "TENCENT_SECRET_KEY": "key",
 	})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if created != 2 {
@@ -251,7 +251,7 @@ func TestDNSPodEnsureARecords(t *testing.T) {
 }
 
 // 华为云：一次 PUT 把 records 整体换掉，不需要逐条删。
-func TestHuaweiEnsureARecordsMultiple(t *testing.T) {
+func TestHuaweiEnsureRecordsMultiple(t *testing.T) {
 	var putBody map[string]any
 	var writes int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +272,7 @@ func TestHuaweiEnsureARecordsMultiple(t *testing.T) {
 	p, _ := newHuawei("cf.example.com", map[string]string{
 		"HUAWEI_AK": "ak", "HUAWEI_SK": "sk", "HUAWEI_ZONE_ID": "z",
 	})
-	if err := p.EnsureARecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"}, RecordOptions{}); err != nil {
+	if err := p.EnsureRecords("cf.example.com", []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"}, RecordOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if writes != 1 {

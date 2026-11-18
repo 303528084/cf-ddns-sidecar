@@ -70,13 +70,14 @@ func newDNSPod(domain string, creds map[string]string) (Provider, error) {
 
 func (d *dnspod) Name() string { return "腾讯云 DNSPod" }
 
-// queryAllA 查这条域名下全部的 A 记录（查询与校验共用）。
-func (d *dnspod) queryAllA(domain string) ([]tcRecord, error) {
+// queryRecords 查这条域名下某一类记录（A 或 AAAA），查询与校验共用。
+// RecordType 是服务端过滤条件：查 AAAA 时只回 AAAA，删多余也就删不到 A。
+func (d *dnspod) queryRecords(domain, rtype string) ([]tcRecord, error) {
 	sub, _ := splitDomain(domain, d.root)
 	if sub == "@" {
 		sub = ""
 	}
-	query := tcRecord{Domain: d.root, Subdomain: sub, RecordType: "A", RecordLine: "默认"}
+	query := tcRecord{Domain: d.root, Subdomain: sub, RecordType: rtype, RecordLine: "默认"}
 	var list tcListResp
 	if err := d.request("DescribeRecordList", query, &list); err != nil {
 		return nil, fmt.Errorf("查询记录失败: %w", err)
@@ -87,8 +88,12 @@ func (d *dnspod) queryAllA(domain string) ([]tcRecord, error) {
 	return list.Response.RecordList, nil
 }
 
-func (d *dnspod) Verify(domain string) (RecordState, error) {
-	recs, err := d.queryAllA(domain)
+func (d *dnspod) Verify(domain string, rtype string) (RecordState, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return RecordState{}, err
+	}
+	recs, err := d.queryRecords(domain, rtype)
 	if err != nil {
 		return RecordState{}, err
 	}
@@ -103,8 +108,15 @@ func (d *dnspod) Verify(domain string) (RecordState, error) {
 	return state, nil
 }
 
-func (d *dnspod) EnsureARecords(domain string, ips []string, opt RecordOptions) error {
-	ips = normalizeIPs(ips)
+func (d *dnspod) EnsureRecords(domain string, ips []string, opt RecordOptions) error {
+	rtype, err := opt.recordType()
+	if err != nil {
+		return err
+	}
+	ips, err = prepareIPs(ips, rtype)
+	if err != nil {
+		return err
+	}
 	if len(ips) == 0 {
 		return nil
 	}
@@ -123,7 +135,7 @@ func (d *dnspod) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 		ttl = 600
 	}
 
-	recs, err := d.queryAllA(domain)
+	recs, err := d.queryRecords(domain, rtype)
 	if err != nil {
 		return err
 	}
@@ -140,7 +152,7 @@ func (d *dnspod) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 				continue
 			}
 			if err := d.modifyRecord(tcRecord{
-				Domain: d.root, SubDomain: stdSub, RecordType: "A",
+				Domain: d.root, SubDomain: stdSub, RecordType: rtype,
 				RecordLine: "默认", Value: ip, RecordId: rec.RecordId, TTL: ttl,
 			}); err != nil {
 				return err
@@ -148,7 +160,7 @@ func (d *dnspod) EnsureARecords(domain string, ips []string, opt RecordOptions) 
 			continue
 		}
 		if err := d.createRecord(tcRecord{
-			Domain: d.root, SubDomain: stdSub, RecordType: "A",
+			Domain: d.root, SubDomain: stdSub, RecordType: rtype,
 			RecordLine: "默认", Value: ip, TTL: ttl,
 		}); err != nil {
 			return err

@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=修复 IPv6 探测失败：引擎前置端口过滤认不出带方括号的 IPv6 地址，导致所有 v6 候选在测速前被清空、探测必定失败。现已修正，v6 候选能正常进入探测流程
+changelog=新增 IPv6 优选：测速时可顺带测出 Cloudflare v6 节点，写进 AdGuard 与域名的 AAAA 记录（域名解析页新增「记录类型」，A / AAAA 可选，四家服务商都支持）。同时修掉 v6 探测误报「全部直连」的红字、以及采样量过小导致可用节点难捞出来的问题
 disable_authorization_path=true

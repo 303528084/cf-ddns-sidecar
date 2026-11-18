@@ -902,7 +902,7 @@
         <div class="card-b">
           <div class="field switch">
               <input type="checkbox" class="tgl" id="dd-enabled" onchange="renderProvider();onToggle('ddns_enabled',this.checked,this)">
-              <label for="dd-enabled">启用（测速后自动更新 A 记录）</label>
+              <label for="dd-enabled">启用（测速后自动更新解析记录）</label>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -921,11 +921,19 @@
 
           <div class="form-grid">
             <div class="field">
+              <label>记录类型</label>
+              <select id="dd-record-type" onchange="renderRecordType()">
+                <option value="A">A（IPv4 地址）</option>
+                <option value="AAAA">AAAA（IPv6 地址）</option>
+              </select>
+              <div class="hint" id="dd-type-hint"></div>
+            </div>
+            <div class="field">
               <label>同步几条 IP</label>
               <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
               <div class="hint">按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。</div>
             </div>
-            <div class="field">
+            <div class="field" style="grid-column:1/-1">
               <label>记录缓存时间（TTL，秒）</label>
               <input type="number" id="dd-ttl" min="0" max="86400" step="60" placeholder="0">
               <div class="hint">
@@ -936,10 +944,10 @@
           </div>
 
           <div class="banner warn">
-            <b>填几条，这个域名下就只留几条。</b>其他同名的 A 记录（包括你以前手工加的）会被删掉，
+            <b>填几条，这个域名下就只留几条。</b>其他同名的 <span class="dd-type-word">A</span> 记录（包括你以前手工加的）会被删掉，
             否则会一直留着已经失效的旧 IP。测不出 IP 的时候一条都不会删。
             <br>
-            另外，多条 A 记录不是「都用最快那条」，访问者是随机挑一条。所以 2～3 条是「一条挂了还有备胎」，
+            另外，多条 <span class="dd-type-word">A</span> 记录不是「都用最快那条」，访问者是随机挑一条。所以 2～3 条是「一条挂了还有备胎」，
             填到 5 条以上，大部分访问反而会落到不是最快的那些上面。
           </div>
 
@@ -1528,6 +1536,27 @@ function renderProvider() {
   });
 }
 
+// renderRecordType 让「A / AAAA」相关的说明文字跟着下拉走。
+// 光有一个下拉是不够的：下方两段说明里都写着「A 记录」，切到 AAAA 之后
+// 那些字就变成错的，用户会以为写进域名里的还是 IPv4 地址。
+function renderRecordType() {
+  const t = $("dd-record-type").value === "AAAA" ? "AAAA" : "A";
+  document.querySelectorAll("#page-ddns .dd-type-word").forEach(el => {
+    el.textContent = t;
+  });
+  const hint = $("dd-type-hint");
+  if (!hint) return;
+  if (t === "AAAA") {
+    hint.innerHTML = "AAAA 用的是「IPv6 优选」测出来的 v6 地址，所以要先在探测卡片里把 v6 跑通；"
+      + "这一轮没测出 v6 结果时就一条都不写，不会拿旧地址凑数。"
+      + "<br><b>注意：</b>选了 AAAA 之后，这个域名下已有的 A 记录不会再自动更新——"
+      + "它不会被删掉，但会一直停在最后一次写入的地址上。";
+  } else {
+    hint.innerHTML = "A 用的是普通测速测出来的 IPv4 地址。同一域名下的 A 和 AAAA 是两套互不影响的记录，"
+      + "可以同时存在；这一版一次只同步其中一族，换类型不会把另一族删掉。";
+  }
+}
+
 // ---- 加载 ----
 async function loadConfig() {
   const c = await api("/api/config");
@@ -1548,6 +1577,10 @@ async function loadConfig() {
   $("dd-domain").value = c.ddns_domain || "";
   $("dd-ttl").value = c.ddns_ttl || "";
   $("dd-count").value = c.ddns_ip_count || 1;
+  // 直接改 select 的 value 不会触发 onchange，说明文字得手动刷一次，
+  // 否则打开页面时下拉显示 AAAA、下面的说明却还写着 A。
+  $("dd-record-type").value = c.ddns_record_type === "AAAA" ? "AAAA" : "A";
+  renderRecordType();
   $("dd-proxied").checked = !!c.ddns_proxied;
   renderProvider();
 }
@@ -2407,7 +2440,11 @@ async function checkDDNS() {
   try {
     const r = await api("/api/ddns/check", { method: "POST" });
     const label = (PROVIDERS[r.provider] || {}).label || r.provider;
-    let rows = ddLine("服务商", escapeHtml(label)) + ddLine("域名", escapeHtml(r.domain));
+    // 记录类型单列一行：查的是 A 还是 AAAA，直接决定下面「现在指向」那几条
+    // 地址是从哪一族读出来的。不写出来，用户会拿 A 的地址去跟 AAAA 比。
+    const rt = r.record_type === "AAAA" ? "AAAA" : "A";
+    let rows = ddLine("服务商", escapeHtml(label)) + ddLine("域名", escapeHtml(r.domain))
+      + ddLine("记录类型", rt);
     // 「现在指向」可能有多条：一个域名可以有多条 A，只说第一条会让人以为
     // 其他的丢了。超过 3 条就折成「前三条 + 等 N 条」。
     const cur = Array.isArray(r.current_ips) ? r.current_ips : (r.current_ip ? [r.current_ip] : []);
@@ -2415,7 +2452,7 @@ async function checkDDNS() {
       const shown = cur.slice(0, 3).join("、") + (cur.length > 3 ? ` 等 ${cur.length} 条` : "");
       rows += ddLine("现在指向", escapeHtml(shown || "（空）"));
     } else {
-      rows += ddLine("现在指向", "还没有这条 A 记录");
+      rows += ddLine("现在指向", `还没有这条 ${rt} 记录`);
     }
     if (r.best_ip) rows += ddLine("最优 IP", escapeHtml(r.best_ip));
     if (Array.isArray(r.will_write) && r.will_write.length) {
@@ -2426,7 +2463,7 @@ async function checkDDNS() {
     let next;
     const willCount = Array.isArray(r.will_write) ? r.will_write.length : 0;
     if (!r.found) {
-      next = "密钥没问题，只是这条域名还没有 A 记录。下次测速成功后会自己创建；想现在就建，点「立即更新一次」。";
+      next = `密钥没问题，只是这条域名还没有 ${rt} 记录。下次测速成功后会自己创建；想现在就建，点「立即更新一次」。`;
     } else if (!r.best_ip) {
       next = "密钥没问题。现在还没有测出最优 IP，回去点「立即测速」。";
     } else if (cur.length !== willCount) {
@@ -2454,13 +2491,17 @@ async function pushDDNS() {
   const box = $("dd-result");
   // 把「会写几条」写进确认框：这一步会删掉多余的记录，不能让人闭着眼点确定。
   const n = parseInt($("dd-count").value || "1", 10) || 1;
-  const ok = confirm(`现在就把当前最优 IP 写进域名解析？\n\n${$("dd-domain").value.trim() || "这个域名"} 下会只保留 ${n} 条 A 记录，其他同名的会被删掉（你以前手工加的也算）。\n这会在服务商那边真的改动记录，不是只读。`);
+  const rt = $("dd-record-type").value === "AAAA" ? "AAAA" : "A";
+  const ok = confirm(`现在就把当前最优 IP 写进域名解析？\n\n${$("dd-domain").value.trim() || "这个域名"} 下会只保留 ${n} 条 ${rt} 记录，其他同名的会被删掉（你以前手工加的也算）。\n这会在服务商那边真的改动记录，不是只读。`);
   if (!ok) return;
   box.innerHTML = `<div class="banner">正在推送…</div>`;
   try {
     const r = await api("/api/ddns/update", { method: "POST" });
     const list = Array.isArray(r.ips) ? r.ips : [r.ip];
-    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新（${list.length} 条）</b>`
+    // 类型用后端回的，不用下拉里的：下拉可能刚被改过但还没保存，
+    // 而真正写进去的是**已保存**的那个类型。
+    const rt = r.record_type === "AAAA" ? "AAAA" : "A";
+    box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>已更新（${list.length} 条 ${rt} 记录）</b>`
       + `<div class="kv">${ddLine("域名", escapeHtml(r.domain))}${ddLine("现在指向", escapeHtml(list.join("、"))) }</div></div>`
       + `<div class="hint">服务商那边生效通常要几秒到几分钟（看 TTL）。</div>`;
     await loadStatus();
@@ -2588,6 +2629,9 @@ async function saveAll() {
         ddns_ttl: parseInt($("dd-ttl").value || "0", 10) || 0,
         // 空着或填 0 都按 1 条交上去，和以前的行为一致。
         ddns_ip_count: parseInt($("dd-count").value || "1", 10) || 1,
+        // 这个字段后端是**用指针收**的：「没传」和「传了空串」意思不一样。
+        // 我们这里永远传选择框里的实际值（A 或 AAAA），不传空。
+        ddns_record_type: $("dd-record-type").value === "AAAA" ? "AAAA" : "A",
         // 非 Cloudflare 时这个框是藏着的，读出来可能是勾着的旧值——
         // 服务商不是 Cloudflare 就一定按 false 交，免得存进去一个用不上的标记。
         ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked,

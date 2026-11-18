@@ -25,7 +25,7 @@ func TestCloudflareVerifyIsReadOnly(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	st, err := p.Verify("cf.example.com")
+	st, err := p.Verify("cf.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestCloudflareVerifyEmptyZone(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "tok", "CF_ZONE_ID": "z1"})
-	st, err := p.Verify("cf.example.com")
+	st, err := p.Verify("cf.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestCloudflareVerifySurfacesAuthError(t *testing.T) {
 	defer func() { cloudflareAPIBase = old }()
 
 	p, _ := newCloudflare("cf.example.com", map[string]string{"CF_API_TOKEN": "bad", "CF_ZONE_ID": "z1"})
-	_, err := p.Verify("cf.example.com")
+	_, err := p.Verify("cf.example.com", "")
 	if err == nil {
 		t.Fatal("密钥无效时必须报错")
 	}
@@ -93,7 +93,7 @@ func TestAliyunVerifyIsReadOnly(t *testing.T) {
 	p, _ := newAliyun("cf.example.com", map[string]string{
 		"ALIYUN_ACCESS_KEY_ID": "id", "ALIYUN_ACCESS_KEY_SECRET": "secret",
 	})
-	st, err := p.Verify("cf.example.com")
+	st, err := p.Verify("cf.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestDNSPodVerifyIsReadOnly(t *testing.T) {
 	p, _ := newDNSPod("cf.example.com", map[string]string{
 		"TENCENT_SECRET_ID": "id", "TENCENT_SECRET_KEY": "key",
 	})
-	st, err := p.Verify("cf.example.com")
+	st, err := p.Verify("cf.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestHuaweiVerifyIsReadOnly(t *testing.T) {
 	p, _ := newHuawei("cf.example.com", map[string]string{
 		"HUAWEI_AK": "ak", "HUAWEI_SK": "sk", "HUAWEI_ZONE_ID": "z",
 	})
-	st, err := p.Verify("cf.example.com")
+	st, err := p.Verify("cf.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
