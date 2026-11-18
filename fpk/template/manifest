@@ -11,3 +11,6 @@ desktop_applaunchname=cf-ddns-sidecar.Application
 ctl_stop=true
 service_port=8080
 checkport=false
+os_min_version=1.2.0
+changelog=撤销内部数据目录的共享声明；补全应用元信息（最低系统版本、更新说明、隐藏授权目录）；修正运行日志里重复的数据目录提示
+disable_authorization_path=true

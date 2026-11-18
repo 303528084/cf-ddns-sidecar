@@ -8,14 +8,5 @@
                 "path": "docker"
             }
         ]
-    },
-    "data-share":
-    {
-        "shares":
-        [
-            {
-                "name": "cf-ddns-sidecar"
-            }
-        ]
     }
 }

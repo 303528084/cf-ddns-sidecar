@@ -183,12 +183,19 @@ func main() {
 	// v1.5.1 起补一条硬事实：宿主机路径由 compose 传进来就直接念，不再依赖账本。
 	// 真机实测证明飞牛对 Docker 应用做覆盖升级时**根本不执行** cmd/main，账本
 	// 永远写不出来，只看账本等于每次都「什么都没读到」。
+	// hostKnown 记住「宿主机路径是不是已经从 compose 拿到了」。拿到了就不让
+	// reportLocation 再念一遍账本里的同一个路径——v1.5.1 真机日志里那两行
+	// 「数据目录：/vol1/@appdata/cf-ddns-sidecar（容器内 /app/data）」和
+	// 「数据放在 /vol1/@appdata/cf-ddns-sidecar」是连在一起的，看着像两件事，
+	// 其实一句话说了两遍，反而让人以为有什么没对上。
+	hostKnown := false
 	if host := dataHostPath(); host != "" {
 		log.Printf("[信息] 数据目录：%s（容器内 /app/data）", host)
+		hostKnown = true
 	} else if old := strings.TrimSpace(os.Getenv("CFDDNS_LEGACY_HOST")); old != "" {
 		log.Printf("[提示] 数据目录：容器内 /app/data（宿主机路径未告知，v1.4.x 老布局）")
 	}
-	reportLocation()
+	reportLocation(hostKnown)
 
 	// 配置文件路径：默认与 ddns.env 同目录的 config.json
 	configPath := configFilePath(configDir)
@@ -428,12 +435,17 @@ func seedFromWizardEnv() {
 // reportLocation 把宿主机脚本留下的「目录安置账本」转述到运行日志。
 //
 // 唯一目的：让「我的数据到底在哪儿、为什么没在数据盘上」变成几行日志，
-// 而不是让人去翻文件管理器猜。判断一律以账本为准，程序不自己推断路径。
+// 而不是让人去翻文件管理器猜。
+//
+// 判断依据分两档：**能拿到环境变量就以环境变量为准**，账本只在拿不到时兜底。
+// 这不是偷懒，是 v1.5.1 真机证明的：compose 传进来的 CFDDNS_DATA_HOST 是一手
+// 事实，而账本要等宿主机脚本执行才写得出来，覆盖升级时那个脚本根本不跑。
+// 两档都念的结果就是同一句话出现两遍——所以 hostKnown 为真时直接闭嘴。
 //
 // 为什么必须由程序来念、而不是脚本自己 echo：飞牛不收集生命周期脚本的标准
 // 输出，脚本打得再多，用户在「应用中心 → 运行日志」里也看不到一个字。
 // 脚本能写文件、程序能说话，两边各干一半才有人看得见。
-func reportLocation() {
+func reportLocation(hostKnown bool) {
 	st := config.InspectLocation()
 	if !st.Found {
 		// 不是用飞牛安装包装的（自己写 compose 跑）就没有这个文件，属正常情况。
@@ -441,11 +453,20 @@ func reportLocation() {
 	}
 
 	if st.DataError == "" {
-		if st.DataKind == "symlink" {
-			log.Printf("[信息] 数据放在存储卷上：%s -> %s（应用升级、卸载都删不到这里）",
-				st.DataHost, st.DataWhere())
-		} else {
-			log.Printf("[信息] 数据放在 %s", st.DataWhere())
+		// hostKnown 为真时，宿主机路径已经在上面由 CFDDNS_DATA_HOST 念过了，
+		// 这里一个字都不再重复。
+		//
+		// 账本里那两句（软链版「数据放在存储卷上：X -> Y」和普通版「数据放在 X」）
+		// 都是 v1.3.2～v1.4.1 自造目录时代的话术：那时候路径得靠脚本猜、靠账本
+		// 传递，程序自己不知道。v1.5.1 起 compose 直接把 TRIM_PKGVAR 传进来，
+		// 程序手里有一手事实，账本退化成历史残留——只在拿不到环境变量时才回退去念。
+		if !hostKnown {
+			if st.DataKind == "symlink" {
+				log.Printf("[信息] 数据放在存储卷上：%s -> %s（应用升级、卸载都删不到这里）",
+					st.DataHost, st.DataWhere())
+			} else {
+				log.Printf("[信息] 数据放在 %s", st.DataWhere())
+			}
 		}
 	} else {
 		// 四行，顺序是刻意排的：出了什么事 → 现在有没有危险 → 为什么会这样 → 下一步怎么办。
