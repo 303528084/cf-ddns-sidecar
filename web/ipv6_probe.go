@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/303528084/cf-ddns-sidecar/config"
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
@@ -253,13 +254,28 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	// 只在内存里的话，升级一次应用就没了，界面显示「还没有结果」像功能坏了。
 	// 注意**只写 LastIPv6***，绝不动 v4 那组：两套结果互相独立，v6 跑空
 	// 不该把 v4 的结果一起抹掉。
+	// 真实机房位置：和 v4 完全同一套办法——穿过这个 v6 地址去问 Cloudflare 的
+	// /cdn-cgi/trace 读 colo。traceVia 里用的是 net.JoinHostPort，v6 会自动加
+	// 方括号，所以这段不需要为 v6 单独写（测速本身也是这么连的）。
+	//
+	// 用独立于探测的 ctx：6 分钟的探测预算经常在测带宽那步就快用完，沿用它会
+	// 一条都探不出去，界面整列变成「位置未知」——那比不探更误导人。
+	// 预算由 exitProbePlan 按结果条数算（和 v4 共用同一个函数，口径不会分叉）。
+	_, exitAllowance := exitProbePlan(len(res.IPs))
+	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
+	colos := s.logExitColos(exitCtx, res.IPs, "IPv6 ")
+	exitCancel()
+	stats := buildNodeStats(res, colos)
+
 	s.mu.Lock()
 	s.v6ProbeErr = ""
-	s.v6ProbeNodes = res.Nodes
+	s.v6ProbeNodes = stats
 	s.v6ProbeAt = time.Now()
 	s.cfg.LastIPv6 = res.Best()
 	s.cfg.LastIPv6IPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
-	s.cfg.LastIPv6Nodes = buildNodeStats(res, nil) // v6 暂不做出口机房探测，只留速度/延迟
+	// 复制一份给配置：内存那份和落盘那份别共享底层数组，否则以后谁在
+	// 内存结果上原地改一格，配置里那份会跟着变、下次启动才暴露。
+	s.cfg.LastIPv6Nodes = append(make([]config.NodeStat, 0, len(stats)), stats...)
 	s.cfg.LastIPv6Time = s.v6ProbeAt.Format("2006-01-02 15:04:05")
 	toSave := s.cfg.Clone()
 	s.mu.Unlock()
@@ -280,14 +296,14 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 func (s *Server) handleIPv6ProbeResult(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	running := s.v6ProbeRunning
-	nodes := append([]engine.Node(nil), s.v6ProbeNodes...)
+	nodes := append([]config.NodeStat(nil), s.v6ProbeNodes...)
 	at := s.v6ProbeAt
 	errMsg := s.v6ProbeErr
 	if len(nodes) == 0 && s.cfg != nil && len(s.cfg.LastIPv6Nodes) > 0 {
-		nodes = make([]engine.Node, 0, len(s.cfg.LastIPv6Nodes))
-		for _, n := range s.cfg.LastIPv6Nodes {
-			nodes = append(nodes, engine.Node{IP: n.IP, Speed: n.Speed, Delay: n.Delay})
-		}
+		// 直接给落盘那份的副本：它本来就带 colo/place，不用再从 engine.Node
+		// 拼一遍——v1.7.2 之前这里是把 NodeStat 拆回 engine.Node，机房位置
+		// 就在这一步被丢掉，界面永远是「位置未知」。
+		nodes = append(make([]config.NodeStat, 0, len(s.cfg.LastIPv6Nodes)), s.cfg.LastIPv6Nodes...)
 		if at.IsZero() {
 			if t, perr := time.ParseInLocation("2006-01-02 15:04:05", s.cfg.LastIPv6Time, time.Local); perr == nil {
 				at = t

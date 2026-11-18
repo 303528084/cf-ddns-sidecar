@@ -135,8 +135,12 @@ type Server struct {
 
 	// IPv6 探测（阶段①：只测不写）。与主测速完全隔离：
 	// 探测结果不进 res.IPs，因此永远不会被写进 AdGuard 或 DDNS。
+	//
+	// 存 config.NodeStat 而不是 engine.Node：v6 也要显示真实机房位置
+	// （和 v4 一样穿过 IP 去问 Cloudflare），而 engine.Node 是测速引擎的输出，
+	// 只该有速度/延迟——机房位置是我们额外探的，不该塞进引擎的类型里。
 	v6ProbeRunning bool
-	v6ProbeNodes   []engine.Node
+	v6ProbeNodes   []config.NodeStat
 	v6ProbeAt      time.Time
 	v6ProbeErr     string
 	// v6CandText / v6CandStaged 和主测速的 candText 是同一个套路：

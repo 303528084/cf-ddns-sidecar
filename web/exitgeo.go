@@ -260,6 +260,16 @@ var coloGeo = map[string]place{
 //
 // 探不到的 IP 不会出现在返回的 map 里——查不到就说查不到，不编。
 func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]string {
+	return s.logExitColos(ctx, ips, "")
+}
+
+// logExitColos 是 logExitCountries 的带标签版本：tag 会插在日志开头。
+//
+// 为什么要多这个参数：v6 那一轮也要探机房位置（用户要求「IPv6 的真实机房
+// 位置也展示出来」），而一次测速里 v4 先探、v6 后探，两行日志去掉标签是
+// 一模一样的中文 —— 用户看到两条相同的「各节点实际出口」根本分不清哪条
+// 对应哪张表。tag 传空串时输出和历史完全一致（v4 那条路径行为不变）。
+func (s *Server) logExitColos(ctx context.Context, ips []string, tag string) map[string]string {
 	colos := make(map[string]string, len(ips))
 	n, _ := exitProbePlan(len(ips))
 	if n == 0 {
@@ -267,7 +277,7 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]
 	}
 	head := ips[:n]
 	if len(ips) > n {
-		s.appendLog(fmt.Sprintf("机房位置只探前 %d 个（共 %d 个结果），其余显示位置未知", n, len(ips)))
+		s.appendLog(tag + fmt.Sprintf("机房位置只探前 %d 个（共 %d 个结果），其余显示位置未知", n, len(ips)))
 	}
 
 	results := make([]string, n)
@@ -314,9 +324,9 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]
 	// 一个都没探到就只留一句结论，别把 5 条「探测不到」铺开——那既占地方，
 	// 又像是出了问题（其实只是这个网络到那个域名不通，和测速结果无关）。
 	if known == 0 {
-		s.appendLog("各节点实际出口：探测不到（连不上 " + traceHost + "，与测速结果无关）")
+		s.appendLog(tag + "各节点实际出口：探测不到（连不上 " + traceHost + "，与测速结果无关）")
 		return colos
 	}
-	s.appendLog("各节点实际出口（对应上面同样序号那一条）：" + strings.Join(results, "、"))
+	s.appendLog(tag + "各节点实际出口（对应上面同样序号那一条）：" + strings.Join(results, "、"))
 	return colos
 }

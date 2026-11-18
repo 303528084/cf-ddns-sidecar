@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
-	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
 // 同一个坑只能被一个人占住，释放之后才能再占。
@@ -58,7 +57,8 @@ func TestHandleIPv6ProbeResultFallsBackToConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.LastIPv6 = "2606:4700::1"
 	cfg.LastIPv6IPs = []string{"2606:4700::1"}
-	cfg.LastIPv6Nodes = []config.NodeStat{{IP: "2606:4700::1", Speed: 12.3, Delay: 88}}
+	cfg.LastIPv6Nodes = []config.NodeStat{{IP: "2606:4700::1", Speed: 12.3, Delay: 88,
+		Colo: "NRT", Place: "日本·东京(NRT)"}}
 	cfg.LastIPv6Time = "2026-11-18 13:36:00"
 
 	s := &Server{cfg: cfg}
@@ -70,7 +70,7 @@ func TestHandleIPv6ProbeResultFallsBackToConfig(t *testing.T) {
 	}
 
 	var out struct {
-		Nodes []engine.Node `json:"nodes"`
+		Nodes []config.NodeStat `json:"nodes"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("响应解析失败: %v（原文 %s）", err, rec.Body.String())
@@ -82,6 +82,11 @@ func TestHandleIPv6ProbeResultFallsBackToConfig(t *testing.T) {
 	if got.IP != "2606:4700::1" || got.Speed != 12.3 || got.Delay != 88 {
 		t.Errorf("回落的节点数据不对: %+v", got)
 	}
+	// 机房位置也必须在：回落这条路以前是把 NodeStat 拆回 engine.Node 再交出去，
+	// Colo/Place 就在那一步丢掉了，界面上整列「位置未知」。
+	if got.Colo != "NRT" || got.Place == "" {
+		t.Errorf("回落时机房位置被丢了：%+v", got)
+	}
 }
 
 // 内存里有结果时优先用内存的（它更新），不被配置覆盖。
@@ -91,19 +96,22 @@ func TestHandleIPv6ProbeResultPrefersMemory(t *testing.T) {
 
 	s := &Server{
 		cfg:          cfg,
-		v6ProbeNodes: []engine.Node{{IP: "2606:4700::2", Speed: 20}},
+		v6ProbeNodes: []config.NodeStat{{IP: "2606:4700::2", Speed: 20, Colo: "HKG", Place: "中国香港·香港(HKG)"}},
 	}
 
 	rec := httptest.NewRecorder()
 	s.handleIPv6ProbeResult(rec, httptest.NewRequest("GET", "/api/ipv6/probe/result", nil))
 
 	var out struct {
-		Nodes []engine.Node `json:"nodes"`
+		Nodes []config.NodeStat `json:"nodes"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("响应解析失败: %v", err)
 	}
 	if len(out.Nodes) != 1 || out.Nodes[0].IP != "2606:4700::2" {
 		t.Fatalf("应优先用内存里的新结果，实际 %+v", out.Nodes)
+	}
+	if out.Nodes[0].Colo != "HKG" || out.Nodes[0].Place == "" {
+		t.Errorf("内存里那份也要带机房位置：%+v", out.Nodes[0])
 	}
 }

@@ -503,8 +503,8 @@
      一眼就该看出是同一件事的两个族，而不是两个不相干的功能。
 
      为什么不直接复用 table.nodes：那张表在 ≤700px 有一套按 c-rk/c-loc/c-wr/
-     c-ip/c-lat/c-spd 写死的 grid-area 布局，v6 的列数（没有机房位置和写入）
-     跟它对不上，硬套会串位。这里自带一份窄屏规则，桌面看起来一模一样。
+     c-ip/c-lat/c-spd 写死的 grid-area 布局，而 v6 少一列「写入」（只测不写）、
+     地址列也不叫 c-ip，硬套会串位。这里自带一份窄屏规则，桌面看起来一模一样。
      全部用现成变量，深色模式自动适配，不写死颜色。 */
   table.v6t{width:100%;border-collapse:collapse;font-size:12.5px}
   table.v6t thead th{
@@ -523,8 +523,24 @@
   /* 地址必须能断行：一个 v6 地址 39 个字符，nowrap 会把表格顶出屏幕。 */
   table.v6t td.c-v6{font-family:var(--mono);font-size:12px;color:var(--text);word-break:break-all;min-width:180px}
   table.v6t td.c-spd, table.v6t td.c-lat{white-space:nowrap}
-  table.v6t td.c-st{text-align:right}
+  /* 桌面这列和上面 IPv4 的「状态」一样左对齐（都写在 .c-wr / .c-st 上，
+     两边一对齐才像同一张表的两个族）；手机上才靠右，见窄屏那段。 */
+  table.v6t td.c-st{text-align:left}
   table.v6t td.empty{text-align:center;color:var(--dim);padding:18px 16px}
+  /* 两张表的列宽锁成同一套。
+     为什么需要：默认 table-layout:auto 是按内容分配宽度——v6 那串 39 个字符的
+     地址会把「地址」列顶宽，其余列跟着变窄，结果两张表虽然总宽一样、左边缘也
+     齐，但第 2、3、4… 列的边界一个都对不上，看着就是两张不相干的表。
+     改成 fixed 之后宽度只认第一行（表头）上写的数，两张表用同一组数就必然
+     逐列对齐。列 3（地址）不写宽度，吃掉剩下的全部空间。
+     **用百分比不用像素**：像素会把地址列在窄窗口里挤没——820px 宽时按
+     96/190/190/110/110 算只剩 90px 给地址，一个 v6 地址要折 6 行。 */
+  table.nodes, table.v6t{table-layout:fixed}
+  table.nodes thead th:nth-child(1), table.v6t thead th:nth-child(1){width:8%}
+  table.nodes thead th:nth-child(2), table.v6t thead th:nth-child(2){width:17%}
+  table.nodes thead th:nth-child(4), table.v6t thead th:nth-child(4){width:17%}
+  table.nodes thead th:nth-child(5), table.v6t thead th:nth-child(5){width:10%}
+  table.nodes thead th:nth-child(6), table.v6t thead th:nth-child(6){width:10%}
   /* IPv6 那一节：接在「本次测速结果」的说明文字下面，和上面的表格共用一张卡。
      一条分隔线把它和 IPv4 分开，但表头、行高、胶囊都跟上面完全一致。 */
   .v6-sec{border-top:1px solid var(--line2);margin-top:14px}
@@ -622,17 +638,21 @@
     table.v6t thead{display:none}
     table.v6t, table.v6t tbody, table.v6t tr, table.v6t td{display:block}
     table.v6t tr{
-      display:grid;grid-template-columns:1fr auto;gap:4px 10px;
+      display:grid;grid-template-columns:24px 1fr auto;gap:4px 10px;
       padding:12px 14px;border-bottom:1px solid var(--line2);align-items:center;
     }
     table.v6t tbody tr:last-child{border-bottom:none}
     table.v6t tbody td{padding:0;border:none}
-    table.v6t td.c-rk{display:none}
-    table.v6t td.c-v6{grid-area:1/1/2/2}
-    table.v6t td.c-st{grid-area:1/2/2/3;text-align:right}
-    /* 表里没有第二行的「网卡 · 前缀 / flags」了，速度和延迟直接占第二行。 */
-    table.v6t td.c-spd{grid-area:2/1/3/2}
-    table.v6t td.c-lat{grid-area:2/2/3/3;text-align:right}
+    /* 手机上的排法跟 IPv4 一致：第一行「序号 + 机房位置 + 状态」，序号那颗
+       胶囊也在（以前这里 display:none，两张表一上一下看着就少了个东西）。
+       唯一的差别是第二行：v6 地址 39 个字符，必须独占整行，所以延迟挪到
+       第三行跟速度并排，而不是像 v4 那样贴在地址右边。 */
+    table.v6t td.c-rk{grid-area:1/1/2/2}
+    table.v6t td.c-loc{grid-area:1/2/2/3}
+    table.v6t td.c-st{grid-area:1/3/2/4;text-align:right}
+    table.v6t td.c-v6{grid-area:2/2/3/4}
+    table.v6t td.c-spd{grid-area:3/2/4/3}
+    table.v6t td.c-lat{grid-area:3/3/4/4;text-align:right}
     table.v6t td.empty{grid-area:auto;text-align:center;padding:18px 0}
     table.v6t td.empty{grid-area:auto;text-align:center;padding:18px 0}
 
@@ -796,7 +816,7 @@
                 <th>IP 地址</th>
                 <th class="c-spd">速度</th>
                 <th class="c-lat">延迟</th>
-                <th class="c-wr">写入</th>
+                <th class="c-wr">状态</th>
               </tr>
             </thead>
             <tbody id="ip-list">
@@ -1962,7 +1982,7 @@ function renderV6ProbeResult(j, note, list) {
     note.innerHTML = "<b>这一轮没测出可用的 IPv6 节点。</b>可能是本机连不上 Cloudflare 的 v6，" +
       "或者填的那几个段链接里没有能用的地址。";
     list.innerHTML = `<table class="v6t"><tbody>`
-      + `<tr><td class="empty" colspan="5">这一轮没有测出节点</td></tr></tbody></table>`;
+      + `<tr><td class="empty" colspan="6">这一轮没有测出节点</td></tr></tbody></table>`;
     return;
   }
   const best = nodes[0];
@@ -1970,16 +1990,19 @@ function renderV6ProbeResult(j, note, list) {
     `<b>${escapeHtml(best.ip || "")}</b>${best.speed > 0 ? "，" + best.speed.toFixed(2) + " Mbps" : ""}` +
     `${best.delay > 0 ? "，" + best.delay.toFixed(2) + " ms" : ""}。` +
     `这里<b>只测不写</b>——要把地址写进 AAAA，走上面的「立即测速」或等定时那一轮。`;
-  // 列跟上面「本次测速结果」对齐：地址、速度、延迟、状态。
-  // v6 探测没有「机房位置」和「写入」（只测不写），所以是四列而不是六列。
+  // 列跟上面「本次测速结果」逐列对齐：序号、机房位置、地址、速度、延迟、状态。
+  // 唯一的区别是最后一列——v6 探测**只测不写**，所以是「最快 / 候选」，
+  // 而 v4 那张是「已写入 / 备选」。
+  // 机房位置和 v4 一样，是穿过那个地址去问 Cloudflare 得来的（探不到就写
+  // 「位置未知」），不是按 IP 段猜的。
   // 条数跟着「保留候选 IP 数」走：那个数既是 v4 的表长，也是 v6 的表长。
   // 速度条也照主表画：满格取这一批最快的。只给数字的话，两张表上下并排
   // 会明显不像同一套东西（条是看着最跳的元素）。
   const fastest = nodes.reduce((m, x) => Math.max(m, x.speed || 0), 0);
   list.innerHTML = `<table class="v6t">
     <thead><tr>
-      <th class="c-rk">#</th><th>IPv6 地址</th><th class="c-spd">速度</th>
-      <th class="c-lat">延迟</th><th style="text-align:right">状态</th>
+      <th class="c-rk">#</th><th class="c-loc">机房位置</th><th>IP 地址</th>
+      <th class="c-spd">速度</th><th class="c-lat">延迟</th><th class="c-st">状态</th>
     </tr></thead>
     <tbody>${nodes.map((n, i) => {
       const speed = n.speed || 0;
@@ -1991,8 +2014,10 @@ function renderV6ProbeResult(j, note, list) {
       const lat = n.delay > 0
         ? `<span class="num">${fmt2(n.delay)} ms</span>`
         : `<span class="num dim">—</span>`;
+      const { place, code } = placeParts(n);
       return `<tr class="${i === 0 ? "pick" : ""}">
         <td class="c-rk"><span class="rk">${i + 1}</span></td>
+        <td class="c-loc"><b>${place}</b>${code}</td>
         <td class="c-v6">${escapeHtml(n.ip || "")}</td>
         <td class="c-spd">${spd}</td>
         <td class="c-lat">${lat}</td>
@@ -2116,6 +2141,25 @@ async function loadStatus() {
   }
 }
 
+// placeParts 把后端给的「日本·东京(NRT)」拆成「地名」和「机房代码」两段。
+//
+// 为什么抽出来：上面 IPv4 表和下面 IPv6 表上下并排，「机房位置」这一格必须
+// 长得一模一样——字号、代码颜色、查不到时的「位置未知」都得同源。以前只有
+// IPv4 一处有这段逻辑，v6 加这一列时照抄一份迟早会走偏。
+function placeParts(node) {
+  let place = "位置未知";
+  let code = "";
+  const raw = node && node.place;
+  if (raw) {
+    const m = /^(.*?)\s*\(([A-Z0-9]{2,4})\)$/.exec(raw);
+    if (m) { place = escapeHtml(m[1]); code = `<span class="code">${escapeHtml(m[2])}</span>`; }
+    else { place = escapeHtml(raw); }
+  } else if (node && node.colo) {
+    place = "机房 " + escapeHtml(node.colo);
+  }
+  return { place, code };
+}
+
 // renderIPList 画「本次测速结果」这张表，并把节点数组返回给调用方。
 //
 // 数据全部来自后端 /api/status 的 nodes（与 last_ips 一一对应）：
@@ -2155,15 +2199,8 @@ function renderIPList(s) {
 
     // 位置那格：后端给的是「日本·东京(NRT)」一整个字符串，把机房代码
     // 拆出来单独用浅色小字排——一眼看到的是地名，代码是查证用的。
-    let place = "位置未知";
-    let code = "";
-    if (node.place) {
-      const m = /^(.*?)\s*\(([A-Z0-9]{2,4})\)$/.exec(node.place);
-      if (m) { place = escapeHtml(m[1]); code = `<span class="code">${escapeHtml(m[2])}</span>`; }
-      else { place = escapeHtml(node.place); }
-    } else if (node.colo) {
-      place = "机房 " + escapeHtml(node.colo);
-    }
+    // 拆分规则和下面 IPv6 表共用 placeParts，两张表才不会长得不一样。
+    const { place, code } = placeParts(node);
 
     const spd = speed
       ? `<div class="bar"><i style="width:${fastest ? Math.max(6, Math.round(speed / fastest * 100)) : 0}%"></i></div>

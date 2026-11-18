@@ -151,6 +151,47 @@ func TestTraceViaLocalServer(t *testing.T) {
 	}
 }
 
+// TestTraceViaIPv6Loopback 把上面那条链路换成 v6 再走一遍。
+//
+// 为什么要专门测：traceVia 里是 net.JoinHostPort(ip, port)，v6 必须由它补上
+// 方括号（`[::1]:8443`），否则会拼成 `::1:8443` 这种拆不开的串，连都连不上。
+// 而 v6 优选的结果里地址是**不带**方括号的（engine.parseOutput 用 SplitHostPort
+// 剥掉了），所以这条转换是必经之路——写错了真机上就是整列「位置未知」，
+// 而且日志只会说「探测不到」，看不出是拼串的错。
+//
+// 没有 v6 回环的环境（不少容器默认关掉）直接跳过，不算失败。
+func TestTraceViaIPv6Loopback(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("本机没有 v6 回环，跳过: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "example.com" {
+			t.Errorf("Host 是 %q，期望 example.com", r.Host)
+		}
+		_, _ = w.Write([]byte("loc=JP\ncolo=NRT\n"))
+	}))
+	_ = srv.Listener.Close()
+	srv.Listener = ln
+	srv.StartTLS()
+	defer srv.Close()
+
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("拿不到监听端口: %T", ln.Addr())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	loc, colo, err := traceVia(ctx, "example.com", "::1", addr.Port)
+	if err != nil {
+		t.Fatalf("穿过本地 v6 服务器探测失败: %v", err)
+	}
+	if loc != "JP" || colo != "NRT" {
+		t.Fatalf("得到 %q/%q，期望 JP/NRT", loc, colo)
+	}
+}
+
 // TestTraceThroughHostsFallback 验证「主域名失败→换备用域名补一次」这条路径。
 // 本机连不上真 Cloudflare，用本地 TLS 服务器按 Host 头区分两个域名：
 // main.local 故意返回 500，fb.local 返回正常 trace。穿过的是同一个本地 IP，
