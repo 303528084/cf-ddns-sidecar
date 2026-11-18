@@ -48,14 +48,10 @@ func SetVersion(v string) { version = v }
 
 // Auth 描述后台登录密码从哪里取。
 //
-// 关键设计：密码是**每次请求现读**的，不是启动时读一次就定死。
-// 原因：飞牛的安装/应用设置脚本（cmd/install_callback、cmd/config_callback）
-// 会改写 dashboard-password，但那些脚本以 run-as: package 运行，没有权限
-// 操作 docker，`docker restart` 常常失败。如果密码在启动时固化，
-// 用户在安装向导里设的密码就永远不生效——现象正是「设了密码还是登不上，
-// 只有日志里那个自动生成的密码能进」。
-//
-// 现读现比之后：脚本写文件即生效，不需要重启容器。
+// 密码是每次请求现读的，不是启动时读一次定死：飞牛的安装/应用设置脚本会改写
+// dashboard-password，但那些脚本没有权限操作 docker，`docker restart` 常常失败。
+// 启动时固化的话用户在向导里设的密码永远不生效，现象正是「设了密码还是登不上，
+// 只有日志里那个自动生成的能进」。现读现比之后，脚本写文件即生效。
 type Auth struct {
 	// Env 是 DSA_PASSWORD 环境变量，优先级最高（手工部署时用）。
 	Env string
@@ -98,12 +94,12 @@ type Server struct {
 	lastErr string
 	// 定时器状态：下一次什么时候跑、上一次成没成、连续失败几次。
 	// 以前后台只能看到「上次测速时间」，看不出「它到底还活着吗、还是每小时
-	// 都在失败」——这两样才是判断「要不要管它」的依据。
+	// 都在失败」，这两样才是判断「要不要管它」的依据。
 	nextRunAt time.Time
 	lastOK    bool
 	failCount int
 	// lastDurSec 是上一次测速实际花了几秒。
-	// 界面用它回答「跑一轮要多久」——用户点完「立即测速」最想知道的就是
+	// 界面用它回答「跑一轮要多久」，用户点完「立即测速」最想知道的就是
 	// 「还要等多久」，而这是唯一能给他一个具体数字的依据（同一台机器、
 	// 同一个网络，上次多久这次大致就多久）。
 	// 不落盘：它是「这一进程跑的那一次」，重启后说「不知道」才对。
@@ -122,32 +118,26 @@ type Server struct {
 
 	// schedWake 用来把「正睡着的定时器」叫醒。
 	// 没有它的话，用户把间隔从 60 分钟改成 10 分钟，调度器还按旧的 60 分钟
-	// 睡在那儿，界面上「下次测速」也要等它醒过来才更新——最长能差一小时。
+	// 睡在那儿，界面上「下次测速」也要等它醒过来才更新，最长能差一小时。
 	schedWake chan struct{}
 
-	// candText 非空时，/api/candidates 直接返回这一段。
-	//
-	// 用于「来源里有链接」的情形：链接必须在开跑前下载解析**一次**，
-	// 不能等引擎来请求时再下——引擎会重试、也可能请求多次，每来一次就
-	// 重新下载一遍外部站点，既慢又容易被对方限流。
-	// candStaged 是和它配对的「已暂存」标志：空文本也是合法结果
-	// （用户填的来源一个地址都没有），不能靠长度判断。
+	// candText 非空时，/api/candidates 直接返回这一段。用于「来源里有链接」的情形：
+	// 链接必须在开跑前下载解析一次，不能等引擎来请求时再下，引擎会重试、也可能请求
+	// 多次，每来一次就重下一遍外部站点，既慢又容易被限流。candStaged 是配对的「已暂存」
+	// 标志：空文本也是合法结果（用户填的来源一个地址都没有），不能靠长度判断。
 	candText   string
 	candStaged bool
 
-	// IPv6 探测（阶段①：只测不写）。与主测速完全隔离：
-	// 探测结果不进 res.IPs，因此永远不会被写进 AdGuard 或 DDNS。
-	//
-	// 存 config.NodeStat 而不是 engine.Node：v6 也要显示真实机房位置
-	// （和 v4 一样穿过 IP 去问 Cloudflare），而 engine.Node 是测速引擎的输出，
-	// 只该有速度/延迟——机房位置是我们额外探的，不该塞进引擎的类型里。
+	// IPv6 探测（阶段①：只测不写）。与主测速完全隔离：结果不进 res.IPs，永远不会被
+	// 写进 AdGuard 或 DDNS。存 config.NodeStat 而不是 engine.Node：v6 也要显示真实
+	// 机房位置，而 engine.Node 是测速引擎的输出，只该有速度/延迟。
 	v6ProbeRunning bool
 	v6ProbeNodes   []config.NodeStat
 	v6ProbeAt      time.Time
 	v6ProbeErr     string
 	// v6CandText / v6CandStaged 和主测速的 candText 是同一个套路：
 	// 用户在探测卡片里填的链接必须在**开跑前**下载解析一次，不能等引擎
-	// 来拉候选时再下——引擎会重试、可能请求多次，每来一次就重新下载
+	// 来拉候选时再下，引擎会重试、可能请求多次，每来一次就重新下载
 	// 一遍外部站点，既慢又容易被对方限流。标志位是为了区分「没暂存」
 	// 和「暂存了一段空文本」（链接里一个 v6 段都没有）。
 	v6CandText   string
@@ -226,7 +216,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ipv6/probe", s.auth(s.handleIPv6Probe))
 	mux.HandleFunc("/api/ipv6/probe/result", s.auth(s.handleIPv6ProbeResult))
 	// v6 段来源不再是独立接口：它和「优选 IP 段」一样是 /api/config 里的一个
-	// 字段，跟着「保存全部设置」一起存。原来那个 /api/ipv6/source 已删除——
+	// 字段，跟着「保存全部设置」一起存。原来那个 /api/ipv6/source 已删除，
 	// 留着就有两条写入路径，只改一条会覆盖另一条写的内容。
 
 	// 本机候选列表：测速引擎从这里拉「Cloudflare 官方段随机采样」的结果，
@@ -380,16 +370,11 @@ func sourcePlanText(src extraSources) string {
 
 // ---------- 认证 ----------
 //
-// 令牌用 HMAC 签名，服务端不存会话表：
-//   1) 容器重启后登录状态不丢（改完配置重启不用再登一次）；
-//   2) 签名密钥由密码派生，改密码即等于吊销全部旧令牌。
-//
-// 令牌有两种携带方式，按顺序取：
-//   1) Authorization: Bearer <token>  —— 前端首选
-//   2) Cookie: cfddns_session         —— 直连浏览器时的兜底
-// 必须支持第 1 种：飞牛把后台嵌在 iframe 里，跨站上下文下浏览器可能
-// 根本不保存 Cookie，于是「登录成功 → 下一个请求又 401」，表现为
-// 无论输什么密码都提示未登录。
+// 令牌用 HMAC 签名，服务端不存会话表：容器重启后登录状态不丢，签名密钥由密码派生，
+// 改密码即等于吊销全部旧令牌。令牌两种携带方式，按顺序取：Authorization: Bearer
+// （前端首选）、Cookie: cfddns_session（直连浏览器兜底）。必须支持第一种：飞牛把后台
+// 嵌在 iframe 里，跨站上下文下浏览器可能根本不保存 Cookie，于是「登录成功 → 下一个
+// 请求又 401」，表现为输什么密码都提示未登录。
 
 const (
 	sessionCookie = "cfddns_session"
@@ -399,7 +384,7 @@ const (
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// 正常路径上密码一定非空（main 读不到会现生成一个）。
-		// 真走到这里说明连生成都失败了，此时必须拒绝而不是放行——
+		// 真走到这里说明连生成都失败了，此时必须拒绝而不是放行，
 		// 后台对所有来源 IP 开放，空密码等于谁都能改 DNS 记录。
 		if s.pass.Current() == "" {
 			http.Error(w, "后台未设置密码，已锁定。请在「应用设置」里设置管理密码后重启应用", http.StatusServiceUnavailable)
@@ -495,7 +480,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // 值里有点号，Cookie 允许，无需转义。
 //
 // Secure 只在 HTTPS 下加：HTTP 下打了这个标记浏览器会直接丢弃 Cookie，
-// 表现为「登录成功但下一个请求又 401」——这正是最早那版「怎么输密码都进不去」的原因。
+// 表现为「登录成功但下一个请求又 401」，这正是最早那版「怎么输密码都进不去」的原因。
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -514,13 +499,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// handlePassword 修改后台登录密码。
-//
-// 为什么要在后台自己做一个改密码入口，而不是只靠飞牛的「应用设置」：
-//   - 应用设置里那个密码框没有任何校验，填 123456 也能保存成功；
-//   - 改完要回桌面重开页面，用户没法当场确认「到底生效没有」。
-//
-// 这里当场校验强度、当场原子写入文件、当场换发登录令牌，改完立刻可验证。
+// handlePassword 修改后台登录密码。要在后台自己做一个入口而不是只靠「应用设置」：
+// 那里那个密码框没有任何校验，填 123456 也能保存；改完还要回桌面重开页面，没法当场
+// 确认生效。这里当场校验强度、原子写入、换发令牌，改完立刻可验证。
 func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -629,13 +610,9 @@ type statusResp struct {
 	DDNSMissing  []string `json:"ddns_missing"`
 	IntervalMin  int      `json:"interval_minutes"`
 
-	// 下面两个是「必须让用户看见」的状态：配置是从备份恢复的。
-	// 以前这只进运行日志，而运行日志在卡片最下面、还要往下滚，等于没提示。
-	//
-	// 注意：这里曾经还有一个 password_weak / password_reason，用来在页面顶上挂
-	// 「登录密码太短了」的黄条。2026-11-17 按用户要求删掉了——他从安装向导里设的
-	// 就是 6 位，不想每次开页面都被提醒一次。弱密码校验现在只在「主动改密码」
-	// 那一刻做（见 handleSetPassword），不再有常驻提示。
+	// 下面两个是「必须让用户看见」的状态：配置是从备份恢复的。以前只进运行日志，而
+	// 运行日志在卡片最下面、还要往下滚，等于没提示。这里曾有一个 password_weak 用来挂
+	// 「登录密码太短」的黄条，2026-11-17 按用户要求删掉了（他从向导里设的就是 6 位）。
 	RestoredConfig bool `json:"restored_config"`
 	// 恢复的两种来路，界面据此决定说哪句话（见 index.html 的 renderBanners）：
 	//   restored_upgrade=false → 只是 config.json 丢了，config.json.bak 顶上；
@@ -658,7 +635,7 @@ type statusResp struct {
 
 	// Nodes 与 last_ips 一一对应，多带速度、延迟、机房。
 	// 以前界面只有一个光秃秃的 IP，用户看不出「为什么这条排第一」，
-	// 也没法判断换个 IP 是不是更好——这三个数就是答案。
+	// 也没法判断换个 IP 是不是更好，这三个数就是答案。
 	Nodes []config.NodeStat `json:"nodes"`
 
 	// 上次测速花了多少秒。0 表示没记录（刚重启、还没跑过）。
@@ -711,7 +688,7 @@ type configResp struct {
 	HasAdGuardPass  bool     `json:"has_adguard_password"`
 	Domains         []string `json:"domains"`
 	// DomainRows 是 domains 的展开版：多了「包含子域」和添加时间。
-	// 两个都发是故意的——domains 保持原样，别的调用方（导入、脚本）不用改；
+	// 两个都发是故意的，domains 保持原样，别的调用方（导入、脚本）不用改；
 	// 界面要画列表就得知道每个域名的子域开关，而那信息在 domain_meta 里。
 	DomainRows      []domainRow `json:"domain_rows"`
 	TopN            int         `json:"top_n"`
@@ -740,7 +717,7 @@ type configResp struct {
 	// 高级设置：引擎参数表 + 用户改过的值 + 没给开关的那些及原因。
 	//
 	// 表跟着配置一起发，不单开一个接口：它和「当前值」必须成对出现，
-	// 分成两个请求就有中间态——界面拿着旧表去渲染新值，那个参数会静默丢失。
+	// 分成两个请求就有中间态，界面拿着旧表去渲染新值，那个参数会静默丢失。
 	EngineGroups    []engine.OptGroup    `json:"engine_groups"`
 	EngineOptions   []engine.OptSpec     `json:"engine_options"`
 	EngineExcluded  []engine.ExcludedOpt `json:"engine_excluded"`
@@ -787,18 +764,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseSourceURLLines 把「一行一个链接」的输入框按行校验成链接列表。
-//
-// label 是这一栏在界面上的名字（「IPv6 段链接」/「hosts 源链接」），出错时
-// 原样带回给用户——只报「第 3 行不是合法链接」而不说是哪一栏，两个都在同一个
-// 页面上时用户还得自己找。
-//
-// 只认链接（http:// 或 https://）：这两栏的语义都是「去哪里拉一份清单」。
-// 想手写 IP 段请用「优选 IP 段」。空行丢掉；# 开头的注释行原样保留（用户拿它
-// 分隔/记事），只是不参与拉取。
-//
-// 为什么必须共用一份实现、而不是各写一份：保存配置和导入备份校验的是同一栏，
-// 两份规则各自漂移就会出现「界面存得进、备份导不进」这类没人想得到的分歧。
+// parseSourceURLLines 把「一行一个链接」的输入框按行校验成链接列表。label 是这一栏在
+// 界面上的名字，出错时原样带回：只报「第 3 行不合法」而不说哪一栏，两栏同在一页时用户
+// 还得自己找。只认 http(s) 链接，想手写 IP 段去「优选 IP 段」。空行丢掉，# 开头的注释
+// 行原样保留但不参与拉取。保存配置和导入备份必须共用这一份实现，否则会出现「界面存得
+// 进、备份导不进」这种没人想得到的分歧。
 func parseSourceURLLines(raw, label string) ([]string, error) {
 	var out []string
 	for i, l := range strings.Split(raw, "\n") {
@@ -860,7 +830,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSProxied  bool    `json:"ddns_proxied"`
 		DDNSIPCount  int     `json:"ddns_ip_count"`
 		// 用指针：「没传」和「传了空串」要区分开。空串归一成 A 是合法的主动选择，
-		// 而旧客户端/老的导入文件里根本没有这个字段——那时必须保持原样不动，
+		// 而旧客户端/老的导入文件里根本没有这个字段，那时必须保持原样不动，
 		// 否则一次「只改域名」的保存就会把用户选的 AAAA 悄悄改回 A。
 		DDNSRecordType *string `json:"ddns_record_type"`
 		// 高级设置。同样用指针：没传 = 不动（旧客户端、老导入文件），
@@ -880,7 +850,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 条数上限给 20：再多 DNS 响应就太长了，而且每条都会摊薄「优选」的效果。
-	// 0 表示「没填/用默认」，按 1 条处理——老界面和老的备份文件里没有这个字段，
+	// 0 表示「没填/用默认」，按 1 条处理，老界面和老的备份文件里没有这个字段，
 	// 一上来就要求 1..20 会把它们全部判成非法。
 	if body.DDNSIPCount < 0 || body.DDNSIPCount > 20 {
 		writeJSON(w, 400, map[string]string{
@@ -889,7 +859,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 记录类型 / 同步模式：只认 A / AAAA / A+AAAA。写错的值**当场退回**，
-	// 不回落成 A——用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，
+	// 不回落成 A，用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，
 	// 只能等他自己发现访问没变快。
 	// 没传（旧界面/老备份文件）就保持原样，不当作改成了 A。
 	if body.DDNSRecordType != nil {
@@ -945,28 +915,18 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if body.AdGuardPassword != "" {
 		cfg.AdGuard.Password = body.AdGuardPassword
 	}
-	// 域名：先规范化，再逐个确认「这个域名是不是真的走 Cloudflare 边缘」。
-	//
-	// 为什么要拦：本产品把这个域名在局域网里改指向一个 Cloudflare 边缘 IP。
-	// 域名如果压根没接 Cloudflare，改完之后浏览器连到的是一个不认识这个站点
-	// 的边缘节点，页面直接打不开，而用户几乎不可能自己想到是这个原因。
-	// 详见 web/cfcheck.go 顶部那段（为什么用「解析结果在不在 CF 段里」判断，
-	// 而不是查 NS）。
-	//
-	// 三类结果分开处理：确认走 CF 的保存；确认不走的**不保存**（这就是用户
-	// 要的「不让添加」）；查不了的（DNS 超时/不通）**照样保存**，只是在响应
-	// 里标出来——因为当时网络抖了一下就把人家的域名删掉，比放过去糟得多。
-	//
-	// 没传 domains 就整段跳过：界面上域名已经由增量接口管着，保存别的设置时
-	// 不该顺手再把这些域名重新验一遍（每验一次都要发网络请求，网络抖一下
-	// 就有域名被踢掉）。
+	// 域名：先规范化，再逐个确认是不是真走 Cloudflare 边缘（判据见 cfcheck.go）。拦的
+	// 理由：域名压根没接 CF 的话，改完指向的是一个不认识它的边缘节点，页面直接打不开，
+	// 而用户几乎想不到是这个原因。三类结果分开处理：确认走 CF 的保存，确认不走的**不
+	// 保存**，查不了的（DNS 超时）照样保存只标出来。没传 domains 就整段跳过：域名已由
+	// 增量接口管着，保存别的设置时不该顺手再验一遍。
 	var keptDomains []string
 	var rejectedDomains, unknownDomains []DomainCheck
 	if body.Domains != nil {
 		submitted := normalizeDomains(*body.Domains)
 		keptDomains, rejectedDomains, unknownDomains = screenDomains(r.Context(), submitted)
 		cfg.Domains = keptDomains
-		// 列表被整体替换了（界面上可能删过行），元信息要跟着对齐——否则删掉的
+		// 列表被整体替换了（界面上可能删过行），元信息要跟着对齐，否则删掉的
 		// 域名会把「包含子域」和添加时间留给下次同名域名。
 		cfg.PruneDomainMeta()
 	}
@@ -978,7 +938,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Speed.IntervalMinutes = body.IntervalMinutes
 	// body.ExtraSources 为 nil 表示请求里没带这个字段（旧客户端/老导入文件），
-	// 此时保留原值，不能顺手清空——那会把用户辛苦填的段默默删掉。
+	// 此时保留原值，不能顺手清空，那会把用户辛苦填的段默默删掉。
 	if body.ExtraSources != nil {
 		cfg.Speed.ExtraSources = extraLines
 	}
@@ -994,7 +954,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// 引擎参数：同样「没传就不动」。NormalizeOverrides 会丢掉未知键、把
 	// 类型转成 cfnb 认识的（"443,8443" → []int{443,8443}）、把越界值钳住，
-	// 并丢掉「和默认值一样」的项——所以用户点「恢复默认」传空对象时，
+	// 并丢掉「和默认值一样」的项，所以用户点「恢复默认」传空对象时，
 	// 结果就是 nil，config.json 里那条不会留下一个空壳。
 	if body.EngineOverrides != nil {
 		cfg.Speed.EngineOverrides = engine.NormalizeOverrides(*body.EngineOverrides)
@@ -1019,7 +979,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 用户主动保存过一次 = 已经看过并确认了恢复出来的内容，那条红条可以撤了。
-	// 只在这里清，不在定时测速顺手保存时清——那种保存不是「人看过了」。
+	// 只在这里清，不在定时测速顺手保存时清，那种保存不是「人看过了」。
 	s.mu.Lock()
 	s.restored = false
 	s.restoredUpgrade = false
@@ -1045,13 +1005,13 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	s.wakeScheduler()
 
 	// 开了云朵这件事必须留在日志里。以后用户看到「域名解析的 IP 不是最优 IP」
-	// 时，日志里这一行能直接解释原因——是 Cloudflare 接手了，不是推送错了。
+	// 时，日志里这一行能直接解释原因，是 Cloudflare 接手了，不是推送错了。
 	if cfg.DDNS.Proxied && cfg.DDNS.Provider == "cloudflare" {
 		s.appendLog("注意：Cloudflare 云朵（代理）已开启，域名会解析到 Cloudflare 的边缘节点，不再直接指向优选 IP")
 	}
 
 	// 被拦下的域名要进日志。用户过几天发现「我明明加了这个域名，怎么没生效」，
-	// 翻日志能直接看到是哪一条、解析到了哪个 IP——比只在界面上弹一下有用。
+	// 翻日志能直接看到是哪一条、解析到了哪个 IP，比只在界面上弹一下有用。
 	for _, r := range rejectedDomains {
 		s.appendLog("域名未保存：" + r.Domain + " —— " + r.Reason)
 	}
@@ -1089,15 +1049,9 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 			return
 		}
-		// 只收白名单里的密钥名。
-		//
-		// 导入备份那条路早就这么做（`allowedSecretKeys`），这里原来没有：
-		// 同一个原则只在导入侧落实、正常保存侧没落实，等于留了个「往 ddns.env
-		// 里塞任意变量」的口子。而 ddns.env 会被宿主机的生命周期脚本当环境
-		// 文件整个读进去（`config_callback` / `main`），塞进去的键能影响那些脚本。
-		//
-		// 未知键直接退回并点名，不静默丢也不静默写——不管是哪一种，等用户发现
-		// 「填了没生效」时都已经想不起是哪一步了。
+		// 只收白名单里的密钥名。导入备份那条路早就这么做（allowedSecretKeys），这里
+		// 原来没有，等于留了个「往 ddns.env 塞任意变量」的口子；而 ddns.env 会被宿主机
+		// 的生命周期脚本当环境文件整个读进去。未知键直接退回并点名，不静默丢也不静默写。
 		allowed := make(map[string]bool, 16)
 		for _, k := range config.AllCredentialKeys() {
 			allowed[k] = true
@@ -1124,7 +1078,7 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 		}
 		// 用 UpdateEnvFile 而不是 SaveEnvFile：后者是整份重写，会把 ddns.env
 		// 里用户自己写的注释、以及被注释掉的备用密钥（`#CF_API_TOKEN=旧的`）
-		// 一起冲掉——这正是 UpdateEnvFile 顶部那段注释在防的事。
+		// 一起冲掉，这正是 UpdateEnvFile 顶部那段注释在防的事。
 		if err := config.UpdateEnvFile(config.EnvFilePath(), kv); err != nil {
 			writeJSON(w, 500, map[string]string{"error": "保存密钥失败: " + friendlyErr(err)})
 			return
@@ -1241,14 +1195,10 @@ func delayText(d time.Duration) string {
 
 // buildNodeStats 把「引擎结果 + 机房探测结果」拼成界面要的节点列表。
 //
-// 以 res.IPs 为准逐条遍历，而不是遍历 res.Nodes：res.IPs 才是真正会被写进
-// 解析、也是 cfg.LastIPs 存下来的那份。两者顺序一致（parseOutput 同时追加），
-// 但一旦哪天不一致，界面显示的条数和实际写进域名条数就对不上——那是最容易
-// 让用户怀疑「程序到底做了没做」的一种不一致。
-//
-// 查不到机房的节点，Colo/Place 留空，界面显示「位置未知」。
-// 这里绝不按 IP 段去猜国家：Cloudflare 的 anycast IP 跟地理位置没有对应关系，
-// 猜出来的国家和真实出口可以相差半个地球。
+// 以 res.IPs 为准遍历而不是 res.Nodes：res.IPs 才是真正会被写进解析、也是 cfg.LastIPs
+// 存下来的那份，两者一旦不一致，界面显示的条数和实际写进域名条数就对不上。
+// 查不到机房的节点 Colo/Place 留空，界面显示「位置未知」。绝不按 IP 段猜国家：
+// anycast IP 跟地理位置没有对应关系，猜出来的国家和真实出口可以差半个地球。
 func buildNodeStats(res *engine.Result, colos map[string]string) []config.NodeStat {
 	if res == nil || len(res.IPs) == 0 {
 		return nil
@@ -1277,7 +1227,7 @@ func buildNodeStats(res *engine.Result, colos map[string]string) []config.NodeSt
 // failBeforeRun 记录「还没把候选交给引擎就失败」的情况，并把错误写进日志。
 //
 // 为什么不能只 return err：定时器那条路径是 `go func() { _ = s.runOnce(cfg) }()`，
-// 错误被丢掉了。2026-11-17 那次「候选全被筛掉」就是这样——日志停在「候选预筛：
+// 错误被丢掉了。2026-11-17 那次「候选全被筛掉」就是这样，日志停在「候选预筛：
 // 剔除 N 个」半句话，用户完全看不出这一轮为什么没有结果，只会以为程序卡住了。
 func (s *Server) failBeforeRun(msg string) error {
 	s.mu.Lock()
@@ -1289,18 +1239,10 @@ func (s *Server) failBeforeRun(msg string) error {
 	return errors.New(msg)
 }
 
-// rewriteAnswers 返回某个域名这一轮要写进 AdGuard 的答案集合。
-//
-// AdGuard 的重写是「域名 → 答案」一条一条存的，同一个域名可以既有 v4 答案
-// 又有 v6 答案，客户端按自己支持的协议族各取一条。所以两个族要一起给。
-//
-// **只写 v4 是错的**：ReplaceRewrites 是「先把整张重写表清空、再按 want 重建」，
-// want 里没有的答案会被当成多余删掉。只写 v4 就等于每轮都把 v6 那条抹了，
-// 家里支持 v6 的设备永远用不上——而且没有任何报错，只有"怎么没变快"。
-//
-// v6 这一轮没测出来（v6IPs 为空）时只给 v4：此时删掉旧的 v6 答案是对的，
-// 因为那台节点上一轮之后就没人验证过；删了 v6 客户端会回落到 v4，
-// 比留着一条指向不可用地址的 AAAA 安全。
+// rewriteAnswers 返回某个域名这一轮要写进 AdGuard 的答案集合。同一个域名可以既有 v4 又有
+// v6 答案，客户端按自己支持的协议族各取一条，所以两族要一起给：认领语义下 want 里没有的
+// 答案会被删掉，只写 v4 就等于每轮把 v6 抹了，还不报错。v6 这一轮没测出来时只给 v4，
+// 此时删掉旧的 v6 答案是对的，比留着一条指向不可用地址的 AAAA 安全。
 func rewriteAnswers(bestV4 string, v6IPs []string) map[string]bool {
 	answers := make(map[string]bool, 2)
 	if bestV4 != "" {
@@ -1312,28 +1254,22 @@ func rewriteAnswers(bestV4 string, v6IPs []string) map[string]bool {
 	return answers
 }
 
-// keptNote 把「保留了 N 条别人的记录」拼成日志尾巴，没有就返回空串。
-//
-// 这一句是给用户吃的定心丸，也让「本工具会不会顺手删掉我的规则」这件事每次
-// 都有一次可核对的记录，而不是靠我们口头保证。
+// keptNote 把「保留了 N 条别人的记录」拼成日志尾巴，没有就返回空串。这句是给用户吃的
+// 定心丸，也让「会不会顺手删掉我的规则」每次都有一次可核对的记录。
 func keptNote(kept int) string {
 	if kept <= 0 {
 		return ""
 	}
-	return "，保留了 " + itoa(kept) + " 条不是本工具写的记录"
+	return "，保留了 " + strconv.Itoa(kept) + " 条不是本工具写的记录"
 }
 
-// rewritePlan 组装这一轮要写进 AdGuard 的完整意图。
+// rewritePlan 组装这一轮要写进 AdGuard 的完整意图，两部分：当前域名列表（含
+// 「包含子域」派生的 *.域名）各自该有的答案；账本里有、这一轮已经不管的域名给空答案集，
+// 意思是「把记录全清掉」，这就是用户删掉域名后 AdGuard 上那条旧记录能被清掉的原因。
 //
-// 两部分：
-//   - 当前域名列表（含「包含子域」派生出来的 *.域名）→ 各自该有的答案；
-//   - 账本里有、但这一轮已经不管的域名 → 空答案集，意思是「把这域名下的记录
-//     全清掉」。这就是用户从列表里删掉一个域名后，AdGuard 上那条旧记录能被
-//     清掉的原因（见 config.Config.RewrittenDomains）。
-//
-// answers 为空（还没测出任何 IP）时**不做清理**：那种情况下空答案集会变成
-// 「把所有域名下的记录都删掉」，把上一轮好好的结果抹了。调用方本来就都会先
-// 拦住「没有 IP 就不写」，这里再兜一层，因为这一层出错是静默的。
+// answers 为空（还没测出任何 IP）时不做清理：那样空答案集会变成「把所有域名下的记录
+// 都删掉」，把上一轮好好的结果抹了。调用方都会先拦住「没有 IP 就不写」，这里再兜一层，
+// 因为这一层出错是静默的。
 func rewritePlan(cfg config.Config, names []string, answers map[string]bool) map[string]map[string]bool {
 	want := make(map[string]map[string]bool, len(names))
 	for _, d := range names {
@@ -1389,21 +1325,14 @@ func (s *Server) runOnce(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
 	defer cancel()
 
-	// 「优选 IP 段」：用户填的三类来源统一在本地解析，再由 /api/candidates
-	// 交给测速引擎。
-	//
-	// 链接为什么也由我们下载：cfnb 的解析器只认单个 IP，遇到 104.16.0.0/13
-	// 这种**段**会整条丢掉，拉到内容却解析出 0 节点（2026-11-17 22:01 的
-	// 「高爆IP段.txt」就是这个）。本地解析之后，段能采样、单 IP 能直通、
-	// 带端口的节点能保住原端口，日志里也能说清到底认出了多少。
-	// 实在解析不出的链接才回退给引擎自己去试（它也许认得别的格式）。
-	//
-	// custom 为 false 表示用户没设置，完全走升级前的老行为。
+	// 「优选 IP 段」：用户填的三类来源统一在本地解析，再由 /api/candidates 交给引擎。
+	// 链接为什么也由我们下载：cfnb 的解析器只认单个 IP，遇到 104.16.0.0/13 这种段会
+	// 整条丢掉，拉到内容却解析出 0 节点。本地解析之后段能采样、单 IP 能直通、带端口的
+	// 节点能保住原端口，日志里也能说清认出了多少。实在解析不出的链接才回退给引擎。
 	extra, _ := parseExtraSources(cfg.Speed.ExtraSources)
 	custom := len(cfg.Speed.ExtraSources) > 0
-	// 从配置里把链接原文单独留一份：resolveLinkSources 会把 extra.urls 清空
-	// （它们已经被「消费」成 IP 列表了），但日志必须能原样复述用户填了什么。
-	// 没有这一份，用户就只能靠「有没有出现外部 URL 行」猜程序到底用没用他的链接。
+	// 从配置里把链接原文单独留一份：resolveLinkSources 会把 extra.urls 清空（已被消费成
+	// IP 列表），但日志必须能原样复述用户填了什么。
 	configuredURLs := append([]string(nil), extra.urls...)
 
 	localCandidates := s.selfURL + "/api/candidates"
@@ -1418,7 +1347,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 
 	if custom {
 		// 先交代「你配的是什么」，再交代「解析成了什么」。顺序不能反：
-		// 22:14 那次真机反馈就是「结果出来了，但日志里找不到我那条链接」——
+		// 22:14 那次真机反馈就是「结果出来了，但日志里找不到我那条链接」，
 		// 解析细节写在前面几行，用户翻日志时往往只看得到后面。
 		if len(configuredURLs) > 0 {
 			s.appendLog(fmt.Sprintf("候选来源：从你填的 %d 条链接下载 —— %s",
@@ -1447,7 +1376,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 		}
 		s.appendLog(fmt.Sprintf("%s%s；只用你填的来源，不叠加官方内置源",
 			planHead, sourcePlanText(extra)))
-		// 这里只说「解析出多少条」，不说「交给引擎」——真正交出去的是
+		// 这里只说「解析出多少条」，不说「交给引擎」，真正交出去的是
 		// 下面筛选之后的那一批，由 screenCandidates 自己报数。
 		if n := strings.Count(staged, "\n"); n > 0 {
 			s.appendLog(fmt.Sprintf(
@@ -1461,7 +1390,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 		// 两道筛选（官方段预筛 + 1034 实测）放在这里，也就是**引擎启动之前**。
 		//
 		// 顺序是硬要求，不是顺手：带宽测速跑一次要几十秒，而一个会返回
-		// 1034 的 IP 照样能测出速度——它在带宽那一轮是「合格」的，只有真去
+		// 1034 的 IP 照样能测出速度，它在带宽那一轮是「合格」的，只有真去
 		// 访问用户域名时才露馅。所以必须在这之前把它剔掉，否则这一轮的
 		// 带宽测试就是白跑，最终还会把一个用户根本打不开的 IP 写进 AdGuard。
 		rawStaged := staged
@@ -1475,7 +1404,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 	} else {
 		// 没设自定义来源：候选是内置官方段采样。以前这份列表由
 		// /api/candidates 在引擎来取时现算，现在提前生成并暂存，为的是让
-		// 同一套筛选也作用在它上面——官方段内仍然可能有被某个企业独占的
+		// 同一套筛选也作用在它上面，官方段内仍然可能有被某个企业独占的
 		// 地址，段表里看不出来，只有真问一次才知道。
 		raw := candidateList(&cfg, candidateCount)
 		staged := s.screenCandidates(ctx, &cfg, raw)
@@ -1507,7 +1436,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 
 	// 失败自动重试一次。cfnb 的失败大多是「某个数据源或节点刚好超时」这类
 	// 偶发问题，重试一次往往就过了。以前碰到只能干等下一个周期（默认 60
-	// 分钟），等于白丢一轮。ctx 已经耗尽时不重试——那说明是真跑满了超时。
+	// 分钟），等于白丢一轮。ctx 已经耗尽时不重试，那说明是真跑满了超时。
 	if err != nil && ctx.Err() == nil {
 		s.appendLog("测速失败: " + friendlyErr(err) + "；" + delayText(retryDelay) + "后自动重试一次")
 		if waitFor(ctx, retryDelay) {
@@ -1533,59 +1462,42 @@ func (s *Server) runOnce(cfg config.Config) error {
 	s.failCount = 0
 	s.mu.Unlock()
 
-	// 上面那些 `1. x.x.x.x:443#US` 里的 `#US` **不是真实位置**，是我们为了满足
-	// 引擎的解析格式补的占位值（引擎遇到没有国家标签的裸 IP 会逐条去探测，
-	// 又慢又会把探测失败的节点丢掉）。所以引擎侧一律不按国家筛——按占位标签
-	// 筛等于筛假数据——国家筛选改在下面拿到真实位置之后做。
+	// 上面那些 `1. x.x.x.x:443#US` 里的 `#US` **不是真实位置**，是为了满足引擎的
+	// 解析格式补的占位值（没国家标签的裸 IP 会被逐条探测，慢且探测失败即丢）。
+	// 所以引擎侧一律不按国家筛，按占位标签筛等于筛假数据，真正的国家筛选在下面
+	// 拿到真实位置之后做。
 	//
-	// 用独立于测速的 ctx：测速的预算已经快用完时，沿用它会一条都探不出去，
-	// 那这行日志就成了「探测不到」，反而误导。
-	// 预算按实际结果条数算：10 条要跑两轮，固定的 8 秒会在第二轮被打断。
+	// ctx 独立于测速：沿用测速那个快用完的预算会一条都探不出去，日志就成了误导。
+	// 预算按实际条数算，10 条要跑两轮，固定 8 秒会在第二轮被打断。
 	_, exitAllowance := exitProbePlan(len(res.IPs))
 	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
 	colos := s.logExitCountries(exitCtx, res.IPs)
 	exitCancel()
 
-	// 国家筛选放在这里，是这一笔改动最核心的取舍：
-	//
-	// 以前那 8 个键是交给引擎的，引擎在**探测之前**按候选自带的 `#US` 筛——
-	// 好处是「不合规的节点根本不测，省一半时间」，坏处是筛的是假标签，等于
-	// 开了也筛不出东西（白名单只勾 HK 时还会一条不剩）。
-	//
-	// 现在改成测完之后按真实机房位置筛，筛得对了，代价是**被筛掉的节点也白测
-	// 了一遍**，一轮会比以前慢。这一点如实写进日志（note 里那句「%d → %d 条」），
-	// 不装作没发生；想快就把国家开关关掉。
-	//
-	// 筛完一条不剩必须走失败分支：返回空列表会让后面把空结果写进
-	// AdGuard / DDNS，比直接报错更难查。
+	// 国家筛选在这里做，代价是被筛掉的节点也白测了一遍，一轮比以前慢，所以日志
+	// 里如实写「%d → %d 条」，想快就把国家开关关掉。
+	// 筛完一条不剩必须走失败分支：空列表会让后面把空结果写进 AdGuard / DDNS，
+	// 比直接报错更难查。
 	if res, err = s.refineResultByCountry(cfg, res, colos, "IPv4"); err != nil {
 		return s.failBeforeRun(err.Error())
 	}
 
-	// 最优 IP 必须在筛完之后再取：筛之前取，被筛掉的那个会一路带到
-	// AdGuard 重写和 DDNS 里，日志上还写着「最优 IP: x」——用户看到的是
-	// 一个他刚明确排除掉的机房。
+	// 最优 IP 必须在筛完之后再取，否则被筛掉的那个会一路带到 AdGuard 和 DDNS，
+	// 日志上还写着「最优 IP: x」，用户看到的是他刚明确排除掉的机房。
 	best := res.Best()
 	s.appendLog("测速完成，最优 IP: " + best)
 
 	// 每个 IP 一行「质量数据」，界面直接渲染，不用再算。
 	nodes := buildNodeStats(res, colos)
 
-	// 0) v6 优选（可选，只有填了「v6 段链接」才跑）
+	// 0) v6 优选（可选，只有填了「v6 段链接」才跑）。排在写入之前，因为下一步
+	// 要按记录类型把 v6 写进 AAAA / AdGuard，那两处都要这一轮刚测出来的结果。
 	//
-	// 放在写入之前的理由：下一步要按记录类型把 v6 也写进 AAAA / AdGuard，
-	// 那两处都需要「这一轮刚测出来的 v6 结果」，而不是上一轮的。
+	// 三条约定：没填链接就完全不跑；v6 跑空不牵连 v4（v4 照旧写）；手动探测正在
+	// 跑时跳过这一轮，两个一起跑会互相清掉对方的候选暂存，这里不阻塞等待。
 	//
-	// 三个刻意的约定：
-	//  1. 没填链接 = 完全不跑，行为和以前一模一样（不用多一个开关）。
-	//  2. **失败不牵连 v4**：v6 跑空只是这一块没结果，已经测好的 v4 照旧写。
-	//  3. 手动探测正在跑时跳过这一轮，两个一起跑会互相清掉对方的候选暂存。
-	//     这里不阻塞等待——主测速的预算不该被一个手动操作拖住。
-	// v6RoundIPs 是**这一轮**测出来的 v6 结果（按质量排序），可能为空。
-	//
-	// 写 AdGuard / DDNS 用的都是它，而不是 cfg.LastIPv6——后者是「上一次成功
-	// 的结果」，可能是上一个小时的，拿它去写解析等于把一个早就不通的地址
-	// 塞进域名。这一轮没测出来就是没测出来，宁可不写（见下面 DDNS 那段的说明）。
+	// v6RoundIPs 是这一轮的结果，写 AdGuard / DDNS 都用它而不是 cfg.LastIPv6
+	// （那是上一次成功的，可能是上一个小时的，拿去写解析等于塞一个早就不通的地址）。
 	var v6RoundIPs []string
 	if len(cfg.IPv6SourceURLs()) > 0 {
 		if s.claimIPv6Probe() {
@@ -1628,7 +1540,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 	}
 
 	// 这一轮允不允许改写 hosts 账本。只有真的动过 AdGuard 重写表（写成功）才
-	// 更新；地址没填、或者压根没东西可写时保持原样——账本记的是「AdGuard 上
+	// 更新；地址没填、或者压根没东西可写时保持原样，账本记的是「AdGuard 上
 	// 现在有哪些是我的」，没动过表就不该动它。
 	hostsLedgerOK := false
 
@@ -1661,7 +1573,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 						stats.Written, len(cfg.Domains), fam, keptNote(stats.Kept)))
 				}
 				// hosts 那一块单独说一句。合成一句会变成「已写入 AdGuard：70 条
-				// （1 个域名…）」——用户数一下 AdGuard 里的条数对不上，还得自己猜
+				// （1 个域名…）」，用户数一下 AdGuard 里的条数对不上，还得自己猜
 				// 那 69 条是从哪来的。只报非零项，一个「写入 0 条」纯属噪音。
 				//
 				// 这里说「进重写表」而不是「写入」：上面那句的数字是**这次真的
@@ -1689,16 +1601,12 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 2) 推送域名解析（DDNS）
 	//
 	// 写几条由用户设定（默认 1 条）。注意 pushIPs 是「按排名截前 N」，
-	// 而 cfg.LastIPs 存的是**完整排名**——这样用户之后把条数从 1 改成 5，
-	// 点一下「立即更新一次」就能补齐，不用重新跑一次测速。
+	// 而 cfg.LastIPs 存的是完整排名，用户之后把条数从 1 改成 5，点一下「立即更新
+	// 一次」就能补齐，不用重跑测速。
 	//
-	// 按记录类型选 IP 来源：A 用 v4 排名，AAAA 用**这一轮**的 v6 排名。
-	// 同步模式可能是「两个都写」，所以这里按族循环，一族一次 EnsureRecords——
-	// 两族在服务商那边是两张互不相干的表，一次只能动一张。
-	//
-	// 某一族这轮没结果就**只跳过那一族**，不影响另一族：v6 没测出节点
-	// 不该连累 A 记录也不更新。绝不能拿 v4 地址去顶 AAAA（ddns 包的地址族
-	// 校验会直接拦下来，但这里先说明白更好读）。
+	// 按记录类型选来源：A 用 v4 排名，AAAA 用这一轮的 v6 排名。服务商那边两族是
+	// 两张表，一次只能动一张，所以按族循环。某一族这轮没结果就只跳过那一族，
+	// 绝不能拿 v4 地址去顶 AAAA（ddns 包的族校验会拦，这里先说明白更好读）。
 	ddnsMode := cfg.DDNS.EffectiveRecordMode()
 	switch {
 	case cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "":
@@ -1720,7 +1628,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			}
 			pushIPs := pickIPs(source, cfg.DDNS.EffectiveIPCount())
 			if len(pushIPs) == 0 {
-				// 绝不能拿空列表去「对齐」——ddns 包会把它当成「这次没结果，别动」，
+				// 绝不能拿空列表去「对齐」，ddns 包会把它当成「这次没结果，别动」，
 				// 但日志里得如实说一句，否则用户会以为这一类记录已经更新过了。
 				s.appendLog(fmt.Sprintf("域名解析未推送 %s：%s（现有 %s 记录保持不变）",
 					family, emptySourceReason(family), family))
@@ -1746,7 +1654,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 	s.cfg.LastNodes = nodes
 	s.cfg.LastTime = now
 	// hosts 账本：只在真的动过 AdGuard 重写表之后才更新。写失败时保持原样，
-	// 下一轮自然会再试一次——账本是自愈的，不需要人补救。这里不单独 Save，
+	// 下一轮自然会再试一次，账本是自愈的，不需要人补救。这里不单独 Save，
 	// 跟着下面这一整份配置一起落盘（每轮本来就要写一次 last_ip/last_time）。
 	if hostsLedgerOK {
 		s.cfg.HostsEntries = hostsEntries
@@ -1767,7 +1675,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 
 // StartScheduler 启动定时测速。
 //
-// nextRunAt 在这里算并暴露给界面。算的是「真的要跑的时刻」，不是「间隔」——
+// nextRunAt 在这里算并暴露给界面。算的是「真的要跑的时刻」，不是「间隔」，
 // 用户看到「下次 16:35」就是他该等的那个点，不会因为改过间隔而说一套做一套。
 func (s *Server) StartScheduler() {
 	go func() {

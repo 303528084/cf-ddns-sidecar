@@ -1,16 +1,12 @@
 package web
 
-// Cloudflare IPv6 节点优选。
+// Cloudflare IPv6 节点优选。和主测速是两条独立的路：主测速采样 IPv4 段 → engine.Run →
+// res.IPs → 写 AdGuard + DDNS；本探测采样 IPv6 段 → engine.Run → 结果回给调用方。
 //
-// 这一整套和主测速是两条独立的路：
-//   - 主测速：采样 CF 的 IPv4 段 → engine.Run → res.IPs → 写 AdGuard + DDNS；
-//   - 本探测：采样 CF 的 IPv6 段 → engine.Run → 结果回给调用方。
-//
-// 「只测不写」这条保证现在**只对手动探测成立**：runIPv6Probe 自己不碰
-// AdGuard 和 DDNS，它只把结果存进 s.v6ProbeNodes / cfg.LastIPv6* 供界面显示。
-// 真正写 AAAA 的是 server.go 的 runOnce——它调 runIPv6Probe 拿到**这一轮**的
-// 地址，再和 v4 一起交给 EnsureRecords。也就是说：点「开始探测」永远不会改动
-// 你的解析，只有「立即测速」/ 定时那一轮才会（v1.7.0 起）。
+// 「只测不写」这条保证只对手动探测成立：runIPv6Probe 自己不碰 AdGuard 和 DDNS，只把结果
+// 存进 s.v6ProbeNodes / cfg.LastIPv6* 供界面显示。真正写 AAAA 的是 server.go 的 runOnce，
+// 它调 runIPv6Probe 拿到这一轮的地址，再和 v4 一起交给 EnsureRecords。也就是说点「开始
+// 探测」永远不会改动你的解析，只有「立即测速」/ 定时那一轮才会。
 
 import (
 	"context"
@@ -25,20 +21,16 @@ import (
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
-// ipv6ProbeTimeout 是一次 v6 探测的总时限。
-//
-// 原来是 3 分钟，按「总数 600 个候选」定的。改成每段固定 30 个之后，用户填 97 个段
-// 就是 2910 个候选（本机实测确认），TCP 阶段从约 2 秒变成约 20 秒，后面选出的
-// 30 个节点还要各下载一次测带宽（并发只有 3）。3 分钟卡在这种规模上很容易跑到
-// 一半被 ctx 掐断，界面显示"探测失败"、连已有结果也不给——比不放大采样更糟。
-// 放到 6 分钟：足够 2910 个候选跑完，又比主测速的 10 分钟短，探测卡死时不会长期占着。
+// ipv6ProbeTimeout 是一次 v6 探测的总时限。原来是 3 分钟，按「总数 600 个候选」定的；
+// 改成每段固定 30 个之后，用户填 97 个段就是 2910 个候选（本机实测确认），TCP 阶段从约
+// 2 秒变成约 20 秒，后面选出的 30 个节点还要各下载一次测带宽（并发只有 3），3 分钟很容易
+// 跑到一半被 ctx 掐断，界面显示「探测失败」、连已有结果也不给。放到 6 分钟：够 2910 个
+// 候选跑完，又比主测速的 10 分钟短，探测卡死时不会长期占着。
 const ipv6ProbeTimeout = 6 * time.Minute
 
-// handleIPv6Candidates 给探测用的测速引擎喂 v6 候选。
-//
-// 两种来源：用户填了段链接就返回开跑前解析好的暂存内容；没填才回退到
-// 内置的 CF v6 段（v1.6.7 行为）。和主测速的 /api/candidates 完全隔离——
-// 这里给的地址永远只用于探测，不会进 res.IPs，更不会写 AdGuard / DDNS。
+// handleIPv6Candidates 给探测用的测速引擎喂 v6 候选。用户填了段链接就返回开跑前解析好的
+// 暂存内容，没填才回退到内置的 CF v6 段。和主测速的 /api/candidates 完全隔离，这里给的
+// 地址永远只用于探测，不会进 res.IPs，更不会写 AdGuard / DDNS。
 func (s *Server) handleIPv6Candidates(w http.ResponseWriter, r *http.Request) {
 	count := atoiDefault(r.URL.Query().Get("n"), candidateCount)
 	if count > 3000 {
@@ -68,18 +60,13 @@ func candidatesTextFromIPv6(count int) string {
 	return s
 }
 
-// stageIPv6Candidates 在探测开跑前把用户填的 v6 段链接下载解析一次。
-//
-// 为什么不在 handleIPv6Candidates 里现场下载：引擎会重试、也可能请求多次，
-// 每来一次就下一遍外部站点，既慢又容易被对方限流（主测速的 candText 同样是
-// 这个道理）。失败原因直接返回给 runIPv6Probe 写进 v6ProbeErr——用户看到的是
-// "链接拉取失败（HTTP 404）"这种能动手修的话，而不是笼统的"没有产出可用 IP"。
-//
-// 支持一行一个链接（和「优选 IP 段」那边同一套写法）：
-//   - 段按**字符串**去重后再采样，两个链接里出现同一个段不会采出两倍的地址；
-//   - 某一条链接挂了不算整体失败——只要还有别的链接给出段，就照常往下测，
-//     挂掉的那几条写进日志。反过来全部挂掉才报错，并把每条的原因都列出来，
-//     否则用户只知道"失败了"，不知道是哪一条链接坏了。
+// stageIPv6Candidates 在探测开跑前把用户填的 v6 段链接下载解析一次。不在
+// handleIPv6Candidates 里现场下载：引擎会重试、也可能请求多次，每来一次就下一遍外部站点，
+// 既慢又容易被限流。失败原因直接返回给 runIPv6Probe 写进 v6ProbeErr，用户看到的是
+// 「链接拉取失败（HTTP 404）」这种能动手修的话。支持一行一个链接：
+//   - 段按字符串去重后再采样，两个链接里出现同一个段不会采出两倍地址；
+//   - 某条链接挂了不算整体失败，只要还有别的链接给出段就照常往下测，挂掉的那几条写进
+//     日志；全部挂掉才报错，并把每条的原因都列出来。
 func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	s.mu.Lock()
 	urls := s.cfg.IPv6SourceURLs()
@@ -169,7 +156,7 @@ func (s *Server) handleIPv6Probe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
 
-// v6TopN 返回 v6 那一轮要保留多少条结果——和 IPv4 共用「保留候选 IP 数」。
+// v6TopN 返回 v6 那一轮要保留多少条结果，和 IPv4 共用「保留候选 IP 数」。
 //
 // 为什么要共用：那一栏的语义是「这批候选留几条给我选」，IPv4 和 IPv6 是
 // 同一个问题的两个族，各留一个数只会让人困惑（用户原话：「设置时显示 10 个，
@@ -197,16 +184,13 @@ func (s *Server) v6BandwidthCandidates() int {
 	return n
 }
 
-// runIPv6Probe 真正跑 v6 探测，**返回这一轮的 v6 IP 列表**（按质量排序）。
+// runIPv6Probe 真正跑 v6 探测，返回这一轮的 v6 IP 列表（按质量排序）。调用前必须已经
+// claimIPv6Probe 占到坑，结束时由它自己释放。
 //
-// 调用前必须已经 claimIPv6Probe 占到坑，结束时由它自己释放。
-//
-// 为什么要把结果返回给调用方、而不是让它们去读 cfg.LastIPv6：LastIPv6 存的
-// 是「上一次成功的结果」，可能是上一个小时的。自动流程要把 v6 写进 AAAA /
-// AdGuard 时必须用**这一轮刚测出来的**，否则会把一个早就不可用的地址写进解析。
-//
-// 用独立的 workDir，避免覆盖主测速的 config.json/ip.txt。超时也是自己的：
-// 主测速那边 ctx 只剩几分钟时不能把 v6 一起拖进去，反之亦然。
+// 结果返回给调用方而不是让它们读 cfg.LastIPv6：后者存的是「上一次成功的结果」，可能是
+// 上一个小时的，自动流程要把 v6 写进 AAAA 时必须用这一轮刚测出来的。用独立 workDir，
+// 避免覆盖主测速的 config.json/ip.txt；超时也是自己的，主测速 ctx 只剩几分钟时不能把
+// v6 一起拖进去。
 func (s *Server) runIPv6Probe() ([]string, error) {
 	defer func() {
 		s.mu.Lock()
@@ -227,7 +211,7 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	s.mu.Unlock()
 
 	// 用户填了链接就在这里下载解析一次；失败要马上说清原因，不进测速环节
-	// ——否则用户只会看到"测速没有产出可用 IP"，根本不知道是链接填错了。
+	//，否则用户只会看到"测速没有产出可用 IP"，根本不知道是链接填错了。
 	if err := s.stageIPv6Candidates(ctx); err != nil {
 		s.mu.Lock()
 		s.v6ProbeErr = err.Error()
@@ -242,7 +226,7 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 		BandwidthCandidates: s.v6BandwidthCandidates(),
 		CandidatesURL:       s.selfURL + "/api/ipv6/candidates",
 		UseBuiltinSources:   false, // 只用我们喂的 v6 候选，不叠加 v4 聚合源
-		// 用户的高级设置照传，但国家那几项除外——v6 候选没有真实国家标签，
+		// 用户的高级设置照传，但国家那几项除外，v6 候选没有真实国家标签，
 		// 交给引擎只会误杀或空转，改由测完按机房位置筛（见 v6_settings.go）。
 		// 里面最后一条会强制压掉"过滤 ipv6_only 出口"（用户定稿的决定②）：
 		// 那个开关一开，v6 节点会在写结果前被全部剔除，探测永远看不到它们。
@@ -258,26 +242,19 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 		return nil, errors.New(msg)
 	}
 
-	// 成功：内存 + 配置一起更新。
-	//
-	// 落盘这一步是为了「重启之后还看得到」——一次 v6 优选要 1~2 分钟，
-	// 只在内存里的话，升级一次应用就没了，界面显示「还没有结果」像功能坏了。
-	// 注意**只写 LastIPv6***，绝不动 v4 那组：两套结果互相独立，v6 跑空
-	// 不该把 v4 的结果一起抹掉。
-	// 真实机房位置：和 v4 完全同一套办法——穿过这个 v6 地址去问 Cloudflare 的
-	// /cdn-cgi/trace 读 colo。traceVia 里用的是 net.JoinHostPort，v6 会自动加
-	// 方括号，所以这段不需要为 v6 单独写（测速本身也是这么连的）。
-	//
-	// 用独立于探测的 ctx：6 分钟的探测预算经常在测带宽那步就快用完，沿用它会
-	// 一条都探不出去，界面整列变成「位置未知」——那比不探更误导人。
-	// 预算由 exitProbePlan 按结果条数算（和 v4 共用同一个函数，口径不会分叉）。
+	// 成功：内存 + 配置一起更新。落盘是为了「重启之后还看得到」，一次 v6 优选要 1~2
+	// 分钟，只在内存里的话升级一次应用就没了。只写 LastIPv6*，绝不动 v4 那组：两套结果
+	// 互相独立，v6 跑空不该把 v4 一起抹掉。
+	// 真实机房位置：和 v4 同一套办法，穿过这个 v6 地址问 /cdn-cgi/trace 读 colo。
+	// 用独立于探测的 ctx：6 分钟的探测预算经常在测带宽那步就快用完，沿用它会一条都探不
+	// 出去，界面整列变成「位置未知」，比不探更误导人。预算由 exitProbePlan 算。
 	_, exitAllowance := exitProbePlan(len(res.IPs))
 	exitCtx, exitCancel := context.WithTimeout(context.Background(), exitAllowance)
 	colos := s.logExitColos(exitCtx, res.IPs, "IPv6 ")
 	exitCancel()
 
 	// 国家筛选必须放在这里：候选带的 `#US` 是占位标签，真实位置只有探完
-	// 机房才知道。代价是被筛掉的节点也白测了一遍——日志里如实写出来。
+	// 机房才知道。代价是被筛掉的节点也白测了一遍，日志里如实写出来。
 	if res, err = s.refineResultByCountry(cfg, res, colos, "v6"); err != nil {
 		s.mu.Lock()
 		s.v6ProbeErr = err.Error()
@@ -322,7 +299,7 @@ func (s *Server) handleIPv6ProbeResult(w http.ResponseWriter, r *http.Request) {
 	errMsg := s.v6ProbeErr
 	if len(nodes) == 0 && s.cfg != nil && len(s.cfg.LastIPv6Nodes) > 0 {
 		// 直接给落盘那份的副本：它本来就带 colo/place，不用再从 engine.Node
-		// 拼一遍——v1.7.2 之前这里是把 NodeStat 拆回 engine.Node，机房位置
+		// 拼一遍，v1.7.2 之前这里是把 NodeStat 拆回 engine.Node，机房位置
 		// 就在这一步被丢掉，界面永远是「位置未知」。
 		nodes = append(make([]config.NodeStat, 0, len(s.cfg.LastIPv6Nodes)), s.cfg.LastIPv6Nodes...)
 		if at.IsZero() {

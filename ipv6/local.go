@@ -1,7 +1,7 @@
 // Package ipv6 只读地找出本机「稳定的公网 IPv6 地址」，供后台显示。
 //
 // 现在是阶段①：只读取、只显示，不写任何解析记录、不碰 AdGuard。
-// 目的只有一个——回答「这台机器到底有没有能用的公网 v6」，如果连地址都没有，
+// 目的只有一个，回答「这台机器到底有没有能用的公网 v6」，如果连地址都没有，
 // 后面的 AAAA / 前缀巡检全都不用做。
 //
 // 为什么读 /proc/net/if_inet6 而不是问外部服务：
@@ -10,7 +10,7 @@
 // 机器上挂了全局代理而问出代理的地址。
 //
 // 为什么把 flags 原文留在结果里：
-// 方案文档第五节特别提醒——IFA_F_TEMPORARY 与 IFA_F_SECONDARY 共用 0x01，
+// 方案文档第五节特别提醒，IFA_F_TEMPORARY 与 IFA_F_SECONDARY 共用 0x01，
 // 不同内核/发行版打印出来可能不一样，不能凭记忆写死。所以这里既按标准判据
 // 过滤，也把每个地址的原始 flags 一起返回，让人能拿 `ip -6 addr` 对照真机核对。
 package ipv6
@@ -27,7 +27,7 @@ import (
 // ProcPath 是内核维护的 IPv6 地址表。它是只读的伪文件，不需要任何权限。
 const ProcPath = "/proc/net/if_inet6"
 
-// Candidate 是一条「合格」的候选地址——已经排除了回环、link-local、私有段、
+// Candidate 是一条「合格」的候选地址，已经排除了回环、link-local、私有段、
 // 临时/废弃/未检测完的地址。界面只显示这个列表。
 type Candidate struct {
 	Address   string `json:"address"`   // 展开后的完整地址（带冒号）
@@ -40,13 +40,13 @@ type Candidate struct {
 	Why       string `json:"why"`       // 为什么挑它 / 为什么它是合格候选
 }
 
-// FilterStats 是各类被过滤掉的条数统计。只给数量、不列被过滤的地址本身——
+// FilterStats 是各类被过滤掉的条数统计。只给数量、不列被过滤的地址本身，
 // 界面上不能出现 fe80:: / fc00:: / 临时地址，否则用户会误以为那些也能用。
 type FilterStats struct {
-	LinkLocal int `json:"link_local"`
-	ULA       int `json:"ula"`
-	Loopback  int `json:"loopback"`
-	Tentative int `json:"tentative"`
+	LinkLocal  int `json:"link_local"`
+	ULA        int `json:"ula"`
+	Loopback   int `json:"loopback"`
+	Tentative  int `json:"tentative"`
 	Deprecated int `json:"deprecated"`
 	Temporary  int `json:"temporary"`
 	Other      int `json:"other"`
@@ -55,13 +55,13 @@ type FilterStats struct {
 
 // Report 是一次检测的完整结果。
 type Report struct {
-	Available  bool         `json:"available"`   // 有没有合格地址
-	Selected   *Candidate   `json:"selected"`    // 挑中的那条；没有就是 null
-	Candidates []Candidate  `json:"candidates"`  // 所有合格候选
-	Total      int          `json:"total"`       // 读到的地址总行数
-	Filtered   FilterStats  `json:"filtered"`    // 各类过滤计数
-	Source     string       `json:"source"`      // 数据来源文件
-	Note       string       `json:"note"`        // 给界面显示的一句人话
+	Available  bool        `json:"available"`  // 有没有合格地址
+	Selected   *Candidate  `json:"selected"`   // 挑中的那条；没有就是 null
+	Candidates []Candidate `json:"candidates"` // 所有合格候选
+	Total      int         `json:"total"`      // 读到的地址总行数
+	Filtered   FilterStats `json:"filtered"`   // 各类过滤计数
+	Source     string      `json:"source"`     // 数据来源文件
+	Note       string      `json:"note"`       // 给界面显示的一句人话
 }
 
 // ReadLocal 用系统默认路径检测本机地址。
@@ -125,12 +125,12 @@ func ReadFrom(path string) (*Report, error) {
 
 // addrLine 是一条解析 success 的原始行。
 type addrLine struct {
-	addr      netip.Addr
-	ifname    string
-	prefix    int
-	scope     uint64
-	flags     uint64
-	flagsRaw  string
+	addr     netip.Addr
+	ifname   string
+	prefix   int
+	scope    uint64
+	flags    uint64
+	flagsRaw string
 }
 
 // filterReason 是过滤原因，也决定统计计到哪一栏。
@@ -149,7 +149,7 @@ const (
 )
 
 // Linux include/uapi/linux/if_addr.h 的地址标志位。
-// 注意 0x01 同时是 IFA_F_TEMPORARY 和 IFA_F_SECONDARY——这正是方案提醒的坑，
+// 注意 0x01 同时是 IFA_F_TEMPORARY 和 IFA_F_SECONDARY，这正是方案提醒的坑，
 // 所以过滤时按"有这个位就排除"处理，并把原文留给人核对。
 const (
 	flagTemporary  uint64 = 0x01

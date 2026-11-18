@@ -59,7 +59,7 @@ func clientIP(r *http.Request) string {
 	return hostOnly(r.RemoteAddr)
 }
 
-// isLocalRequest 判断这是不是真正的「进程内调用」——目前只有测速引擎
+// isLocalRequest 判断这是不是真正的「进程内调用」，目前只有测速引擎
 // （cfnb 子进程）回调 /api/candidates 这一处。
 //
 // 只看 RemoteAddr 不够：加了隧道或反代之后，公网请求在程序眼里同样是 127.0.0.1。
@@ -112,14 +112,14 @@ type failState struct {
 // loginThrottle 按来源 IP 限制登录失败次数。
 //
 // 为什么必须有：原来只在密码错误时 sleep 500ms。单线程爆破确实会被拖慢，
-// 但爆破脚本是并发的——同时开 20 路，每秒就能试 40 个密码。
+// 但爆破脚本是并发的，同时开 20 路，每秒就能试 40 个密码。
 // 一旦暴露到公网，弱密码几分钟就会被猜中，而拿到后台等于把 DNS 解析
 // 和各家 API 密钥一起交出去。
 type loginThrottle struct {
 	mu    sync.Mutex
 	state map[string]*failState
 	calls int
-	// now 可注入，测试里用来「快进时间」——否则锁 5 分钟这种逻辑没法验证。
+	// now 可注入，测试里用来「快进时间」，否则锁 5 分钟这种逻辑没法验证。
 	now func() time.Time
 }
 
@@ -181,7 +181,7 @@ func (t *loginThrottle) fail(ip string) {
 	st.level++
 }
 
-// reset 在登录成功后清掉这个 IP 的记录——正常用户不该因为偶尔手滑被越锁越久。
+// reset 在登录成功后清掉这个 IP 的记录，正常用户不该因为偶尔手滑被越锁越久。
 func (t *loginThrottle) reset(ip string) {
 	t.mu.Lock()
 	delete(t.state, ip)

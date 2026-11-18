@@ -12,13 +12,10 @@ import (
 	"github.com/303528084/cf-ddns-sidecar/config"
 )
 
-// cloudflareIPv4 是 Cloudflare 官方公布的 IPv4 地址段（https://www.cloudflare.com/ips-v4）。
-// 内置一份快照，用于在外部数据源不可达时本地生成候选 IP —— 这是本产品
-// 「测速一定能出结果」的兜底：不依赖任何第三方列表，随机采样官方段即可。
-//
-// 但兜底也有副作用：官方这 15 个段里 104.16/104.24/172.64 三块占了绝大多数，
-// 平均配额之后，优选结果会明显往这几段集中。用户 2026-11-17 报的「优选出来
-// 都是同一批段」就是这个原因。要跳出这个范围只能用 SpeedConfig.ExtraSources。
+// cloudflareIPv4 是 Cloudflare 官方公布的 IPv4 段快照，用于外部数据源不可达时本地生成
+// 候选 IP，这是「测速一定能出结果」的兜底。副作用是这 15 个段里 104.16/104.24/172.64
+// 三块占绝大多数，平均配额之后优选结果会明显往这几段集中（用户 2026-11-17 报的「优选
+// 出来都是同一批段」就是这个原因）。要跳出这个范围只能用 SpeedConfig.ExtraSources。
 var cloudflareIPv4 = []string{
 	"173.245.48.0/20",
 	"103.21.244.0/22",
@@ -37,10 +34,9 @@ var cloudflareIPv4 = []string{
 	"131.0.72.0/22",
 }
 
-// cloudflareIPv6 是 Cloudflare 官方公布的 IPv6 段（https://www.cloudflare.com/ips-v6）。
-// 官方只公布一条 /32，和 IPv4 那 15 条完全不同：v6 是 Anycast，
-// 采样再广也很可能落在同一批边缘设备上——所以 v6 优选有没有意义要靠真机测，
-// 不能凭"段多"想当然（见 docs/IPv6方案.md 第八节）。
+// cloudflareIPv6 是 Cloudflare 官方公布的 IPv6 段。官方只公布一条 /32，和 IPv4 那 15 条
+// 完全不同：v6 是 Anycast，采样再广也很可能落在同一批边缘设备上，所以 v6 优选有没有
+// 意义要靠真机测（见 docs/IPv6方案.md 第八节）。
 var cloudflareIPv6 = []string{
 	"2606:4700::/32",
 }
@@ -51,7 +47,7 @@ type extraSources struct {
 	ips   []string // 已校验的单 IP（不含端口）
 	// nodes 是「已经写全了」的节点：IP:端口#国家。
 	// 和 ips 分开存，是为了不丢掉用户（或链接）明确给出的端口和国家标签
-	// ——下游统一按 `ip:443#US` 输出，端口被改写会让一个能用的节点变不能用。
+	//，下游统一按 `ip:443#US` 输出，端口被改写会让一个能用的节点变不能用。
 	nodes []string
 	urls  []string // http(s) 链接，由本程序下载后当文本解析
 }
@@ -59,7 +55,7 @@ type extraSources struct {
 // parseExtraSources 解析后台里填的「优选 IP 段」。
 //
 // 每行一条，空行与 `#` 开头的行当注释跳过。任何一行看不懂就**整体报错并
-// 指明第几行** —— 静默忽略是最坏的处理方式：用户会以为设置生效了，测出来
+// 指明第几行**，静默忽略是最坏的处理方式：用户会以为设置生效了，测出来
 // 还是原来那些段，然后怀疑「这个功能根本没用」。
 func parseExtraSources(lines []string) (extraSources, error) {
 	var out extraSources
@@ -86,7 +82,7 @@ func parseExtraSources(lines []string) (extraSources, error) {
 				return out, fmt.Errorf(
 					"第 %d 行「%s」不是合法的 IP 段，正确写法例如 104.16.0.0/13", i+1, line)
 			}
-			// /32 就是个单 IP，归到单 IP 去——采样时位宽为 0 会把它当空段跳掉。
+			// /32 就是个单 IP，归到单 IP 去，采样时位宽为 0 会把它当空段跳掉。
 			if ones, bits := n.Mask.Size(); bits-ones == 0 {
 				if ip := n.IP.To4(); ip != nil && !seen["i:"+ip.String()] {
 					seen["i:"+ip.String()] = true
@@ -219,7 +215,7 @@ func sampleFromCIDRs(cidrs []string, count int) []string {
 // sampleFromSources 按「写全的节点 → 单 IP → 段里随机补足」的顺序生成候选。
 //
 // 前两类不抽样：那是用户（或他给的链接）明确点名的地址，抽样就等于随机丢掉
-// 他想测的那个。同一个 IP 只出现一次，端口不同也算同一个 IP——重复测只是白花时间。
+// 他想测的那个。同一个 IP 只出现一次，端口不同也算同一个 IP，重复测只是白花时间。
 func sampleFromSources(src extraSources, count int) []string {
 	if count <= 0 {
 		count = 600
@@ -290,7 +286,7 @@ const (
 	//
 	// 以前是「总数 600 按段数平分」：用户填 97 个段时每段只剩 6 个，真机实测
 	// 585 个候选里只有 30 个能完成 TCP 握手（约 5%）。参考项目 cf-dns-select
-	// 每个 /48 撒约 540 个，同样的命中率下能捞出几百个可用节点——差距全在采样量。
+	// 每个 /48 撒约 540 个，同样的命中率下能捞出几百个可用节点，差距全在采样量。
 	// 改成每段固定 30 个：97 段约 2900 候选，探测从约 1 分钟涨到 3 分钟左右。
 	ipv6PerPrefix = 30
 
@@ -299,7 +295,7 @@ const (
 	maxIPv6Candidates = 20000
 )
 
-// 和 v4 的 cidrEntry（uint32）分开——v6 主机位最多 128 位，uint32 装不下，
+// 和 v4 的 cidrEntry（uint32）分开，v6 主机位最多 128 位，uint32 装不下，
 // 用 netip.Addr 的 As16() 拿到完整的 128 位再随机填。
 type ipv6Prefix struct {
 	base [16]byte
@@ -309,13 +305,10 @@ type ipv6Prefix struct {
 // sampleFromIPv6CIDRs 每个 v6 段采样 perPrefix 个地址，输出 `[ipv6]:443#US`。
 // 总条数 = perPrefix × 段数，超过 maxIPv6Candidates 时按段顺序截断。
 //
-// 为什么按段固定、不按总数平分：总量固定时段越多每段越少，用户填几十个段
-// 就等于每段只测几个地址，命中率被稀释得很低（真机 97 段 → 每段 6 个 →
-// 585 个候选只通 30 个）。按段固定后每个段都有足够的采样点。
-//
-// 方括号是硬要求：Go 的 parseOutput 用 net.SplitHostPort 拆 host/port，
-// 裸写法 2606:4700::1:443 会因冒号过多拆不开，端口被并进地址（静默错误）。
-// 引擎侧（main.py）已同步改成认 [v6]:port 形式。
+// 按段固定而不是按总数平分：总量固定时段越多每段越少，用户填几十个段就等于每段只测
+// 几个地址（真机 97 段 → 每段 6 个 → 585 个候选只通 30 个）。方括号是硬要求：Go 的
+// parseOutput 用 net.SplitHostPort 拆 host/port，裸写法 2606:4700::1:443 会因冒号过多
+// 拆不开，端口被并进地址（静默错误）。引擎侧已同步改成认 [v6]:port 形式。
 func sampleFromIPv6CIDRs(cidrs []string, perPrefix int) []string {
 	if perPrefix <= 0 {
 		perPrefix = ipv6PerPrefix
@@ -382,16 +375,11 @@ func randomIPv6(p ipv6Prefix) netip.Addr {
 	return netip.AddrFrom16(b)
 }
 
-// parseIPv6CIDRs 从「外部链接下载到的正文」里挑出 IPv6 段。
-//
-// 和 parseExtraSources / addToken 是两条完全独立的解析路：那条只认 IPv4
-// （net.ParseCIDR 之后还要求 To4() 非空），把 v6 段交过去会被静默丢掉，
-// 用户就会看到「链接明明填了，探测还是只用那一个内置段」。
-//
-// 这里仍复用 tokenize 做宽容切分——用户贴的列表常混着中文说明、逗号、
-// 分号和 # 注释；认不出的 token 只记下来做日志，不让整批作废。
-// RFC 3849 的文档示例段 2001:db8::/32 直接排除：它不可能路由到 CF，
-// 采样进去只是白花测速时间（真机 IPv6 阶段①就碰到过一次）。
+// parseIPv6CIDRs 从「外部链接下载到的正文」里挑出 IPv6 段。和 parseExtraSources /
+// addToken 是两条独立的解析路：那条只认 IPv4（ParseCIDR 之后还要求 To4() 非空），
+// 把 v6 段交过去会被静默丢掉。这里复用 tokenize 做宽容切分（用户贴的列表常混着中文
+// 说明、逗号、分号和 # 注释），认不出的 token 只记日志不让整批作废。RFC 3849 的文档
+// 示例段 2001:db8::/32 直接排除：它不可能路由到 CF，采样进去只白花测速时间。
 func parseIPv6CIDRs(text string) (cidrs []string, skipped []string) {
 	docPrefix := netip.MustParsePrefix("2001:db8::/32")
 	seen := make(map[string]bool)
@@ -413,14 +401,10 @@ func parseIPv6CIDRs(text string) (cidrs []string, skipped []string) {
 	return cidrs, skipped
 }
 
-// candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。
-//
-// 三种情形，语义必须清楚区分：
-//  1. 用户没设置自定义来源 → 内置 Cloudflare 官方段（升级前行为，一字未改）；
-//  2. 用户给了 IP 段/单 IP  → **只**从这些里采样；
-//  3. 用户只给了链接       → 本地一个候选都不出，全部交给引擎去拉。
-//     这一条最容易做错：若这里偷偷回落到官方段，用户就会看到「我填了链接，
-//     结果测出来还是原来那些段」，而程序看起来一切正常。
+// candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。三种情形，语义必须
+// 清楚区分：没设置自定义来源 → 内置官方段（升级前行为）；给了 IP 段/单 IP → 只从这些里
+// 采样；只给了链接 → 本地一个候选都不出，全交给引擎去拉。第三条最容易做错：这里偷偷
+// 回落到官方段，用户就会看到「我填了链接，测出来还是原来那些段」而程序看起来一切正常。
 func candidateList(cfg *config.Config, count int) string {
 	var ips []string
 

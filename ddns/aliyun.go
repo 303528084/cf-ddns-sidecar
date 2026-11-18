@@ -64,7 +64,7 @@ func (a *aliyun) Name() string { return "阿里云" }
 // queryRecords 查这条域名下某一类记录（A 或 AAAA），查询与校验共用。
 //
 // 注意 Type 是**服务端过滤条件**：查 AAAA 时阿里云只返回 AAAA，
-// 后面的「删多余」也就删不到 A 记录——这正是我们要的安全边界。
+// 后面的「删多余」也就删不到 A 记录，这正是我们要的安全边界。
 func (a *aliyun) queryRecords(domain, rtype string) ([]aliyunRecord, error) {
 	q := url.Values{}
 	q.Set("Action", "DescribeSubDomainRecords")
@@ -122,7 +122,7 @@ func (a *aliyun) EnsureRecords(domain string, ips []string, opt RecordOptions) e
 	for _, ip := range ips {
 		if rec, ok := have[ip]; ok {
 			// 值已经对了，只差 TTL 就顺手改掉。opt.TTL 为 0 表示
-			// 「用账号默认」，那就不去动它——我们并不知道默认值是多少。
+			// 「用账号默认」，那就不去动它，我们并不知道默认值是多少。
 			if opt.TTL > 0 && rec.TTL != opt.TTL {
 				if err := a.updateRecord(domain, rtype, rec.RecordID, ip, opt.TTL); err != nil {
 					return err

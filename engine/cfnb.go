@@ -1,12 +1,8 @@
 // Package engine 封装「测速」能力的调用。
 //
-// 测速不是我们自己写的：直接复用 xinyitang3/cfnb（MIT）的测速脚本。
-// 它的机制是「多源聚合 → TCP 延迟筛选 → 反代验证（带延迟/抖动）→ 真实带宽测速」，
-// 比单纯 TCP 探测更接近「这个 IP 我的浏览器到底能不能打开」。
-//
-// 我们只做两件事：
-//  1. 按界面上的参数生成 cfnb 的 config.json；
-//  2. 跑完解析它输出的 ip.txt，拿回可用 IP 列表。
+// 测速不是我们自己写的：复用 xinyitang3/cfnb（MIT）的测速脚本，机制是「多源聚合 →
+// TCP 延迟筛选 → 反代验证 → 真实带宽测速」。我们只做两件事：按界面参数生成 cfnb 的
+// config.json；跑完解析它输出的 ip.txt，拿回可用 IP 列表。
 package engine
 
 import (
@@ -30,39 +26,32 @@ type Options struct {
 	TopN                int    // 最终保留的 IP 数量
 	BandwidthCandidates int    // 进入带宽测速的候选数
 	CandidatesURL       string // 本地候选列表地址（Cloudflare 官方段随机采样）
-	// ExtraURLs 是用户在后台填的链接型来源，原样交给引擎自己去拉。
-	// 内容格式不用我们管：cfnb 的 parse_adaptive 已支持纯 IP 列表、
-	// `IP:端口#国家`、以及 JSON 三种。
+	// ExtraURLs 是用户在后台填的链接型来源，原样交给引擎自己去拉。格式不用我们管：
+	// cfnb 的 parse_adaptive 已支持纯 IP 列表、`IP:端口#国家`、以及 JSON 三种。
 	ExtraURLs []string
-	// UseBuiltinSources 决定要不要附带内置的两个外部聚合源
-	// （ipdb.api.030101.xyz、zip.cm.edu.kg）。
-	//
-	// 用户**没有**指定自定义来源时必须为 true，那是原本的行为；
-	// 一旦用户指定了（段/单 IP/链接），就必须为 false —— 这两个源一个能
-	// 吐 12757 个 IP，叠加进来会把用户划定的范围整个淹没，
-	// 表现为「我明明填了段，优选出来还是原来那些」。
+	// UseBuiltinSources 决定要不要附带内置的两个外部聚合源（ipdb.api.030101.xyz、
+	// zip.cm.edu.kg）。用户没指定自定义来源时必须为 true（原本的行为）；一旦指定了
+	// （段/单 IP/链接）就必须为 false，这两个源一个能吐 12757 个 IP，叠加进来会把用户
+	// 划定的范围整个淹没，表现为「明明填了段，优选出来还是原来那些」。
 	UseBuiltinSources bool
-	// Overrides 是用户在「高级设置」里改过的引擎参数，键名见 engine.Schema。
-	//
-	// 它盖在下面 writeCfnbConfig 拼好的基础配置**之后**：基础配置里的那些值
-	// 是我们替用户做的决定（端口只留 443、强制直连、关掉广告行……），
-	// 用户明确改过的才算数。不在这张表里的键一律丢弃，见 ApplyOverrides。
+	// Overrides 是用户在「高级设置」里改过的引擎参数，键名见 engine.Schema。它盖在
+	// writeCfnbConfig 拼好的基础配置之后：那些是我们替用户做的决定（端口只留 443、
+	// 强制直连、关掉广告行……），用户明确改过的才算数。
 	Overrides map[string]any
 }
 
 // Node 是一个优选节点，连同它的质量数据。
 //
 // 速度和延迟本来就在 cfnb 的产出里，只是以前我们让配置把它们关掉了
-// （IP_TXT_SHOW_BANDWIDTH / IP_TXT_SHOW_LATENCY 都写死成 false），
-// 于是界面只能显示一串光秃秃的 IP，用户看不出「为什么第一条排第一」。
-// 打开之后 ip.txt 的行变成这样：
+// （IP_TXT_SHOW_BANDWIDTH / IP_TXT_SHOW_LATENCY 都写死成 false），于是界面只能显示
+// 一串光秃秃的 IP，用户看不出「为什么第一条排第一」。打开之后 ip.txt 的行变成这样：
 //
 //	172.64.229.246:443#US 15.09 Mbps 45.23 ms
 //
 // 这两个数字是**那次测速量出来的真实值**，不是估算也不是补的。
 // 界面要拿它们让用户判断哪个更快，编一个是最坏的一种错。
 // 带宽测速整轮失败时 cfnb 会降级成「按 TCP 延迟排序」，那时候行里
-// 只有延迟没有速度——这里就老实留 0，界面显示「—」。
+// 只有延迟没有速度，这里就老实留 0，界面显示「—」。
 type Node struct {
 	IP    string  `json:"ip"`
 	Speed float64 `json:"speed,omitempty"` // 下行带宽，Mbps
@@ -168,22 +157,17 @@ func writeCfnbConfig(path string, opt Options) error {
 		candidates = 100
 	}
 
-	// 数据源顺序很关键：
-	//  1) 先吃本地候选列表（这一段的内容由用户的「优选 IP 段」决定，
-	//     没设置时就是 Cloudflare 官方段随机采样）——不依赖任何第三方，
-	//     保证即使所有外部源都挂了，测速依然能跑出结果；
-	//  2) 再叠加用户自己填的链接；
-	//  3) 只有用户没指定任何自定义来源时，才带上内置的两个外部聚合源。
-	//     这一条是「只用我给的段」能成立的前提，见 Options.UseBuiltinSources
-	//     的注释——实测 zip.cm.edu.kg 一个源就有 12757 个 IP。
+	// 数据源顺序很关键：先吃本地候选列表（内容由「优选 IP 段」决定，没设置时就是
+	// Cloudflare 官方段随机采样），不依赖任何第三方，保证外部源全挂了也能跑出结果；
+	// 再叠加用户自己填的链接；只有用户没指定任何自定义来源时才带上内置的两个外部
+	// 聚合源（见 Options.UseBuiltinSources，实测一个源就有 12757 个 IP）。
 	sources := make([]map[string]any, 0, 4)
 	if opt.CandidatesURL != "" {
 		sources = append(sources, map[string]any{"url": opt.CandidatesURL, "enabled": true})
 	}
 	for _, u := range opt.ExtraURLs {
-		// 这里再 TrimSpace 一次：web 层保存时已经去过空白，但 cfnb 拿到一个
-		// 带空格的 URL 会静默当成「拉不到数据」，日志只说 0 节点，
-		// 排查起来要去翻它内部实现。多这一步几乎不要成本。
+		// 这里再 TrimSpace 一次：web 层保存时已去过空白，但 cfnb 拿到带空格的 URL
+		// 会静默当成「拉不到数据」，日志只说 0 节点，排查要去翻它内部实现。
 		if u = strings.TrimSpace(u); u == "" {
 			continue
 		}
@@ -237,14 +221,12 @@ func writeCfnbConfig(path string, opt Options) error {
 
 		// 输出内容：IP 后面跟上速度与延迟。
 		//
-		// 这两行以前是 false——当时界面只显示 IP，多出来反而要在解析时丢掉。
-		// 现在界面要显示「速度 15.09 Mbps / 延迟 84.71 ms」，而这是唯一
-		// 能拿到它们的地方：cfnb 不吐 JSON，只吐这个文本文件。
-		//
-		// 打开后每行形如 `172.64.229.246:443#US 15.09 Mbps 45.23 ms`，
-		// parseOutput 按「数值+单位」成对读，顺序变了也不会读错。
-		// 注意 TCP 延迟那一项（IP_TXT_SHOW_LATENCY）始终有值，
-		// HTTP 延迟/抖动（另外两个）需要 HTTP_LATENCY_ENABLED，本产品不开。
+		// 这两行以前是 false，当时界面只显示 IP，多出来反而要在解析时丢掉。
+		// 界面要显示「速度 15.09 Mbps / 延迟 84.71 ms」，而这是唯一能拿到它们的地方：
+		// cfnb 不吐 JSON，只吐这个文本文件。打开后每行形如
+		// `172.64.229.246:443#US 15.09 Mbps 45.23 ms`，parseOutput 按「数值+单位」
+		// 成对读，顺序变了也不会读错。TCP 延迟那项始终有值；HTTP 延迟/抖动需要
+		// HTTP_LATENCY_ENABLED，本产品不开。
 		"IP_TXT_SHOW_BANDWIDTH":    true,
 		"IP_TXT_SHOW_LATENCY":      true,
 		"IP_TXT_SHOW_HTTP_LATENCY": false,
@@ -254,11 +236,9 @@ func writeCfnbConfig(path string, opt Options) error {
 		"AD_PERLINE_ENABLED":       false,
 	}
 
-	// 用户「高级设置」里改过的参数盖在最上面。
-	//
-	// 放在这里而不是逐个字段判断，是因为基础配置是「我们替用户做的决定」，
-	// 而用户明确改过的值优先级更高。ApplyOverrides 只认 engine.Schema 里的键，
-	// 手改 config.json 塞进来的奇怪参数会被丢掉。
+	// 用户「高级设置」里改过的参数盖在最上面：基础配置是我们替用户做的决定，用户明确
+	// 改过的优先级更高。ApplyOverrides 只认 engine.Schema 里的键，手改 config.json
+	// 塞进来的奇怪参数会被丢掉。
 	ApplyOverrides(cfg, opt.Overrides)
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -268,16 +248,15 @@ func writeCfnbConfig(path string, opt Options) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-// parseOutput 解析 cfnb 输出的 ip.txt，返回 IP 列表与带质量数据的节点列表。
-//
-// 每行的格式由 cfnb 的 write_ip_txt 决定：
+// parseOutput 解析 cfnb 输出的 ip.txt，返回 IP 列表与带质量数据的节点列表。每行格式由
+// cfnb 的 write_ip_txt 决定，主要有三种：
 //
 //	172.64.229.246:443#US 15.09 Mbps 45.23 ms
 //	172.64.229.246:443#US 45.23 ms          ← 带宽测速整轮失败、降级排序时
 //	104.16.0.87:443#US                      ← 两个开关都没命中时（老配置兜底）
 //
-// 所以不能按固定列号取值：一律「取第一个字段当节点，剩下按『数值 单位』成对扫」。
-// 单位只认 Mbps 和 ms；认不出来的词直接跳过，绝不让一个没见过的字段把整行读崩。
+// 所以不能按固定列号取值：一律「取第一个字段当节点，剩下按『数值 单位』成对扫」。单位
+// 只认 Mbps 和 ms，认不出来的词直接跳过，绝不让一个没见过的字段把整行读崩。
 func parseOutput(path string) ([]string, []Node, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -306,7 +285,7 @@ func parseOutput(path string) ([]string, []Node, error) {
 			token = token[:i]
 		}
 		// 节点串约定：v4 是 1.2.3.4:443，v6 是 [2606:4700::1]:443（必须带方括号）。
-		// 判断依据就是有没有方括号——裸 v6 串 2606:4700::2:443 拆不开、
+		// 判断依据就是有没有方括号，裸 v6 串 2606:4700::2:443 拆不开、
 		// 又可能恰好是合法 v6（::2:443），会把端口并进地址造成静默错误，一律拒绝。
 		ip := token
 		bracketed := strings.HasPrefix(token, "[")
@@ -332,7 +311,7 @@ func parseOutput(path string) ([]string, []Node, error) {
 			v, err := strconv.ParseFloat(fields[i], 64)
 			if err != nil {
 				// 不是「数值 单位」的排布，往后挪一个再看，
-				// 不 break —— 少读一个数字总比整行丢掉好。
+				// 不 break，少读一个数字总比整行丢掉好。
 				continue
 			}
 			switch strings.ToLower(fields[i+1]) {
@@ -355,7 +334,7 @@ func parseOutput(path string) ([]string, []Node, error) {
 
 // looksLikeIP 校验一个字符串是不是合法的 IP（v4 或 v6）。
 //
-// 本地补丁（cf-ddns-sidecar）：原来是"只查字符集"的轻量校验——任何含冒号的串
+// 本地补丁（cf-ddns-sidecar）：原来是"只查字符集"的轻量校验，任何含冒号的串
 // 都放过。做 v6 优选后这成了隐患：裸 v6 串 2606:4700::1:443 因 SplitHostPort
 // 拆不开，端口会被并进地址，而这个畸形串靠字符集校验照样过关（静默错误）。
 // 换成 netip.ParseAddr 做真校验，v4 结果不变，v6 杜绝畸形串蒙混。

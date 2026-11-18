@@ -1,35 +1,27 @@
 package web
 
-// 「这个域名到底是不是走 Cloudflare 的边缘」——保存域名时用它拦一道。
+// 「这个域名到底是不是走 Cloudflare 的边缘」，保存域名时用它拦一道。
 //
-// 为什么需要这一道：本产品做的事是「把域名在局域网里改指向一个优选出来的
-// Cloudflare 边缘 IP」。如果那个域名根本不走 Cloudflare，改指向之后浏览器
-// 连到的是一个不认识这个站点的 Cloudflare 节点，页面直接打不开（1001 /
-// 1034 那类错误）。用户很难自己想到是「域名压根没接 Cloudflare」，所以
-// 在添加那一刻就拦住，比事后看错误页好得多。
+// 本产品做的事是「把域名在局域网里改指向一个优选出来的 CF 边缘 IP」。如果那个域名
+// 根本不走 Cloudflare，改指向之后浏览器连到的是一个不认识这个站点的节点，页面直接
+// 打不开（1001 / 1034 那类错误），而用户很难想到是「域名压根没接 Cloudflare」。
 //
 // 判断分两层，先便宜后贵：
 //
-//	第一层：把域名解析成 IP，看落在不在 Cloudflare 公布的段里。
-//	        域名走 Cloudflare 时（橙云），它对外公布的 A 记录**就是** CF 的
-//	        边缘 IP——这一条足以回答问题，而且不发任何 HTTPS 请求。
-//	第二层：第一层说不走时，再真发一次 HEAD 请求，看响应头里有没有
-//	        `server: cloudflare` 或 `cf-ray`。这一层能兜住两种情况：我们手抄的
-//	        段表过期了（Cloudflare 又开了新段），以及某些域名解析出来的是
-//	        第三方的 IP、但实际仍由 Cloudflare 边缘代理。
+//	第一层：把域名解析成 IP，看落在不在 CF 公布的段里。走 CF 的域名（橙云）对外
+//	        公布的 A 记录就是 CF 的边缘 IP，这一条足以回答，且不发 HTTPS 请求。
+//	第二层：第一层说不走时再发一次 HEAD，看响应头有没有 `server: cloudflare` 或
+//	        `cf-ray`。这层能兜住「手抄的段表过期了」和「解析出来是第三方 IP 但实际
+//	        仍由 CF 边缘代理」。
 //
-// 两层都不认才拒绝。为什么不用「NS 是不是 Cloudflare 的域名服务器」判断：
-// NS 说明的是「谁在管这个域名的解析」，和「请求会不会经过 Cloudflare 边缘」
-// 不是一回事——NS 在别处、用 CNAME 接到 Cloudflare 后面的站很常见，用 NS
-// 判会误杀；反过来 NS 在 Cloudflare 但只开了灰云（DNS only）的站，解析结果
-// 是源站 IP，改指向边缘 IP 一样打不开，用 NS 判会误放。
+// 两层都不认才拒绝。不用「NS 是不是 CF 的域名服务器」判断：NS 说的是「谁在管解析」，
+// 和「请求会不会经过 CF 边缘」不是一回事。NS 在别处、用 CNAME 接到 CF 后面的站很常见，
+// 用 NS 判会误杀；反过来 NS 在 CF 但只开灰云（DNS only）的站解析到源站 IP，改指向
+// 边缘 IP 一样打不开，用 NS 判会误放。
 //
-// 第二层的做法（HEAD 请求 + server/cf-ray 响应头 + 从 cf-ray 尾部取机房代码）
-// 借鉴自 cf-dns-select 的 testCloudflareDomain（GPL-3.0，与本项目同许可，
-// 见 https://github.com/neon9809/cf-dns-select 的 web/server.go；本项目内的
-// 出处声明和「复用/未复用清单」在 third_party/cf-dns-select/README.md）。
-// 那边只做第二层、且是「点检测按钮时查一个域名」；这里是保存时批量查，
-// 所以补了第一层、并发和「查不了」这一种第三种结果。
+// 第二层借鉴自 cf-dns-select 的 testCloudflareDomain（GPL-3.0，与本项目同许可，
+// 见 third_party/cf-dns-select/README.md）。那边只做第二层、点按钮时查一个域名；
+// 这里是保存时批量查，所以补了第一层、并发和「查不了」这第三种结果。
 
 import (
 	"context"
@@ -53,11 +45,9 @@ const (
 	domainBatchTimeout = 8 * time.Second
 )
 
-// cfV6Net 是 Cloudflare 的 IPv6 段。
-//
-// 只写这一条：它的 IPv4 段有十几条（见 eiv.go 的 cloudflareIPv4），而 v6
-// 对外服务的地址全部落在 2606:4700::/32 里。多抄几条手写的 v6 段只会多几个
-// 抄错的机会，对判断没有帮助。
+// cfV6Net 是 Cloudflare 的 IPv6 段。只写这一条：v4 段有十几条（见 eiv.go 的
+// cloudflareIPv4），而 v6 对外服务的地址全部落在 2606:4700::/32 里，多抄几条只会多
+// 几个抄错的机会。
 var cfV6Net = func() *net.IPNet {
 	_, n, err := net.ParseCIDR("2606:4700::/32")
 	if err != nil {
@@ -67,11 +57,9 @@ var cfV6Net = func() *net.IPNet {
 }()
 
 // isCloudflareIP 判断一个 IP 是否落在 Cloudflare 的段里。
-//
-// 和 eiv.go 里的 inOfficialV4 有一处关键差别：那个函数遇到 IPv6 一律返回
-// true（"不是 IPv4 就放行，交给实测"），因为它要避免误删能用的 v6 节点。
-// 这里的结论是「拦下用户、不让他添加」，方向正好相反——认不出来就得说
-// 「不是」。所以不能复用那个函数，宁可多写十行。
+// 和 eiv.go 的 inOfficialV4 有一处关键差别：那个遇到 IPv6 一律返回 true（不是 IPv4 就
+// 放行，交给实测），因为要避免误删能用的 v6 节点。这里的结论是「拦下用户、不让他添加」，
+// 方向正好相反，认不出来就得说「不是」，所以不能复用。
 func isCloudflareIP(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -90,31 +78,25 @@ func isCloudflareIP(ip net.IP) bool {
 // DomainCheck 是一个域名的检查结果，直接作为接口返回值给界面用。
 type DomainCheck struct {
 	Domain string `json:"domain"`
-	// OK 表示「确认走 Cloudflare 边缘」。
-	//
-	// 序列化成 `passed` 而不是 `ok`：接口响应里已经有一个 `ok`（表示「这次
-	// 请求本身成功」），两者混在一起，前端写 res.ok 时根本分不清是哪一个。
+	// OK 表示「确认走 Cloudflare 边缘」。序列化成 `passed` 而不是 `ok`：响应里已经有一个
+	// `ok`（表示这次请求本身成功），混在一起前端分不清是哪一个。
 	OK bool `json:"passed"`
-	// Unknown 表示「没查出来」——DNS 超时、网络不通、域名暂时解析不了。
-	//
-	// 它和 OK=false 必须分开：OK=false 是「查清楚了，不是 Cloudflare」，
-	// 可以据此拒绝保存；Unknown 是「我们没本事判断」，这种情况下把人家的
-	// 域名悄悄删掉是最糟的选择（用户什么都没做错，只是当时网络抖了一下）。
+	// Unknown 表示「没查出来」：DNS 超时、网络不通。它和 OK=false 必须分开：后者是
+	// 「查清楚了，不是 Cloudflare」，可以据此拒存；Unknown 是「我们没本事判断」，这种
+	// 情况下把人家的域名悄悄删掉是最糟的选择。
 	Unknown bool `json:"unknown"`
-	// IPs 是解析出来的地址，界面上要显示给用户看（「解析到 220.181.38.148，
-	// 不是 Cloudflare 的段」比「不是 Cloudflare」有用得多）。
+	// IPs 是解析出来的地址，界面上要显示给用户看（「解析到 220.181.38.148，不是
+	// Cloudflare 的段」比「不是 Cloudflare」有用得多）。
 	IPs []string `json:"ips,omitempty"`
-	// Colo 是从响应头 cf-ray 尾部取到的机房三字码（如 NRT / LAX / FRA）。
-	// 只在第二层拿到时才有值。
+	// Colo 是从响应头 cf-ray 尾部取到的机房三字码（如 NRT / LAX / FRA），只在第二层
+	// 拿到时才有值。
 	Colo string `json:"colo,omitempty"`
 	// Reason 是一句给用户看的中文说明。
 	Reason string `json:"reason"`
 }
 
-// lookupIPFunc 是解析函数的间接引用，只为测试能把它换成桩。
-//
-// 单测里不能真去查 DNS（CI 上不一定有网络，结果也不稳定），而这里最需要
-// 验的恰恰是「哪些情况该拒、哪些该放过」的判断逻辑。
+// lookupIPFunc 是解析函数的间接引用，只为测试能换成桩：单测里不能真去查 DNS（CI 上
+// 不一定有网络），而这里最需要验的恰恰是「哪些该拒、哪些该放过」。
 var lookupIPFunc = func(ctx context.Context, host string) ([]net.IP, error) {
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
@@ -123,11 +105,8 @@ var lookupIPFunc = func(ctx context.Context, host string) ([]net.IP, error) {
 var probeHeadersFunc = probeCloudflareHeaders
 
 // probeCloudflareHeaders 发一次 HEAD 请求，看响应头里有没有 Cloudflare 的痕迹。
-//
-// 返回 (isCF, colo, err)。判断依据取自 cf-dns-select：`server: cloudflare`
-// 或存在 `cf-ray` 头都算——两个都拿不到才算不是。
-//
-// 为什么是 HEAD：只要响应头，不要正文。站点再大也不会多传一个字节。
+// 返回 (isCF, colo, err)。判断依据取自 cf-dns-select：`server: cloudflare` 或存在
+// `cf-ray` 头都算，两个都拿不到才算不是。用 HEAD 是因为只要响应头、不要正文。
 func probeCloudflareHeaders(ctx context.Context, domain string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, domainHTTPTimeout)
 	defer cancel()
@@ -219,7 +198,7 @@ func checkDomainEdge(ctx context.Context, domain string) DomainCheck {
 	}
 
 	// 第二层：解析到了 IP 但都不是 Cloudflare 的段。可能是我们的段表过期，
-	// 也可能这个站确实由 Cloudflare 代理但解析结果落在别处——真发一次请求
+	// 也可能这个站确实由 Cloudflare 代理但解析结果落在别处，真发一次请求
 	// 看响应头，比只看 IP 表可靠。
 	isCF, colo, err := probeHeadersFunc(ctx, domain)
 	if isCF {
@@ -259,20 +238,18 @@ func dnsErrText(err error) string {
 	return msg
 }
 
-// httpErrText 把探测阶段的错误压短，并且翻成一句人话。
-//
-// 完整错误里带着 `Get "https://xxx": dial tcp 1.2.3.4:443: connect: connection
-// refused` 这种内容，对用户没有意义，只留最后一段原因。剩下那几种最常见的
-// 还要再翻一次：`EOF` 三个字母摆在界面上，等于什么都没说。
+// httpErrText 把探测阶段的错误压短并翻成一句人话。完整错误里带着
+// `Get "https://xxx": dial tcp 1.2.3.4:443: connect: connection refused` 这种内容，
+// 对用户没有意义，只留最后一段原因；最常见的几种还要再翻一次，`EOF` 三个字母摆在
+// 界面上等于什么都没说。
 func httpErrText(err error) string {
 	if err == nil {
 		return ""
 	}
 	msg := err.Error()
 	switch {
-	// 注意不能只判 `msg == "EOF"`：真实错误是被 url.Error 包过的，形如
-	// `Get "https://xxx": EOF`。按「以 EOF 结尾」判才接得住，
-	// `unexpected EOF` 也一并落在这一条里。
+	// 不能只判 `msg == "EOF"`：真实错误被 url.Error 包过，形如 `Get "https://xxx": EOF`，
+	// 按「以 EOF 结尾」判才接得住，`unexpected EOF` 也一并落在这一条里。
 	case strings.HasSuffix(msg, "EOF"):
 		return "连接被中断"
 	case strings.Contains(msg, "connection reset"):

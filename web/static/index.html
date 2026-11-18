@@ -16,7 +16,10 @@
     --line:#e7eaef; --line2:#eef1f5;
     --accent:#3b5bdb; --accent-soft:#eef1ff;
     --ok:#12a150; --ok-soft:#e9f8ef; --warn:#c77700; --warn-soft:#fff5e6; --err:#d92d20;
-    --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px -12px rgba(16,24,40,.12);
+    /* 阴影只给浮层（日志抽屉、下拉面板、问号气泡）。卡片是「平」的，
+       靠 1px 描边和分隔线分层——这是工具类后台的常见做法，也是它和
+       演示页最直接的区别：演示页靠柔光阴影撑立体感，工具靠线。 */
+    --shadow-pop:0 6px 20px -6px rgba(16,24,40,.18);
     /* IP、速度、延迟这些数字一律用等宽字体：位数一变不会左右跳，
        一列数字上下对齐才看得出一行比一行差多少。 */
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
@@ -27,7 +30,7 @@
       --line:#242c38; --line2:#1e252f;
       --accent:#7d9bff; --accent-soft:#1b2438;
       --ok:#4ade80; --ok-soft:#14261c; --warn:#fbbf24; --warn-soft:#2a2113; --err:#f87171;
-      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+      --shadow-pop:0 6px 20px -6px rgba(0,0,0,.5);
     }
   }
   *{box-sizing:border-box}
@@ -39,135 +42,124 @@
   .hidden{display:none !important}
   a{color:var(--accent);text-decoration:none}
 
-  /* ---------- 登录 ---------- */
   /* ---------- 登录页 ----------
-     原来的问题：图标/标题/副标题/输入框/按钮 五样全部左对齐堆成一根竖线，
-     卡片四周留白很大、内部却很挤，整页一片死灰没有层次，密码还看不见。
-     改法：顶部一条主色渐变（和概览卡同一语言）+ 图标与标题并排成品牌区 +
-     输入框带「显示密码」+ 错误信息就地显示在输入框下面（toast 会消失，
-     而「为什么进不去」这句话得留在原地）。 */
+     一页只有一件事（输密码），所以不加装饰：没有顶部渐变光晕、
+     没有三色渐变条，就是一张描边卡片摆在灰底上。
+     输入框带「显示密码」，错误信息就地显示在输入框下面
+     （toast 会消失，而「为什么进不去」这句话得留在原地）。 */
   .login{
     position:fixed;inset:0;z-index:200;display:grid;place-items:center;padding:24px;
-    background:
-      radial-gradient(1000px 520px at 50% -14%, #e7eeff 0%, rgba(231,238,255,0) 62%),
-      var(--bg);
+    background:var(--bg);
   }
   .login .box{
-    width:100%;max-width:384px;background:var(--card);border:1px solid var(--line);
-    border-radius:18px;padding:30px 30px 24px;position:relative;overflow:hidden;
-    box-shadow:0 1px 2px rgba(16,24,40,.04), 0 24px 48px -20px rgba(16,24,40,.20);
+    width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);
+    border-radius:8px;padding:26px 26px 20px;
   }
-  .login .box::before{
-    content:"";position:absolute;inset:0 0 auto 0;height:3px;
-    background:linear-gradient(90deg,#4c6ef5,#7048e8 45%,#12b886);
-  }
-  .login .brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+  .login .brand{display:flex;align-items:center;gap:11px;margin-bottom:22px}
   .login .mark{
-    width:42px;height:42px;flex:none;border-radius:13px;display:grid;place-items:center;
-    background:linear-gradient(150deg,#4c6ef5,#3b5bdb);
-    box-shadow:0 6px 16px -6px rgba(59,91,219,.65);
+    width:36px;height:36px;flex:none;border-radius:8px;display:grid;place-items:center;
+    background:var(--accent);
   }
-  .login h1{font-size:16.5px;margin:0;font-weight:650;letter-spacing:-.2px;line-height:1.3}
-  .login .who{font-size:12px;color:var(--dim);margin-top:3px}
-  .login label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:7px;font-weight:500}
+  .login h1{font-size:15.5px;margin:0;font-weight:600;line-height:1.3}
+  .login .who{font-size:11.5px;color:var(--dim);margin-top:2px}
+  .login label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:500}
   .login .field{position:relative}
   .login input{
-    width:100%;height:44px;padding:0 44px 0 13px;border:1px solid var(--line);border-radius:11px;
-    background:var(--card);color:var(--text);font-size:14px;font-family:inherit;transition:.15s;
+    width:100%;height:40px;padding:0 40px 0 11px;border:1px solid var(--line);border-radius:6px;
+    background:var(--card);color:var(--text);font-size:14px;font-family:inherit;transition:.13s;
   }
   .login input::placeholder{color:var(--dim)}
   .login input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,91,219,.12)}
   /* 密码错的时候整框变红，比只弹一句 toast 更容易对上「是这一格的问题」 */
   .login input.bad{border-color:var(--err);box-shadow:0 0 0 3px rgba(217,45,32,.1)}
   .login .eye{
-    position:absolute;right:6px;top:50%;transform:translateY(-50%);
-    width:32px;height:32px;border:none;background:transparent;color:var(--dim);
-    border-radius:8px;cursor:pointer;display:grid;place-items:center;padding:0;
+    position:absolute;right:4px;top:50%;transform:translateY(-50%);
+    width:30px;height:30px;border:none;background:transparent;color:var(--dim);
+    border-radius:6px;cursor:pointer;display:grid;place-items:center;padding:0;
   }
   .login .eye:hover{color:var(--accent);background:var(--accent-soft)}
   .login .eye.on{color:var(--accent)}
   /* 固定 17px 高：错误出现/消失时按钮不会上下跳 */
-  .login .err{font-size:12px;color:var(--err);min-height:17px;margin-top:7px;line-height:1.4}
+  .login .err{font-size:12px;color:var(--err);min-height:17px;margin-top:6px;line-height:1.4}
   .login button.go{
-    width:100%;height:44px;margin-top:6px;border:1px solid var(--accent);border-radius:11px;
+    width:100%;height:40px;margin-top:6px;border:1px solid var(--accent);border-radius:6px;
     background:var(--accent);color:#fff;font-size:14px;font-weight:500;cursor:pointer;
-    font-family:inherit;box-shadow:0 2px 8px -2px rgba(59,91,219,.45);transition:.15s;
+    font-family:inherit;transition:.13s;
   }
   .login button.go:hover{filter:brightness(1.07)}
   .login button.go:disabled{opacity:.65;cursor:default}
   .login .foot{
-    margin-top:20px;padding-top:15px;border-top:1px solid var(--line2);
-    font-size:11.5px;color:var(--dim);line-height:1.65;
-  }
-  @media (prefers-color-scheme: dark){
-    .login{
-      background:
-        radial-gradient(1000px 520px at 50% -14%, #1a2340 0%, rgba(26,35,64,0) 62%),
-        var(--bg);
-    }
+    margin-top:18px;padding-top:13px;border-top:1px solid var(--line2);
+    font-size:11.5px;color:var(--dim);line-height:1.6;
   }
 
   /* ---------- 布局 ---------- */
   .shell{display:flex;min-height:100vh}
 
   .side{
-    width:236px;flex:none;background:var(--card);border-right:1px solid var(--line);
-    padding:20px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
+    width:200px;flex:none;background:var(--card);border-right:1px solid var(--line);
+    padding:16px 10px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   }
-  .brand{display:flex;align-items:center;gap:10px;padding:0 6px 20px}
+  .brand{display:flex;align-items:center;gap:9px;padding:0 6px 16px}
   .brand .mark{
-    width:32px;height:32px;border-radius:9px;flex:none;background:linear-gradient(140deg,#4c6ef5,#7048e8);
-    display:grid;place-items:center;box-shadow:0 4px 12px -4px rgba(76,110,245,.55);
+    width:28px;height:28px;border-radius:7px;flex:none;background:var(--accent);
+    display:grid;place-items:center;
   }
-  .brand b{display:block;font-size:13.5px;line-height:1.35}
-  .brand span{font-size:11px;color:var(--dim)}
-  .side-label{font-size:10.5px;letter-spacing:.9px;color:var(--dim);padding:0 10px 8px}
-  .nav{display:flex;flex-direction:column;gap:2px}
+  .brand b{display:block;font-size:13px;line-height:1.3}
+  .brand span{font-size:10.5px;color:var(--dim)}
+  .nav{display:flex;flex-direction:column;gap:1px}
   .nav a{
-    display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
-    color:#4a5462;font-size:13px;cursor:pointer;white-space:nowrap;
+    display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:6px;
+    color:var(--muted);font-size:12.5px;cursor:pointer;white-space:nowrap;
   }
-  .nav a:hover{background:var(--line2)}
+  .nav a:hover{background:var(--line2);color:var(--text)}
   .nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
-  .nav a svg{flex:none;opacity:.9}
-  .side-foot{margin-top:auto;padding:10px;border-top:1px solid var(--line2);font-size:11.5px;color:var(--dim)}
-  .side-foot .row{display:flex;align-items:center;gap:6px;margin-bottom:3px}
-  .pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14);flex:none}
+  .nav a svg{flex:none;opacity:.85}
+  .side-foot{margin-top:auto;padding:8px 9px 0;border-top:1px solid var(--line2);font-size:10.5px;color:var(--dim)}
 
-  .content{flex:1;min-width:0;padding:0 32px 90px}
+  .content{flex:1;min-width:0;padding:0 28px 96px}
   .head{
-    display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;
-    padding:22px 0 18px;position:sticky;top:0;z-index:20;
-    background:var(--bg);
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:18px 0 14px;position:sticky;top:0;z-index:20;
+    background:var(--bg);border-bottom:1px solid var(--line);
   }
-  .head h1{font-size:21px;margin:0 0 3px;font-weight:650;letter-spacing:-.2px}
-  .head p{margin:0;font-size:12.5px;color:var(--muted)}
+  .head h1{font-size:17px;margin:0;font-weight:600}
+  .head p{margin:3px 0 0;font-size:12px;color:var(--dim);max-width:56ch}
   .head .right{margin-left:auto;display:flex;gap:8px;align-items:center}
 
-  /* ---------- 按钮 ---------- */
+  /* ---------- 按钮 ----------
+     和输入框的区别要一眼看出来：输入框是白底、深描边、没有底色；
+     按钮是浅灰底（--line2）、描边略深、字加粗半档。原来两者都是
+     「白底 + 1px 边框 + 圆角」，所以按钮看着像空着的文本框。 */
   .btn{
-    display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 15px;border-radius:9px;
-    border:1px solid var(--line);background:var(--card);color:var(--text);font-size:13px;cursor:pointer;
-    font-family:inherit;transition:.15s;box-shadow:0 1px 1px rgba(16,24,40,.03);white-space:nowrap;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 13px;border-radius:6px;
+    border:1px solid #d5dbe5;background:var(--line2);color:var(--text);font-size:12.5px;font-weight:500;
+    cursor:pointer;font-family:inherit;transition:.13s;white-space:nowrap;
   }
-  .btn:hover{border-color:#cfd6e2;background:var(--line2)}
-  .btn:disabled{opacity:.6;cursor:default}
-  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500;
-    box-shadow:0 2px 6px -1px rgba(59,91,219,.4)}
-  .btn.primary:hover{filter:brightness(1.07)}
+  .btn:hover{background:var(--line);border-color:#c3cbd8}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.55;cursor:default;transform:none}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+  .btn.primary:hover{filter:brightness(1.08);border-color:var(--accent)}
   /* 「添加」在检测通过之前必须是**灰的**——用户原话就是「没检测之前，这个
      添加按钮是灰的，不能点」。只把不透明度降到 .6 还是蓝的，看着像「能点，
      只是淡了一点」，得换成中性的灰底灰字才一眼看出点不动。 */
   .btn.primary:disabled{
-    background:var(--line2);border-color:var(--line);color:var(--dim);box-shadow:none;
+    background:var(--line2);border-color:var(--line);color:var(--dim);
   }
-  .btn.sm{padding:6px 11px;font-size:12.5px;border-radius:8px}
-  .btn.flat{box-shadow:none;background:transparent;border-color:transparent}
-  .btn.flat:hover{background:var(--line2)}
+  .btn.sm{padding:5px 10px;font-size:12px}
+  .btn.flat{background:transparent;border-color:transparent;color:var(--muted);font-weight:400}
+  .btn.flat:hover{background:var(--line2);border-color:var(--line);color:var(--text)}
+  /* 卡片里的一排操作按钮（「测试密钥」「立即更新一次」「导出/恢复」）。
+     原来是借 .hero-actions 再写三行内联样式把它的上边框和内边距压掉，
+     现在单起一个类，改这一处就够了。 */
+  .act-row{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}
   @media (prefers-color-scheme: dark){
     /* 深色主题里 --accent 换成了浅蓝（#7d9bff），白字压上去对比度只有
        2:1 左右，按钮上的字基本糊成一片。改成深色字，对比度立刻回到 8:1。
        登录页那个「登录」按钮同理。 */
+    .btn{border-color:#2f3947}
+    .btn:hover{border-color:#3c485a}
     .btn.primary{color:#0f1319}
     .login button.go{color:#0f1319}
   }
@@ -179,12 +171,12 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 
   /* ---------- 卡片 ---------- */
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin-bottom:16px}
-  .card-h{padding:15px 20px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  .card-h h2{margin:0;font-size:14px;font-weight:600}
-  .card-h .sub{font-size:12px;color:var(--dim)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:12px}
+  .card-h{padding:11px 16px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card-h h2{margin:0;font-size:13.5px;font-weight:600}
+  .card-h .sub{font-size:11.5px;color:var(--dim)}
   .card-h .right{margin-left:auto;display:flex;gap:8px;align-items:center}
-  .card-b{padding:20px}
+  .card-b{padding:16px}
 
   .tag{font-size:11px;padding:2px 8px;border-radius:6px;white-space:nowrap;background:var(--line2);color:var(--muted)}
   .tag.ok{background:var(--ok-soft);color:var(--ok)}
@@ -195,18 +187,27 @@
   .runmeta .sep{color:var(--line)}
 
   /* ---------- 表单 ---------- */
-  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .field{margin-bottom:16px}
-  .field:last-child{margin-bottom:0}
-  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px;font-weight:500}
+  /* 用 minmax(0,1fr) 而不是 1fr：1fr 的最小宽度是内容宽度，
+     一行里某个输入框的 placeholder 长一点，那一列就会被撑宽，
+     两列边界对不齐（用户名/密码那组就是这么歪的）。 */
+  .form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 14px}
+  .field{margin-bottom:14px}
+  /* 只削掉卡片里最后一个字段的下边距，别把「凭据区最后一个字段」也算进去——
+     那样它下面那排字段的标签会被顶到上一行的说明文字上，中间一点缝都没有。 */
+  .card-b > .field:last-child{margin-bottom:0}
+  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px;font-weight:500}
   input[type=text],input[type=password],input[type=number],select,textarea{
-    width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--card);
-    color:var(--text);font-size:13.5px;font-family:inherit;transition:.15s;
+    width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);
+    color:var(--text);font-size:13px;font-family:inherit;transition:.13s;
   }
   input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,91,219,.12)}
   textarea{font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical}
-  .hint{font-size:11.5px;color:var(--dim);margin-top:6px;line-height:1.6}
+  .hint{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.6;max-width:74ch}
   .hint b{color:var(--muted);font-weight:500}
+  /* 长得像链接、干的是按钮的活（「收起」）。原来借的是 .hint 的灰色，
+     跟旁边那行说明长得一样，点不点得动看不出来。 */
+  .lnk{font-size:11.5px;color:var(--accent);cursor:pointer;align-self:center}
+  .lnk:hover{text-decoration:underline}
   code{background:var(--line2);padding:1px 5px;border-radius:4px;font-size:11.5px}
 
   .switch{display:flex;align-items:center;gap:9px}
@@ -216,7 +217,7 @@
   /* ---------- 域名：上面一个添加框，下面一张已添加列表 ---------- */
   /* 添加框：输入框 + 「检测」+「添加」并排。添加按钮在检测通过之前是灰的、
      点不动——不先确认它走 Cloudflare 就不许加，这是明确要的交互。 */
-  .addbox{border:1px solid var(--line);border-radius:12px;padding:13px 14px 12px;background:var(--line2)}
+  .addbox{border:1px solid var(--line);border-radius:6px;padding:11px 12px 10px;background:var(--line2)}
   .addbox .arow{display:flex;gap:8px;align-items:center}
   .addbox input[type=text]{flex:1;min-width:0;background:var(--card)}
   /* 检查结果的颜色只改字和边框，不改底色：写死一个浅红在深色模式下
@@ -241,7 +242,7 @@
   }
 
   /* 已添加列表 */
-  .dom-list{margin-top:14px;border:1px solid var(--line2);border-radius:11px;overflow:hidden}
+  .dom-list{margin-top:12px;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
   .dom-list:empty{display:none}
   .dom-item{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--line2);background:var(--card)}
   .dom-item:last-child{border-bottom:none}
@@ -268,7 +269,7 @@
 
   /* 告警条 */
   .banner{
-    padding:12px 15px;border-radius:11px;font-size:12.5px;line-height:1.65;margin-bottom:12px;
+    padding:10px 13px;border-radius:6px;font-size:12.5px;line-height:1.6;margin-bottom:12px;
     background:var(--line2);border:1px solid var(--line);
   }
   .banner b{font-weight:600}
@@ -294,7 +295,7 @@
   .kv .v2{word-break:break-all}
 
   /* AdGuard 重写表 */
-  .rw-list{margin-top:10px;border:1px solid var(--line2);border-radius:11px;overflow:hidden}
+  .rw-list{margin-top:10px;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
   .rw-item{display:flex;align-items:center;gap:10px;padding:9px 13px;font-size:12.5px;
     border-bottom:1px solid var(--line2);background:var(--ok-soft)}
   .rw-item:last-child{border-bottom:none}
@@ -317,8 +318,8 @@
   /* ---------- 日志抽屉 ---------- */
   .drawer{
     position:fixed;right:20px;bottom:20px;width:560px;max-width:calc(100vw - 40px);
-    background:var(--card);border:1px solid var(--line);border-radius:14px;
-    box-shadow:0 20px 50px -16px rgba(16,24,40,.32);z-index:60;overflow:hidden;
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    box-shadow:var(--shadow-pop);z-index:60;overflow:hidden;
   }
   .drawer.collapsed{width:300px}
   .drawer.collapsed .drawer-b{display:none}
@@ -347,7 +348,7 @@
   /* ---------- toast ---------- */
   .toast{
     position:fixed;left:50%;bottom:26px;transform:translate(-50%,16px);z-index:300;
-    background:#1b2230;color:#fff;padding:10px 18px;border-radius:11px;font-size:13px;
+    background:#1b2230;color:#fff;padding:9px 16px;border-radius:6px;font-size:12.5px;
     opacity:0;pointer-events:none;transition:.22s;
     /* width:max-content 是必须的。只有 left:50% 而没有 right 时，固定定位元素
        的「收缩到合适」是按「从 50% 到右边缘」这段可用宽度算的——390px 的手机
@@ -362,12 +363,12 @@
   /* ---------- 概览页：四张独立指标卡 ----------
      数值全部来自 --accent/--ok/--line 这一套既有令牌，所以浅色和深色
      两套主题都不用另写一份配色。 */
-  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
   .kpi{
-    background:var(--card);border:1px solid var(--line);border-radius:14px;
-    padding:14px 16px;box-shadow:var(--shadow);position:relative;overflow:hidden;min-width:0;
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;position:relative;min-width:0;
   }
-  .kpi .k{font-size:11.5px;color:var(--dim);letter-spacing:.3px;margin-bottom:6px}
+  .kpi .k{font-size:11.5px;color:var(--dim);margin-bottom:5px}
   .kpi .v{
     font-size:19px;font-weight:600;letter-spacing:.2px;line-height:1.25;
     font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -378,13 +379,10 @@
   .kpi .v .miss{color:var(--dim)}
   .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  /* 第一张（最优 IP）点出来：极淡主色底 + 主色描边 + 右上角一团柔光。
-     这是方案 A 那张深蓝渐变卡的浅色对应物——同一个位置、同一个意思。 */
-  .kpi.hl{background:linear-gradient(150deg,#f4f7ff,var(--card) 62%);border-color:#dbe2fb}
-  .kpi.hl::after{
-    content:"";position:absolute;right:-32px;top:-32px;width:112px;height:112px;border-radius:50%;
-    background:radial-gradient(circle,rgba(59,91,219,.12),transparent 68%);pointer-events:none;
-  }
+  /* 第一张（最优 IP）是这一屏的重点：只加一道左侧竖线，不加渐变底色、
+     不做右上角光斑。用 inset 阴影画这道线而不是 border-left，是为了不
+     把这格的内容推到旁边一格错开 1px。 */
+  .kpi.hl{box-shadow:inset 2px 0 0 var(--accent)}
   .copy-mini{
     border:none;background:transparent;color:var(--dim);cursor:pointer;padding:2px;margin-left:5px;
     border-radius:5px;display:grid;place-items:center;flex:none;
@@ -426,8 +424,6 @@
   .pill.mut{background:var(--line2);color:var(--muted);border-color:var(--line)}
 
   @media (prefers-color-scheme: dark){
-    .kpi.hl{background:linear-gradient(150deg,#1b2334,var(--card) 62%);border-color:#2c3a5c}
-    .kpi.hl::after{background:radial-gradient(circle,rgba(125,155,255,.16),transparent 68%)}
     table.nodes thead th{background:#1b212b}
     table.nodes tbody tr:hover{background:#1b212b}
     table.v6t thead th{background:#1b212b}
@@ -444,11 +440,11 @@
      会跑到行尾，气泡再从那儿往下展开就顶出卡片右边了。挂整行 + 左右各
      留 14px，多窄的屏都不会横向溢出。 */
   .adv-note{font-size:12px;color:var(--muted);background:var(--accent-soft);
-    border:1px solid var(--line2);border-radius:9px;padding:10px 13px;line-height:1.7;margin-bottom:14px}
+    border:1px solid var(--line2);border-radius:6px;padding:9px 12px;line-height:1.65;margin-bottom:12px}
   .adv-note b{color:var(--text);font-weight:600}
-  .adv-group{border:1px solid var(--line2);border-radius:10px;margin-bottom:10px}
-  .adv-group>summary{list-style:none;cursor:pointer;padding:11px 14px;display:flex;
-    align-items:baseline;gap:9px;flex-wrap:wrap;border-radius:10px}
+  .adv-group{border:1px solid var(--line2);border-radius:6px;margin-bottom:8px}
+  .adv-group>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;
+    align-items:baseline;gap:9px;flex-wrap:wrap;border-radius:6px}
   .adv-group>summary::-webkit-details-marker{display:none}
   .adv-group>summary:hover{background:var(--line2)}
   .adv-group>summary .adv-t{font-size:13px;font-weight:600}
@@ -466,19 +462,19 @@
     font-size:10px;font-weight:700;cursor:help;user-select:none}
   .q:hover,.q:focus{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none}
   .q .tip{display:none;position:absolute;left:14px;right:14px;top:calc(100% - 6px);z-index:80;
-    padding:10px 12px;border-radius:9px;background:var(--card);border:1px solid var(--line);
-    box-shadow:var(--shadow);color:var(--muted);font-size:11.5px;font-weight:400;
-    line-height:1.75;text-align:left;white-space:normal}
+    padding:9px 11px;border-radius:6px;background:var(--card);border:1px solid var(--line);
+    box-shadow:var(--shadow-pop);color:var(--muted);font-size:11.5px;font-weight:400;
+    line-height:1.7;text-align:left;white-space:normal}
   .q:hover .tip,.q:focus .tip{display:block}
   /* 「不给开关」的说明：默认展开。收起时只剩一行灰字，看上去像无关紧要的
      注脚，而它恰恰是用户最想问的「为什么 CF_API_TOKEN 没有」。所以给它做成
      和分组一样的带边框折叠块，并且一进来就是展开的。 */
-  .adv-ex{margin-top:14px;border:1px solid var(--line2);border-radius:10px;
-    font-size:11.5px;color:var(--dim);line-height:1.8}
-  .adv-ex>summary{list-style:none;cursor:pointer;padding:11px 14px;display:flex;
+  .adv-ex{margin-top:12px;border:1px solid var(--line2);border-radius:6px;
+    font-size:11.5px;color:var(--dim);line-height:1.75}
+  .adv-ex>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;
     align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--muted);
-    background:var(--line2);border-radius:9px}
-  .adv-ex[open]>summary{border-radius:9px 9px 0 0}
+    background:var(--line2);border-radius:6px}
+  .adv-ex[open]>summary{border-radius:6px 6px 0 0}
   .adv-ex>summary::-webkit-details-marker{display:none}
   /* 三角用 border 拼，不用字符：字符在不同字体下宽窄不一，会把标题顶歪 */
   .adv-ex>summary::before{content:"";flex:0 0 auto;width:0;height:0;
@@ -548,9 +544,8 @@
   /* IPv6 那一节：接在「本次测速结果」的说明文字下面，和上面的表格共用一张卡。
      一条分隔线把它和 IPv4 分开，但表头、行高、胶囊都跟上面完全一致。 */
   .v6-sec{border-top:1px solid var(--line2);margin-top:14px}
-  .v6-sec-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 16px 0}
-  .v6-sec-h b{font-size:13px;color:var(--text)}
-  .v6-sec-h .hint{flex:1;min-width:160px;font-size:11.5px;margin:0}
+  .v6-sec-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px 0}
+  .v6-sec-h b{font-size:13px;color:var(--text);margin-right:auto}
   .v6-sec-note{font-size:12px;color:var(--dim);line-height:1.6;padding:8px 16px 10px}
   .v6-sec-note b{color:var(--text)}
   /* 国家代码多选下拉：kind=countries 的四项专用，不让人手填两字母代码。
@@ -562,7 +557,7 @@
   .cs-btn:hover{border-color:var(--accent)}
   .cs-panel{position:absolute;right:0;top:calc(100% + 4px);z-index:40;width:250px;
     max-height:300px;overflow:auto;background:var(--bg);border:1px solid var(--line2);
-    border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.20);padding:8px}
+    border-radius:6px;box-shadow:var(--shadow-pop);padding:8px}
   .cs-panel.hidden{display:none}
   .adv-row .cs-panel .cs-search{width:100%;margin:0 0 6px;font-size:12px}
   .cs-list label{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;
@@ -575,8 +570,10 @@
   input.tgl[type=checkbox]{
     -webkit-appearance:none;appearance:none;
     position:relative;flex:none;width:36px;height:20px;margin:0;
-    border:1px solid var(--line2);border-radius:11px;
-    background:var(--line2);cursor:pointer;
+    /* 轨道要能看见：原来和 --line2 同色，摆进「添加框」那种 --line2 底色的
+       区域里就整块消失了，只剩一个白点飘着。 */
+    border:1px solid #cfd6e2;border-radius:11px;
+    background:#d8dee8;cursor:pointer;
     transition:background .18s,border-color .18s;
   }
   input.tgl[type=checkbox]::before{
@@ -587,13 +584,16 @@
   input.tgl[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
   input.tgl[type=checkbox]:checked::before{transform:translateX(16px)}
   input.tgl[type=checkbox]:focus-visible{box-shadow:0 0 0 3px rgba(59,91,219,.28)}
+  @media (prefers-color-scheme: dark){
+    input.tgl[type=checkbox]{background:#39424f;border-color:#46505f}
+  }
   /* ---------- 备份恢复结果 ----------
      为什么不用 toast：一段「已恢复 9 项；这 6 项文件里没，保持了原值：…」
      有一百多字，toast 2.2 秒就消失，等于没说（登录失败那句也是这个理由）。
      这里给它一个自己的位置，一直留到用户下次操作。 */
   .imp-box{
-    margin-top:14px;padding:12px 14px;border:1px solid var(--line);
-    border-radius:10px;background:var(--line2);
+    margin-top:12px;padding:10px 12px;border:1px solid var(--line);
+    border-radius:6px;background:var(--line2);
   }
   .imp-box .t{font-weight:600;margin-bottom:4px}
   .imp-box .ok{color:var(--ok)}
@@ -606,14 +606,17 @@
       width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid var(--line);
       padding:12px 14px;
     }
-    .brand{padding:0 4px 10px}
-    .side-label,.side-foot{display:none}
+    .brand{padding:0 4px 8px}
+    .side-foot{display:none}
     /* 手机上导航换行铺开，而不是横向滚动——滚动会把「测速设置」这种
        后面的项藏在屏幕外，看着像少了一半菜单。 */
     .nav{flex-direction:row;flex-wrap:wrap;gap:4px;padding-bottom:2px}
     .nav a{padding:7px 11px;font-size:12.5px}
-    .content{padding:0 16px 90px}
-    .head{padding:16px 0 14px;position:static}
+    .content{padding:0 16px 96px}
+    /* 手机上标题和「退出/保存」挤不下一行，让它换行后靠左，而不是甩到
+       右边单独占一行——那样标题下面会空出一大块。 */
+    .head{padding:14px 0 12px;position:static}
+    .head .right{margin-left:0;width:100%}
     .form-grid{grid-template-columns:1fr}
     .kpis{grid-template-columns:1fr 1fr}
     .drawer{right:10px;left:10px;bottom:10px;width:auto;max-width:none}
@@ -725,7 +728,6 @@
       <div><b>优选 IP · DDNS</b><span>Cloudflare 加速</span></div>
     </div>
 
-    <div class="side-label">工作台</div>
     <nav class="nav">
       <a class="on" data-page="page-overview" onclick="goPage(this)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>
@@ -747,10 +749,6 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M13 2.5 4.5 14h5.7l-1 7.5L18.5 10h-5.8l.3-7.5Z"/></svg>
         测速设置
       </a>
-    </nav>
-
-    <div class="side-label" style="margin-top:14px">系统</div>
-    <nav class="nav">
       <a data-page="page-backup" onclick="goPage(this)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20.5 12a8.5 8.5 0 1 1-2.8-6.3"/><path d="M20.5 3.5v5h-5"/></svg>
         备份与恢复
@@ -761,10 +759,7 @@
       </a>
     </nav>
 
-    <div class="side-foot">
-      <div class="row"><span class="pulse"></span> 服务运行中</div>
-      <div id="ver"></div>
-    </div>
+    <div class="side-foot"><span id="ver"></span></div>
   </aside>
 
   <div class="content">
@@ -820,7 +815,6 @@
       <section class="card">
         <div class="card-h">
           <h2>本次测速结果</h2>
-          <span class="sub">按速度从快到慢</span>
           <div class="right">
             <span class="runmeta"><span class="dot ok" id="s-dot"></span><span id="s-state">空闲</span></span>
             <button class="btn primary sm" id="btn-run" onclick="doRun()">
@@ -846,10 +840,6 @@
             </tbody>
           </table>
         </div>
-        <div class="hint" style="padding:0 16px 12px">
-          速度是这次测速实际跑出来的下行带宽，延迟是握手往返时间；「机房位置」是拿这个 IP
-          真去问一次 Cloudflare 出口得到的，不是猜的。任何一项没测到就显示「—」，不会补数字。
-        </div>
         <div class="hint hidden" id="s-runhint" style="padding:0 16px 12px;margin:0"></div>
 
         <!-- IPv6 节点：和上面 IPv4 那张表上下并排，表头/行高/胶囊完全一致。
@@ -859,7 +849,6 @@
         <div class="v6-sec">
           <div class="v6-sec-h">
             <b>IPv6 节点</b>
-            <span class="hint">选测：只跑 IPv6 这一轮，只测不写（通常 1~2 分钟）。条数跟「保留候选 IP 数」走</span>
             <button class="btn sm flat" id="btn-v6probe" onclick="probeIPv6()">开始探测</button>
           </div>
           <div class="v6-sec-note" id="v6probe-note">还没有结果。点「开始探测」跑一次——只测速，不写解析。</div>
@@ -873,7 +862,7 @@
     <!-- ========== 域名 ========== -->
     <section class="page" id="page-domains">
       <div class="card">
-        <div class="card-h"><h2>要加速的域名</h2><span class="sub">这些域名会指向最优 IP</span></div>
+        <div class="card-h"><h2>域名列表</h2></div>
         <div class="card-b">
           <!-- 添加框：先检测，通过之后「添加」才亮 -->
           <div class="addbox">
@@ -895,11 +884,8 @@
           <div class="dom-list" id="dom-list"></div>
 
           <div class="hint">
-            填套了 Cloudflare 的网站域名，例如 openai.com、openrouter.ai。
-            <b>先点「检测」确认它真的走 Cloudflare 的边缘，才能点「添加」</b>——
-            为什么要拦：本程序会把这个域名指向 Cloudflare 的边缘 IP，域名本身
-            没接 Cloudflare 的话，改完网页是打不开的。加进来就立刻生效，
-            不用再去点「保存全部设置」。
+            填套了 Cloudflare 的网站域名。<b>先点「检测」确认它真的走 Cloudflare 才能「添加」</b>——
+            域名没接 Cloudflare 的话，改成边缘 IP 后网页会打不开。加进来立刻生效，不用点保存。
           </div>
         </div>
       </div>
@@ -908,27 +894,23 @@
     <!-- ========== AdGuard ========== -->
     <section class="page" id="page-adguard">
       <div class="card">
-        <div class="card-h"><h2>AdGuard Home</h2><span class="sub">把最优 IP 写进它的 DNS 重写</span></div>
+        <div class="card-h"><h2>连接信息</h2></div>
         <div class="card-b">
           <div class="field">
             <label>地址</label>
             <input type="text" id="ag-url" placeholder="http://192.168.1.2:3000">
-            <div class="hint">在 AdGuard Home 的「设置 → 常规设置」里可以看到管理界面地址和登录账号。</div>
           </div>
           <div class="form-grid">
             <div class="field"><label>用户名</label><input type="text" id="ag-user" placeholder="admin"></div>
             <div class="field"><label>密码</label><input type="password" id="ag-pass" placeholder="留空表示不修改"></div>
           </div>
-          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+          <div class="act-row">
             <button class="btn sm" onclick="loadRewrites()">看看现在写了哪几条</button>
-            <a href="#" id="rw-toggle" class="hint hidden" onclick="toggleRewrites();return false">收起</a>
+            <a href="#" id="rw-toggle" class="lnk hidden" onclick="toggleRewrites();return false">收起</a>
           </div>
           <div id="rw-box" class="hidden">
             <div class="hint" style="margin-top:8px">
-              AdGuard Home 里当前的重写表（原文）。
-              绿色＝下次同步保留，<span style="color:var(--warn)">黄色＝会被改掉或清掉</span>，
-              <span style="color:var(--muted)">灰色＝不归这个程序管、永远不动</span>。
-              它只碰「要加速的域名」里的那些；同一个域名下你自己加的记录会被覆盖。
+              绿＝下轮保留，黄＝会被改掉，灰＝不归这个程序管、永远不动。
             </div>
             <div class="rw-list" id="rw-list"></div>
           </div>
@@ -936,22 +918,19 @@
       </div>
 
       <div class="card">
-        <div class="card-h"><h2>GitHub hosts 源</h2><span class="sub">把别人维护的 hosts 清单也写进重写</span></div>
+        <div class="card-h"><h2>GitHub hosts 源</h2><span class="sub">每轮跟着测速同步</span></div>
         <div class="card-b">
           <div class="field switch">
             <input type="checkbox" class="tgl" id="hs-enabled" onchange="onToggle('hosts_enabled',this.checked,this)">
-            <label for="hs-enabled">启用（打开即同步一次，之后每轮测速跟着同步）</label>
+            <label for="hs-enabled">启用（打开即同步一次，之后跟着每轮测速）</label>
           </div>
           <div class="field">
             <label>hosts 列表链接</label>
             <textarea id="hs-src" rows="2" placeholder="https://hosts.gitcdn.top/hosts.txt"></textarea>
-            <div class="hint">一行一个链接。要填列表文件本身的地址（一般以 hosts.txt 结尾），不是项目首页——
-              填成首页会提示「这个链接返回的是网页」。</div>
+            <div class="hint">一行一个链接，要填 hosts.txt 本身（填项目首页会提示「返回的是网页」）。
+              和「要加速的域名」撞车时用测速出来的 IP；0.0.0.0、127.0.0.1 这类拦截条目跳过。</div>
           </div>
           <div class="hint" id="hs-state"></div>
-          <div class="hint">这一块和「要加速的域名」互不影响：同一个域名两边都有时，用本机测速出来的那个 IP。
-            0.0.0.0、127.0.0.1 这种拦截条目会跳过，不写进重写。开关打开或关掉都会当刻同步一次，
-            不用等下一轮测速；关掉时会把这一块写过的记录收回。</div>
         </div>
       </div>
     </section>
@@ -959,7 +938,7 @@
     <!-- ========== DDNS ========== -->
     <section class="page" id="page-ddns">
       <div class="card">
-        <div class="card-h"><h2>域名解析（DDNS）</h2><span class="sub">把最优 IP 写到你的域名</span></div>
+        <div class="card-h"><h2>解析设置</h2></div>
         <div class="card-b">
           <div class="field switch">
               <input type="checkbox" class="tgl" id="dd-enabled" onchange="renderProvider();onToggle('ddns_enabled',this.checked,this)">
@@ -978,7 +957,6 @@
             <div class="field"><label>优选域名</label><input type="text" id="dd-domain" placeholder="cf.example.com"></div>
           </div>
           <div id="cred-fields"></div>
-          <div class="hint" style="margin-bottom:16px">密钥保存在数据目录的 ddns.env 里，留空表示不修改已保存的值。</div>
 
           <div class="form-grid">
             <div class="field">
@@ -991,17 +969,13 @@
               <div class="hint" id="dd-type-hint"></div>
             </div>
             <div class="field">
-              <label>同步几条 IP</label>
+              <label>同步几条 IP（A + AAAA 时两族各这么多）</label>
               <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
-              <div class="hint">按测速排名从优到劣，写前几条。填 1 = 只写最快那条（和以前一样）。选「A + AAAA」时两族各写这么多条。</div>
             </div>
             <div class="field" style="grid-column:1/-1">
-              <label>记录缓存时间（TTL，秒）</label>
+              <label>记录缓存时间 TTL（秒，0 = 各家默认）</label>
               <input type="number" id="dd-ttl" min="0" max="86400" step="60" placeholder="0">
-              <div class="hint">
-                留 0 = 用各家的默认值（Cloudflare 自动、DNSPod 600、华为云 300、阿里云账号默认）。
-                填了之后，改了 IP 别人要等这么久才拿到新的；填太小有些免费版会直接拒绝（阿里云免费版要求 ≥600）。
-              </div>
+              <div class="hint">改 IP 之后别人要等这么久才拿到新的；填太小有些免费版会直接拒（阿里云要求 ≥600）。</div>
             </div>
           </div>
 
@@ -1019,19 +993,18 @@
               <label for="dd-proxied">开启 Cloudflare 云朵（代理）</label>
             </div>
             <div class="hint">
-              <b style="color:var(--warn)">一般不要开。</b>开了之后域名会解析到 Cloudflare 的节点，不再指向你测出来的最优 IP，
-              DDNS 就白做了——只有在你想隐藏源站、并且不需要优选 IP 的时候才开。
+              <b style="color:var(--warn)">一般不要开。</b>开了会解析到 Cloudflare 节点、不再指向测出来的最优 IP，
+              DDNS 白做；只想藏源站时才开。
             </div>
           </div>
 
-          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+          <div class="act-row">
             <button class="btn sm" onclick="checkDDNS()">测试密钥</button>
             <button class="btn sm" onclick="pushDDNS()">立即更新一次</button>
           </div>
           <div class="hint">
-            这两个按钮用的是<b>已经保存的</b>设置——刚改完的密钥请先点上方的「保存全部设置」，否则测的还是旧的。<br>
-            「测试密钥」只读：只确认密钥能不能用、能不能查到这个域名、现在指向哪里，<b>不会改动你的解析</b>。<br>
-            「立即更新一次」才会真的把当前最优 IP 写进去，不用等下一个测速周期。
+            用的是<b>已保存的</b>设置，刚改完密钥要先点右上「保存全部设置」。
+            「测试密钥」只读，「立即更新一次」才真写。
           </div>
           <div id="dd-result" style="margin-top:10px"></div>
         </div>
@@ -1041,29 +1014,20 @@
     <!-- ========== 测速 ========== -->
     <section class="page" id="page-speed">
       <div class="card">
-        <div class="card-h"><h2>测速设置</h2><span class="sub">多久跑一次、跑多少候选、从哪些来源取 IP</span></div>
+        <div class="card-h"><h2>基本设置</h2></div>
         <div class="card-b">
           <div class="form-grid">
             <div class="field">
-              <label>自动测速间隔（分钟）</label>
+              <label>自动测速间隔（分钟，0 = 不自动）</label>
               <input type="number" id="sp-interval" min="0" step="10" placeholder="60">
-              <div class="hint">间隔填 0 表示不自动测速，只在点「立即测速」时执行。</div>
             </div>
             <div class="field">
-              <label>保留候选 IP 数</label>
+              <label>保留候选 IP 数（两族各这么多）</label>
               <input type="number" id="sp-topn" min="1" placeholder="5">
-              <div class="hint">
-                候选数越大，失败时可切换的备选越多。<b>IPv4 和 IPv6 都按这个数</b>——
-                填 10 就是两族各保留 10 条、结果表里各显示 10 行；填 5 就各显示 5 行。
-              </div>
             </div>
             <div class="field">
-              <label>进入带宽测速的候选数</label>
+              <label>进入带宽测速的候选数（越大越准、越慢）</label>
               <input type="number" id="sp-bw" min="1" placeholder="100">
-              <div class="hint">
-                先按延迟筛出这么多条，再去真下载测速。数字越大结果越准，但整轮越慢——
-                每一条都要真的下载一次。默认 100。
-              </div>
             </div>
           </div>
 
@@ -1071,9 +1035,7 @@
             <label>优选 IP 段（留空 = 使用 Cloudflare 官方 15 个段）</label>
             <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
             <div class="hint">
-              每行一条，三种写法都认：<b>IP 段</b>（104.16.0.0/13）、<b>单个 IP</b>（1.2.3.4）、<b>链接</b>（https://…）。
-              填了之后就<b>只用这些</b>——不再叠加 Cloudflare 官方段，也不再拉内置的两个外部聚合源；想恢复原来的行为，把这里清空保存即可。<br>
-              为什么需要它：官方那 15 个段里 104.16 / 104.24 / 172.64 三块占绝大多数，优选结果会明显往这几段集中。
+              每行一条，IP 段、单个 IP、链接三种写法都认。填了就<b>只用这些</b>，不再叠加官方 15 个段和内置聚合源；清空保存即恢复。
             </div>
           </div>
 
@@ -1084,14 +1046,6 @@
           <div class="field">
             <label>IPv6 段链接（留空 = 自动测速不跑 IPv6）</label>
             <textarea id="sp-v6-src" rows="3" placeholder="https://example.com/ipv6-cidr.txt&#10;https://example.com/another.txt"></textarea>
-            <div class="hint">
-              每行一个<b>链接</b>（http:// 或 https:// 开头），链接返回 IPv6 段或地址的文本；
-              多行会全部拉下来合在一起用。清空保存 = 不再用你的链接。<br>
-              <b>留空时自动测速不跑 IPv6</b>（只测 IPv4，也就不会去写 AAAA）；这时点概览页的
-              「开始探测」仍会用 Cloudflare 官方 v6 段跑一轮手动测速，只测不写。<br>
-              和上面那个「优选 IP 段」是两回事：那边只认 IPv4 地址，v6 段填进去会被静默丢掉，
-              所以单独放一栏。
-            </div>
           </div>
         </div>
       </div>
@@ -1101,16 +1055,14 @@
       <div class="card" style="margin-top:16px">
         <div class="card-h">
           <h2>高级设置</h2>
-          <span class="sub">测速引擎的全部开关</span>
           <div class="right">
             <button class="btn sm" onclick="resetAdvanced()">全部恢复默认</button>
           </div>
         </div>
         <div class="card-b">
           <div class="adv-note">
-            每一项后面都有一个问号，<b>鼠标移上去</b>就能看到「这是什么、动了会怎样」。
-            这些默认值都是反复试出来的，<b>不确定就别动</b>；想试随时可以点右上角「全部恢复默认」。
-            改过之后，下一次测速的日志里会多一行「高级设置已生效：…」，方便你事后核对。
+            每项后面有个问号，<b>鼠标移上去</b>看「这是什么、动了会怎样」。默认值都是反复试出来的，
+            <b>不确定就别动</b>。改过之后下一轮测速的日志里会记一行，方便事后核对。
           </div>
           <div id="adv-panel"></div>
           <div id="adv-excluded"></div>
@@ -1120,22 +1072,19 @@
     <!-- ========== 备份 ========== -->
     <section class="page" id="page-backup">
       <div class="card">
-        <div class="card-h"><h2>备份与恢复</h2><span class="sub">把全部设置存成一个文件</span></div>
+        <div class="card-h"><h2>配置文件</h2></div>
         <div class="card-b">
-          <div class="hero-actions" style="border-top:none;padding-top:0;margin-top:0">
+          <div class="act-row">
             <button class="btn sm" onclick="exportConfig()">导出配置文件</button>
             <button class="btn sm" onclick="pickImport()">从文件恢复…</button>
             <input type="file" id="import-file" accept=".json,application/json" style="display:none" onchange="importConfig(this)">
           </div>
           <div class="hint">
-            导出文件里带着 AdGuard 密码和各家的 DNS 密钥——请当密码一样保管，不要发到群里。<br>
-            「从文件恢复」会用文件里的内容覆盖当前全部设置（后台登录密码不受影响，也不会被改）。<br>
-            什么时候用得上：重装应用、换一台 NAS、或者哪天数据目录又被清空了。
+            导出文件带着 AdGuard 密码和各家的 DNS 密钥，当密码保管。恢复会用文件里的内容盖掉当前全部设置，后台登录密码不动。
           </div>
           <div id="export-manual" class="hidden">
             <div class="hint" style="color:var(--warn)">
-              下面这段就是备份文件的内容。如果刚才浏览器没弹出下载（飞牛桌面把后台嵌在 iframe 里时个别浏览器会拦下载），
-              点一下框里全选复制，粘贴到记事本里存成 <code>.json</code> 文件即可。
+              浏览器没弹下载时（iframe 里个别浏览器会拦），全选这段复制，存成 <code>.json</code> 即可。
             </div>
             <textarea id="export-text" readonly rows="8" onclick="this.select()"></textarea>
           </div>
@@ -1149,17 +1098,16 @@
     <!-- ========== 密码 ========== -->
     <section class="page" id="page-password">
       <div class="card">
-        <div class="card-h"><h2>登录密码</h2><span class="sub">这个后台唯一的门</span></div>
+        <div class="card-h"><h2>修改密码</h2></div>
         <div class="card-b" style="max-width:560px">
           <div class="field">
             <label>当前密码</label>
             <input type="password" id="pw-old" autocomplete="current-password" placeholder="先验证现在的密码">
           </div>
           <div class="form-grid">
-            <div class="field"><label>新密码</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+            <div class="field"><label>新密码（至少 8 位）</label><input type="password" id="pw-new" autocomplete="new-password"></div>
             <div class="field"><label>再输一次</label><input type="password" id="pw-new2" autocomplete="new-password"></div>
           </div>
-          <div class="hint" style="margin-bottom:16px">至少 8 位；别用 12345678、aaaaaaaa 这类连续或重复的，也别用 password、admin123 这类最常见的。改完立即生效，不用重启，也不用再去「应用设置」里改。</div>
           <button class="btn primary" onclick="savePassword()">修改密码</button>
         </div>
       </div>
@@ -1173,8 +1121,7 @@
     <b>运行日志</b>
     <span class="live"><i></i>实时</span>
     <div class="grow"></div>
-    <button class="btn sm flat" id="btn-copy-log" style="padding:3px 9px;font-size:11.5px"
-            onclick="event.stopPropagation();copyLogs()">复制全部</button>
+    <button class="btn sm flat" id="btn-copy-log" onclick="event.stopPropagation();copyLogs()">复制全部</button>
     <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 15l6-6 6 6"/></svg>
   </div>
   <div class="drawer-b">
@@ -1216,14 +1163,16 @@ const LOG_HINT_TAIL = "最新的在最上面；点「复制全部」整段带走
 
 // 每个分页的标题和副标题。放在这里而不是写在 HTML 上，
 // 是因为「保存全部设置」按钮和标题栏是共用的，切页时要一起换。
+// 一句提醒：副标题别跟下面第一张卡的标题重复——原来 AdGuard 那页
+// 标题、副标题、卡头说的是同一句话，一屏读三遍。
 const PAGE_META = {
-  "page-overview": ["概览", "自动测出最快的 Cloudflare 节点，写进 AdGuard Home，同时更新你的域名解析。"],
-  "page-domains":  ["要加速的域名", "这些域名会被指向最优 IP，写进 AdGuard Home 的 DNS 重写。"],
-  "page-adguard":  ["AdGuard Home", "把最优 IP 写进它的 DNS 重写表。"],
-  "page-ddns":     ["域名解析（DDNS）", "把最优 IP 写到你的域名，访问者直接连到最快的节点。"],
+  "page-overview": ["概览", "自动测出最快节点，写进 AdGuard，再更新域名解析。"],
+  "page-domains":  ["要加速的域名", "这些域名会被指向测速选出来的那个 IP。"],
+  "page-adguard":  ["AdGuard Home", "这台机器上的 DNS 重写表，交给它来写。"],
+  "page-ddns":     ["域名解析（DDNS）", "把最优 IP 写到你的域名上。"],
   "page-speed":    ["测速设置", "多久跑一次、跑多少候选、从哪些来源取 IP。"],
-  "page-backup":   ["备份与恢复", "把全部设置存成一个文件。"],
-  "page-password": ["登录密码", "这个后台唯一的门。"]
+  "page-backup":   ["备份与恢复", "重装、换机器、数据目录被清空时用得上。"],
+  "page-password": ["登录密码", "改完立即生效，不用重启。"]
 };
 
 let credState = {};

@@ -1,12 +1,11 @@
 package web
 
-// 后台里「配好了吗」这类小工具：测试域名解析的密钥、手动推送一次解析、
-// 以及把 AdGuard 里现有的重写表读出来看看。
+// 后台里「配好了吗」这类小工具：测试域名解析的密钥、手动推送一次解析、把 AdGuard 里现有
+// 的重写表读出来看看。
 //
-// 为什么值得单独做：用户填密钥的时候完全不知道自己填对没有——以前只能等
-// 下一个测速周期（默认 60 分钟）看日志里有没有报错，或者干脆等到域名解析
-// 失效才发现。2026-11-17 那天他就是卡在「密钥到底对不对」上。
-// 现在按一下就能当场得到答案，而且「测试密钥」只读，不会动线上解析。
+// 值得单独做：用户填密钥时完全不知道自己填对没有，以前只能等下一个测速周期（默认 60
+// 分钟）看日志有没有报错，或者等到解析失效才发现。现在按一下当场得到答案，而且「测试
+// 密钥」只读，不动线上解析。
 
 import (
 	"fmt"
@@ -43,7 +42,7 @@ func (s *Server) currentDDNS() (ddns.Provider, config.Config, string) {
 }
 
 // recordOptions 把配置里的 TTL / 云朵翻译成 ddns 包要求的写法。
-// 放一处是为了让「定时推送」和「立即更新一次」写出去的记录一定一致——
+// 放一处是为了让「定时推送」和「立即更新一次」写出去的记录一定一致，
 // 两条路各写一份的话，早晚会有一条忘记带 TTL。
 //
 // rtype 必须由调用方逐个族给（A / AAAA），不能从配置里取：配置里存的是
@@ -103,7 +102,7 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 
 	// 按同步模式逐族校验。单族时就是一次，A+AAAA 时是两次。
 	// 一次校验两族的原因：用户选「两个都写」之后，只报 A 那张表会让他
-	// 以为 AAAA 也一起验过了——密钥或权限问题往往只影响其中一族
+	// 以为 AAAA 也一起验过了，密钥或权限问题往往只影响其中一族
 	// （比如 Cloudflare 的令牌权限只给了某个 Zone 的部分类型）。
 	mode := cfg.DDNS.EffectiveRecordMode()
 	families := ddns.FamiliesOf(mode)
@@ -154,7 +153,7 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 // ddnsFamilyView 是「某一族现在什么样、点立即更新会写成什么样」。
 //
 // 为什么要分族报：A 和 AAAA 在服务商那边是两张互不相干的表。只报一个总数
-// 或者只报 A，用户看不出这次动的是哪张——「两个都写」模式下尤其容易误会。
+// 或者只报 A，用户看不出这次动的是哪张，「两个都写」模式下尤其容易误会。
 type ddnsFamilyView struct {
 	Type       string   `json:"type"`
 	Found      bool     `json:"found"`
@@ -175,7 +174,7 @@ type ddnsFamilyResult struct {
 //
 // A 用 v4 那组（LastIP / LastIPs），AAAA 用 v6 那组（LastIPv6 / LastIPv6IPs）。
 // 两族分开存的原因：一次测速会同时产出 v4 和 v6 两套排名，混在一起就分不清
-// 哪条地址该写进哪一种记录——把 v4 地址塞进 AAAA 是纯粹的坏记录。
+// 哪条地址该写进哪一种记录，把 v4 地址塞进 AAAA 是纯粹的坏记录。
 // 返回值都是拷贝，调用方可以放心改。
 func lastRankForType(c *config.Config, rtype string) (best string, rank []string) {
 	if c == nil {
@@ -208,7 +207,7 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	planned := make([]ddnsFamilyResult, 0, len(families))
 	for _, family := range families {
 		lastIP, stored := lastRankForType(s.cfg, family)
-		// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速——
+		// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速，
 		// 直接从这一份里截前 5 条就行。
 		ips := pickIPs(stored, cfg.DDNS.EffectiveIPCount())
 		if len(ips) == 0 && lastIP != "" {
@@ -244,7 +243,7 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if wrote == 0 {
-		// 一族都没写成，按模式给一句最有用的指引，别只说「失败」——
+		// 一族都没写成，按模式给一句最有用的指引，别只说「失败」，
 		// 三种模式的补救办法不一样。
 		msg := "还没有测出最优 IP。先点「立即测速」；只想验证密钥对不对，用「测试密钥」就够了"
 		switch mode {
@@ -265,20 +264,17 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAdguardRewrites 把 AdGuard 里现在的重写表读出来，并标出「下次同步会
-// 保留哪几条、清掉哪几条」——用户有权先看一眼再让它动手。
-//
-// 2026-11-18 起 ReplaceRewrites 只动本工具认领的域名，所以这里返回的东西跟着
-// 分成三份，前端据此标三种状态：
+// handleAdguardRewrites 把 AdGuard 里现在的重写表读出来，并标出「下次同步会保留哪几条、
+// 清掉哪几条」，用户有权先看一眼再让它动手。ReplaceRewrites 只动本工具认领的域名，所以
+// 返回的东西分三份，前端据此标三种状态：
 //
 //	managed  域名 → 这一轮该有的答案列表（v4、v6 可能各一条）→ 匹配就「保留」
 //	stale    以前管过、现在不在域名列表里的域名 → 「会被清掉」
 //	其余     不归本工具管（用户自己加的、AdGuard 自带的）→ 「不动它」
 //
-// 为什么 managed 存的是答案**列表**而不是单个字符串：以前只放 cfg.LastIP，
-// 于是 v6 那条明明会被保留、却在界面上被标成「会被清掉」。用户看到红色标记
-// 会以为 v6 又要被抹掉，而实际什么都没发生——这种「界面比实际更吓人」的谎话
-// 和反过来一样有害。
+// managed 存答案列表而不是单个字符串：以前只放 cfg.LastIP，于是 v6 那条明明会被保留、
+// 界面上却被标成「会被清掉」。用户看到红色标记会以为 v6 又要被抹掉，而实际什么都没发生，
+// 这种「界面比实际更吓人」的谎话和反过来一样有害。
 func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -305,14 +301,10 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 期望集合：每个要加速的域名 → 当前最优 IP（v4 + v6）。
-	//
-	// 用 RewriteDomains() 而不是 Domains：勾了包含子域的那些会多一条
-	// `*.域名`，漏掉的话界面会把我们自己写的通配符标成「会被清掉」。
-	//
-	// LastIP 为空的判断和 syncRewrites 保持一致：那种情况下什么都不写，
-	// 所以 managed 留空，界面上所有现存记录都会被标成「会被清掉」——这恰好
-	// 是实话，因为下一轮测速一旦成功就会按新答案重写。
+	// 期望集合：每个要加速的域名 → 当前最优 IP（v4 + v6）。用 RewriteDomains() 而不是
+	// Domains：勾了包含子域的那些会多一条 `*.域名`，漏掉的话界面会把我们自己写的通配符
+	// 标成「会被清掉」。LastIP 为空的判断和 syncRewrites 保持一致：那种情况下什么都不写，
+	// 所以 managed 留空，现存记录全被标成「会被清掉」，这恰好是实话。
 	names := cfg.RewriteDomains()
 	managed := make(map[string][]string, len(names))
 	if cfg.LastIP != "" {
@@ -327,7 +319,7 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// hosts 源写的那几十条同样是本工具写的：不列进来，界面会把它们全标成
-	// 「不归这个程序管」——用户看到一屏"不是我的"，第一反应是「它没在工作」。
+	// 「不归这个程序管」，用户看到一屏"不是我的"，第一反应是「它没在工作」。
 	// 答案就取账本里记的那个 IP（正是上一轮写进去的）。
 	for d, ip := range cfg.HostsEntries {
 		if ip == "" {

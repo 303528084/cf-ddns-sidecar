@@ -2,23 +2,18 @@ package web
 
 // 「点一下开关就立刻生效」用的单项保存接口。
 //
-// 为什么不给 /api/config 加一个字段：那个接口是全量保存，前端要一次提交十几个
-// 字段；而开关是点一下就存，若走全量接口，会把界面上别的改到一半、还没点保存的
-// 输入框一起写进去。用户要的正是「只存这一个、别的别碰」，所以单独开一条路，
-// 复用同一个 config.json 但只改请求里点名的那一个键。
+// 不给 /api/config 加字段：那是全量保存，开关走它会把界面上别的改到一半、还没点
+// 保存的输入框一起写进去。这里只改请求里点名的那一个键。
 //
-// 两类开关都收：
-//   - 高级设置的引擎开关：key 是 Schema 里的参数名，必须确实是 KindBool；
-//   - DDNS 的两个：ddns_enabled / ddns_proxied；
-//   - GitHub hosts 源的 hosts_enabled（见 web/hosts.go）。
-//
-// 其他任何 key 一律 400，不猜、不猜着存——否则一个拼错的名字会在 config.json
-// 里留个垃圾键，而 NormalizeOverrides 下次保存时又会把它悄悄丢掉，前后不一致。
+// 收三类：高级设置的引擎开关（key 必须是 Schema 里的 KindBool）、DDNS 的两个、
+// hosts 源的 hosts_enabled。其他 key 一律 400，不猜也不猜着存：拼错的名字会在
+// config.json 里留个垃圾键，下次保存时又被 NormalizeOverrides 悄悄丢掉。
 
 import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/303528084/cf-ddns-sidecar/engine"
@@ -81,7 +76,7 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	// 打开 hosts 源时**当场**拉一次清单并写进 AdGuard，不等下一轮测速。
 	//
 	// 定时同步挂在测速那一轮（默认 60 分钟），用户点开开关后如果什么都不发生，
-	// 就要盯着一个「开着但没效果」的开关干等——反过来也是同一个毛病：关掉要
+	// 就要盯着一个「开着但没效果」的开关干等，反过来也是同一个毛病：关掉要
 	// 当刻收回，打开也要当刻写进去。
 	if key == "hosts_enabled" && body.Value {
 		note := s.enableHostsNow(cfg)
@@ -97,11 +92,11 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	// 为什么要专门加这一步：清理由 `mergeHostsWant` 顺手完成（账本里
 	// 「不再归它管」的域名给空集合），而那条路只在测速结束、写 AdGuard 时
 	// 走。用户关掉开关后如果看到几十条记录还在，合理的判断就是「开关没生效」，
-	// 而日志里要等到下一次测速才会给出解释——中间这段时间的沉默本身就是 bug。
+	// 而日志里要等到下一次测速才会给出解释，中间这段时间的沉默本身就是 bug。
 	if key == "hosts_enabled" && !body.Value {
 		if len(cfg.HostsEntries) > 0 {
 			s.appendLog("hosts 源已关闭：把 AdGuard 上由它写的 " +
-				itoa(len(cfg.HostsEntries)) + " 条记录收回来")
+				strconv.Itoa(len(cfg.HostsEntries)) + " 条记录收回来")
 		}
 		note := s.syncRewrites(cfg)
 		s.appendLog(note)

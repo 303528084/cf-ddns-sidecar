@@ -2,17 +2,13 @@ package web
 
 // 配置的导出与导入。
 //
-// 为什么要有它：数据目录一旦被清空，用户就得手抄八项设置——AdGuard 地址/
-// 用户名/密码、要加速的域名列表、测速参数、服务商、优选域名、以及可能两家
-// 以上的密钥。2026-11-17 那天他正是这么重填了一遍，其中 Cloudflare 令牌
-// 还得回 Cloudflare 后台重新生成（旧的那份随数据目录一起没了）。
-// 能导出一个文件、换机或重装时上传回来，才是真正兜住这件事。
+// 数据目录一旦被清空，用户就得手抄八项设置，还有可能两家的密钥。2026-11-17 那天他正是
+// 这么重填了一遍，其中 Cloudflare 令牌还得回后台重新生成。能导出一个文件、换机或重装时
+// 上传回来，才是真正兜住这件事。
 //
-// 两条硬约束：
-//  1. 文件里带密钥和 AdGuard 密码，必须只走已登录的接口，并且不让浏览器
-//     或中间代理缓存它（Cache-Control: no-store）；
-//  2. 导入时只允许写白名单里的 key 进 ddns.env。备份文件是用户可以手改的，
-//     不能让它变成往密钥文件里塞任意变量的入口。
+// 两条硬约束：文件里带密钥和 AdGuard 密码，必须只走已登录的接口，并且不让浏览器或中间
+// 代理缓存它（Cache-Control: no-store）；导入时只允许写白名单里的 key 进 ddns.env，备份
+// 文件是用户可以手改的，不能让它变成往密钥文件里塞任意变量的入口。
 
 import (
 	"encoding/json"
@@ -41,30 +37,22 @@ const (
 	maxRewrittenDomains = 200
 )
 
-// bundleConfig 是跟着文件走的那部分配置。
+// bundleConfig 是跟着文件走的那部分配置。刻意用显式字段而不是直接序列化 config.Config：
+// 运行状态（last_ip / last_time）不该跟着走，那是这台机器的实际结果，换台机器后照搬过来
+// 只会误导人；以后给 Config 加字段时也不会因为「顺手 Marshal」把不该出门的东西导出去。
 //
-// 刻意用显式字段而不是直接序列化 config.Config：
-//   - 运行状态（last_ip / last_time）不该跟着走，那是这台机器的实际结果，
-//     换台机器后照搬过来只会误导人；
-//   - 以后给 Config 加字段时，不会因为「顺手 Marshal」把不该出门的东西
-//     一起导出去。
-//
-// 显式清单的代价是「加一个设置就得记得来这儿补一行」。忘了不报错、也不
-// 打日志——那个值就静静地从文件里消失，而界面上写着「把全部设置存成一个
-// 文件」（v1.7.4 之前正是这样漏了 6 项：记录类型、IPv6 段链接、同步条数、
-// 橙云开关、TTL、每个域名的「包含子域」）。两条防线：
-//  1. transfer_test.go 里有一组「导出→导入后逐项相同」的用例，Config 里
-//     多一个用户能改的字段，那儿就得多一行断言；
-//  2. 下面凡是「0 / false / 空列表本身就是合法值」的字段，一律用指针。
-//     用零值代表「文件里没有这一项」会把「用户主动清空」和「老文件没这个
-//     字段」混成同一件事，于是要么清不掉、要么一导入就被静默覆盖。
+// 代价是「加一个设置就得记得来这儿补一行」，忘了不报错也不打日志，那个值就静静地从文件里
+// 消失（v1.7.4 之前正是这样漏了 6 项：记录类型、IPv6 段链接、同步条数、橙云开关、TTL、
+// 每个域名的「包含子域」）。两条防线：transfer_test.go 里有一组「导出→导入后逐项相同」的
+// 用例；下面凡「0 / false / 空列表本身就是合法值」的字段一律用指针，否则会把「用户主动
+// 清空」和「老文件没这个字段」混成同一件事。
 type bundleConfig struct {
 	AdGuardURL      string   `json:"adguard_url"`
 	AdGuardUsername string   `json:"adguard_username"`
 	AdGuardPassword string   `json:"adguard_password,omitempty"`
 	Domains         []string `json:"domains"`
 	// DomainMeta 是每个域名的「包含子域」勾选和添加时间。
-	// 不导出的话，恢复之后所有域名都变回「不包含子域」——AdGuard 里那条
+	// 不导出的话，恢复之后所有域名都变回「不包含子域」，AdGuard 里那条
 	// `*.域名` 的重写不再生成，子域突然不走优选 IP 了，而界面看起来
 	// 「恢复成功」。这是最难自己想到的一类故障。
 	DomainMeta      map[string]config.DomainMeta `json:"domain_meta,omitempty"`
@@ -106,7 +94,7 @@ type bundleConfig struct {
 	// 它严格说是运行状态，按上面那条原则（不把 last_ip 这类东西带出去）本可以
 	// 不导。但它决定了「下次同步时哪些旧记录可以删」：换机恢复后域名列表被整份
 	// 替换，如果账本不带，那些已经不在这份清单里的域名就会在 AdGuard 上留下
-	// 永久残留，指向换机前的旧 IP——而界面上一切正常。带上它，恢复之后第一次
+	// 永久残留，指向换机前的旧 IP，而界面上一切正常。带上它，恢复之后第一次
 	// 同步就能把该清的清掉。
 	//
 	// 限制条数不是洁癖：这个列表只会被本工具自己写，正常长度就是域名数 + 通配符
@@ -162,7 +150,7 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 		}
 	}
 
-	// 指针字段先落到局部变量上再取地址——直接 &cfg.DDNS.TTL 会把这个结构体
+	// 指针字段先落到局部变量上再取地址，直接 &cfg.DDNS.TTL 会把这个结构体
 	// 的字段地址带进文件结构里，之后谁改一下 cfg，导出内容就跟着变。
 	ttl := cfg.DDNS.TTL
 	proxied := cfg.DDNS.Proxied
@@ -245,7 +233,7 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 	}
 
 	// 账本：同样归一化（去协议前缀、小写、去重），并按条数上限截断。
-	// 通配符 `*.a.com` 会被 normalizeDomains 原样留下，这是必须的——勾了
+	// 通配符 `*.a.com` 会被 normalizeDomains 原样留下，这是必须的，勾了
 	// 「包含子域」的域名，账本里记的就是这条通配符。
 	if n := len(b.Config.RewrittenDomains); n > 0 {
 		b.Config.RewrittenDomains = normalizeDomains(b.Config.RewrittenDomains)
@@ -309,7 +297,7 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 	}
 
 	// DDNS 四项 + v6 段链接：能归一化的归一化，明显填错的就**整项丢掉并
-	// 提示**。丢掉等于「保持当前值」，比按一个猜出来的数写进去安全——用户
+	// 提示**。丢掉等于「保持当前值」，比按一个猜出来的数写进去安全，用户
 	// 手改文件时打错一位，不该变成解析记录里一个奇怪的数字。
 	if b.Config.DDNSTTL != nil {
 		if v := *b.Config.DDNSTTL; v != 0 && (v < 60 || v > 86400) {
@@ -467,7 +455,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	// 当前值的（kept）。
 	//
 	// 为什么要把它返回给界面：v1.7.4 之前的备份文件里没有「记录类型」等六项，
-	// 导入时它们只能保持原值——但用户看到的原本只有一句「已恢复」。不说出来，
+	// 导入时它们只能保持原值，但用户看到的原本只有一句「已恢复」。不说出来，
 	// 他会以为一切都回来了，过几天才发现解析里只剩 IPv4，而那时早就想不起
 	// 是恢复备份导致的。这类「静默少了一部分」正是这个项目吃过最多的亏。
 	restored := make([]string, 0, 16)
@@ -540,7 +528,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	note("GitHub hosts 源链接", b.Config.HostsSource != nil)
 	// 账本同 RewrittenDomains：不进 restored / kept（它不是用户设的项），
-	// 但文件里有就得用——否则换机恢复之后，源里已经没有的那些域名会在
+	// 但文件里有就得用，否则换机恢复之后，源里已经没有的那些域名会在
 	// AdGuard 上留下永久残留。文件里没有（老备份）就保持当前值。
 	if len(b.Config.HostsEntries) > 0 {
 		cfg.HostsEntries = b.Config.HostsEntries

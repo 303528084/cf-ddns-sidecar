@@ -2,31 +2,23 @@ package web
 
 // 「优选出来的 IP 会触发 Cloudflare 1034（边缘 IP 校验）」的预筛与实测。
 //
-// 1034 不是「这个 IP 慢」或「这个 IP 挂了」，而是 Cloudflare 判定「你连的
-// 这个边缘 IP 不属于这个域名的账号」。官方的 EIV（Edge IP Validation）专门
-// 守这类**受限 IP 空间**——BYOIP 段、企业独占/静态 IP、1.1.1.1 这类保留地址。
-// 候选池里混进这种 IP，测速结果本身「一切正常」，用户却在浏览器里看到 1034。
+// 1034 不是「这个 IP 慢」或「挂了」，而是 Cloudflare 判定「你连的这个边缘 IP 不属于这个
+// 域名的账号」。官方的 EIV 专门守这类受限 IP 空间（BYOIP 段、企业独占/静态 IP、1.1.1.1
+// 这类保留地址）。候选池里混进这种 IP，测速结果本身「一切正常」，用户却在浏览器里看到 1034。
 //
 // 两道防线，各管一半：
 //
-//  1. 官方段预筛（纯本地、零请求）。官方排查文档给出的判据是「BYOIP 段不在
-//     Cloudflare 公布的段内」。所以不在官方 15 个 IPv4 段里的 IP 直接丢，
-//     野 IP 和别人的 BYOIP 段一刀切掉。这一步不联网，永远能做。
+//  1. 官方段预筛（纯本地、零请求）。不在官方 15 个 IPv4 段里的 IP 直接丢，野 IP 和别人
+//     的 BYOIP 段一刀切掉。这一步不联网，永远能做。
+//  2. EIV 实测（一次请求）。剩下的仍可能是「官方段内、但被某个企业独占」的地址，只能
+//     钉住候选 IP 请求 `https://<要加速的域名>/cdn-cgi/trace`，回 403 且正文里有
+//     `error code: 1034` 就说明这个 IP 对那个域名是废的。这个路径在每个被 CF 接管的
+//     域名上都存在，不用改用户的站。
 //
-//  2. EIV 实测（一次请求）。剩下的仍可能是「官方段内、但被某个企业独占」的
-//     地址——段里看不出归属，只能真去问一次：钉住候选 IP 请求
-//     `https://<要加速的域名>/cdn-cgi/trace`，回 403 且正文里有
-//     `error code: 1034`，就说明这个 IP 对那个域名是废的。
-//     `/cdn-cgi/trace` 在每个被 Cloudflare 接管的域名上都存在，不用改用户的站。
-//
-// 为什么按 /24 抽样而不是逐个探：受限空间是按块分配的，同一 /24 往往同属一份
-// 分配（这个判断代码里早就在用，见 candidates.go 随机采样那段注释）。逐个探
-// 600 个 IP 要好几分钟，按 /24 通常只有几十次请求。
-//
-// 为什么结果要落盘、又必须过期：落盘是为了下一轮不用重复问（每轮省几十次
-// 请求）；过期是因为 Cloudflare 的分配会变，永久拉黑会让候选池越用越少，
-// 最后「优选不出东西」。24 小时是个折中：够短到能跟上变化，够长到一天里
-// 只付一次代价。
+// 按 /24 抽样而不是逐个探：受限空间是按块分配的，同一 /24 往往同属一份分配。逐个探 600
+// 个 IP 要好几分钟，按 /24 通常只有几十次请求。结果落盘是为了下一轮不用重复问，又必须
+// 过期：CF 的分配会变，永久拉黑会让候选池越用越少，最后「优选不出东西」。24 小时是个
+// 折中，够短到能跟上变化，够长到一天里只付一次代价。
 
 import (
 	"context"
@@ -62,7 +54,7 @@ const (
 	// eivBudget 是这一整步的总时长上限。
 	//
 	// 单个探测有 eivTimeout 兜着，但 160 组 × 2 个域名 × 6 秒 / 8 并发
-	// 最坏能拖到 4 分钟——那是「每个 IP 都不通」的极端情况，而这一步只是
+	// 最坏能拖到 4 分钟，那是「每个 IP 都不通」的极端情况，而这一步只是
 	// 测速前的准备，不该吃掉整轮的预算。到点就收工，没探的组原样保留
 	// （不探 = 不判，宁可漏掉也不误杀）。
 	eivBudget = 45 * time.Second
@@ -100,7 +92,7 @@ var officialV4Nets = func() []*net.IPNet {
 //
 // 只判 IPv4：候选池的 IPv6 不是我们生成的（内置采样只有 v4），贸然拿一份
 // 手抄的 v6 段表去判，判错了会把用户能用的 v6 节点整片删掉。v6 交给 EIV
-// 实测兜底——那一层是「问出来的」，不依赖任何段表。
+// 实测兜底，那一层是「问出来的」，不依赖任何段表。
 func inOfficialV4(ip net.IP) bool {
 	v4 := ip.To4()
 	if v4 == nil {
@@ -126,7 +118,7 @@ func cidr24(ip net.IP) string {
 // isEIVBlock 判断这次响应是不是「被边缘校验拦下」。
 //
 // 判据刻意收窄：必须**不是 200**，且正文里出现 1034 的错误码。放宽成
-// 「正文里有 1034」会误杀——正常页面里带这个数字的太多了，而误杀的代价是
+// 「正文里有 1034」会误杀，正常页面里带这个数字的太多了，而误杀的代价是
 // 把一个好 IP 从候选里删掉，用户完全看不出来为什么速度变差了。
 func isEIVBlock(status int, body string) bool {
 	if status == http.StatusOK {
@@ -142,7 +134,7 @@ func isEIVBlock(status int, body string) bool {
 // eivProbe 钉住 ip 请求 host 的 /cdn-cgi/trace，返回状态码与正文。
 //
 // 和 exitgeo 的 traceVia 是同一套路子（DialContext 改写目标 + SNI 用 host），
-// 但这里要读正文才能认出 1034，所以不能直接复用——那个函数把非 200 当失败
+// 但这里要读正文才能认出 1034，所以不能直接复用，那个函数把非 200 当失败
 // 直接返回 error，正好会把我们要找的那个信号丢掉。
 func eivProbe(ctx context.Context, host, ip string, port int) (status int, body string, err error) {
 	dialer := &net.Dialer{Timeout: 4 * time.Second}
@@ -202,7 +194,7 @@ func (b *eivBlocklist) prune(now time.Time) {
 //
 // 必须带上域名一起比：EIV 是按 zone 判的，同一个 IP 对 openai.com 合法、
 // 对自己的站可能被拦。只按网段查会让「换了个加速域名」的用户凭空少一堆
-// 候选，而且完全看不出原因——那正是这次要消灭的那类静默故障。
+// 候选，而且完全看不出原因，那正是这次要消灭的那类静默故障。
 func (b *eivBlocklist) bad(cidr string, hosts map[string]bool) bool {
 	for _, e := range b.Entries {
 		if e.CIDR == cidr && hosts[e.Host] {
@@ -260,12 +252,12 @@ func (b *eivBlocklist) save(path string) {
 //
 // 这件事必须用**用户实际要访问的域名**，不能用 cloudflare-ech.com：EIV 是
 // 按 zone 判的，同一个 IP 对 A 域名合法、对 B 域名 1034。这也是现有反代验证
-// 漏掉 1034 的根因——它问的是 cloudflare-ech.com，只证明了「这 IP 是活的
+// 漏掉 1034 的根因，它问的是 cloudflare-ech.com，只证明了「这 IP 是活的
 // 边缘节点」，没证明「它属于你的域名」。
 //
 // 取两个：用户自己的 Cloudflare 域名（且必须开着云朵，否则压根不过 CF）、
 // 以及加速列表里的第一个域名（第三方站点那条路）。两个都测，任一报 1034
-// 就算这个 IP 不行——用户实测两条路都会中。
+// 就算这个 IP 不行，用户实测两条路都会中。
 func eivProbeHosts(cfg *config.Config) []string {
 	var out []string
 	seen := make(map[string]bool, 2)
@@ -318,7 +310,7 @@ func parseCandLine(s string) candLine {
 // screenCandidates 对候选列表做两道筛选，返回新的候选文本。
 //
 // 输入输出都是 `/api/candidates` 的正文格式（每行 `ip:port#国家`），中间
-// 只删行、不改行——端口和国家标签原样保留，否则一个能用的节点会因为端口被
+// 只删行、不改行，端口和国家标签原样保留，否则一个能用的节点会因为端口被
 // 改写而变得不能用。
 //
 // 认不出的行原样放行：这一步的职责是「剔除确定有问题的」，不是「重新解析
@@ -457,7 +449,7 @@ func (s *Server) screenCandidates(ctx context.Context, cfg *config.Config, text 
 			}
 			if hitHost == "" {
 				// 一个都没回话 = 没做判断，不能当成「干净」，但也别声张成
-				// 剔除——用户会以为这些 IP 有问题。
+				// 剔除，用户会以为这些 IP 有问题。
 				if answered == 0 {
 					mu.Lock()
 					unknown++

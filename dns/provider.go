@@ -1,8 +1,7 @@
 // Package dns 定义「把最优 IP 写进局域网 DNS」的能力。
 //
-// 本项目只支持 AdGuard Home。原上游项目还支持 Technitium / dnsmasq /
-// SmartDNS / MosDNS 等，这些对本产品的目标场景（家庭 NAS 上跑一个
-// AdGuard Home）是用不到的复杂度，已在本分支移除。
+// 只支持 AdGuard Home。上游项目还支持 Technitium / dnsmasq / SmartDNS / MosDNS，
+// 对「家庭 NAS 上跑一个 AdGuard Home」这个场景是用不到的复杂度，已移除。
 package dns
 
 import (
@@ -25,22 +24,19 @@ type RewriteEntry struct {
 type SyncStats struct {
 	Written int // 本次新增的条目数
 	Removed int // 本次删除的条目数
-	// Kept 是「不归本工具管、原样留着」的条目数。
-	//
-	// 单独记一个数不是为了好看：用户最担心的事就是「我这个工具会不会顺手
-	// 删掉我别处加的规则」。日志里出现「保留了 N 条别人的记录」时，这个担心
-	// 才算被证明过一次，而不是靠我们口头保证。
+	// Kept 是「不归本工具管、原样留着」的条目数。单独记一个数不是为了好看：
+	// 用户最担心的就是「这工具会不会顺手删掉我别处加的规则」，日志里出现
+	// 「保留了 N 条别人的记录」，这份担心才算被证明过一次。
 	Kept int
 }
 
 // Provider 是一个 DNS 实例的统一操作接口。
 // want 的语义为「本工具认领的域名 → 期望的答案集合」：
-//   - want 的**键**就是认领范围，不在这里面的域名一律不碰（用户自己加的、
-//     AdGuard 自带的重写规则都靠这一条保住）；
-//   - want[d] 里没有的答案会被删掉，缺的会被补上；
-//   - want[d] 是**空集合**表示「这个域名不该有任何记录」，用于清掉用户已经
-//     从域名列表里删掉、但 AdGuard 上还留着的旧记录（见
-//     config.Config.RewrittenDomains）。
+//   - want 的键就是认领范围，不在里面的域名一律不碰（用户自己加的、AdGuard 自带的
+//     重写规则都靠这一条保住）；
+//   - want[d] 里多的答案删掉、缺的补上；
+//   - want[d] 是空集合表示「这个域名不该有任何记录」，用于清掉用户已从列表删掉、
+//     但 AdGuard 上还留着的旧记录（见 config.Config.RewrittenDomains）。
 type Provider interface {
 	// Name 返回 provider 类型标识。
 	Name() string

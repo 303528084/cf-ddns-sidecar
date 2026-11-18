@@ -15,16 +15,14 @@ import (
 
 // 这一组做的是「这些 IP 的真实出口在哪儿」。
 //
-// 为什么需要它：候选列表里的 `#US` 不是引擎算出来的，是我们为了满足引擎的
-// 解析格式填的占位值（引擎在「节点没有国家标签」时会去逐条探测，那一步既慢
-// 又会把探测失败的节点直接丢掉，代价太大）。占位值只用于引擎内部的国家过滤，
-// 而那个功能在本产品里是关掉的——所以它对结果没有任何影响，但原样显示出来
-// 会让人以为「程序认为这些 IP 都在美国」，而实际出口可能在日本 NRT。
+// 候选列表里的 `#US` 不是引擎算出来的，是我们为满足引擎解析格式填的占位值（没有国家
+// 标签时引擎会逐条探测，既慢又会把探测失败的节点直接丢掉）。那个国家过滤在本产品里
+// 是关掉的，占位值对结果没有影响，但原样显示会让人以为「程序认为这些 IP 都在美国」，
+// 而实际出口可能在日本 NRT。
 //
-// 真实出口用引擎自己的同一套办法取得：**穿过这个 IP** 去请求 Cloudflare 的
-// /cdn-cgi/trace，读返回里的 loc（国家）与 colo（机房）。主域名用测速同款
-// speed.cloudflare.com——这批 IP 刚用它测过速、证明在当前网络连得上，问位置
-// 的命中率最高；失败再换 cloudflare-ech.com 补一次，两个域名的边缘入口不同。
+// 真实出口用引擎同一套办法取得：穿过这个 IP 请求 Cloudflare 的 /cdn-cgi/trace，读
+// loc（国家）与 colo（机房）。主域名用测速同款 speed.cloudflare.com，这批 IP 刚用它
+// 测过速、证明连得上，问位置命中率最高；失败再换 cloudflare-ech.com 补一次。
 const (
 	// traceHost 是问位置的主域名，和测速用的一样；这批 IP 刚证明连得上它。
 	traceHost = "speed.cloudflare.com"
@@ -42,20 +40,17 @@ const (
 	// probeAttemptMax 是单个 IP 两次尝试的耗时上限，预算按它算。
 	probeAttemptMax = traceTimeout + traceFallbackTimeout
 
-	// exitProbesMax 是机房位置探测的硬上限。
-	// 早期写死 5，是因为那时界面只显示 5 条；后来「保留候选 IP 数」可以调大，
-	// 界面跟着变多，写死的 5 就让第 6 条往后全成了「位置未知」。
-	// 现在探测条数跟着实际结果走，但必须有上限：每探一个都是一次真实外部
-	// 请求，用户填 100 时不能真发 100 次、把测速后的等待拖成几分钟。
-	// 20 覆盖常见的 10 / 15 / 20，再多只探前 20 并在日志里说明。
+	// exitProbesMax 是机房位置探测的硬上限。早期写死 5，因为那时界面只显示 5 条；
+	// 后来「保留候选 IP 数」可以调大，第 6 条往后就全是「位置未知」了。现在跟着实际
+	// 结果走，但必须有上限：每探一个都是一次真实外部请求，用户填 100 时不能真发 100 次
+	// 把等待拖成几分钟。20 覆盖常见的 10/15/20，再多只探前 20 并在日志里说明。
 	exitProbesMax = 20
 )
 
-// exitProbePlan 算「这次探几个、给多久预算」。
-// 探测条数 = 实际结果条数（结果已按「保留候选 IP 数」截好），封顶 exitProbesMax。
-// 预算按并发轮数算：8 个并发一轮，每个 IP 最坏要先试主域名 8 秒、失败再试备用
-// 4 秒（probeAttemptMax），再留 2 秒给建连和收尾。只在这一处算，调用方（超时）
-// 和被调方（截断）才不会各算各的、再次对不上。
+// exitProbePlan 算「这次探几个、给多久预算」。条数 = 实际结果条数（已按「保留候选 IP 数」
+// 截好），封顶 exitProbesMax。预算按并发轮数算：8 个并发一轮，每个 IP 最坏先试主域名
+// 8 秒、失败再试备用 4 秒，再留 2 秒建连收尾。只在这一处算，调用方（超时）和被调方
+// （截断）才不会各算各的、再次对不上。
 func exitProbePlan(total int) (probes int, budget time.Duration) {
 	if total <= 0 {
 		return 0, 0
@@ -68,14 +63,9 @@ func exitProbePlan(total int) (probes int, budget time.Duration) {
 	return probes, time.Duration(rounds)*probeAttemptMax + 2*time.Second
 }
 
-// traceThroughIP 穿过指定 IP 取一次 trace，返回国家代码与机房代码。
-//
-// 先问主域名（测速同款，命中率最高）；失败再换备用域名补一次。两个域名各自
-// 带独立超时：主域名用满 traceTimeout 才算失败，失败后备用只给 traceFallbackTimeout。
-// 任一次成功就返回，两次都失败才把最后一次的错误交上去。
-//
-// hosts 参数只为测试可注入（验「主失败→备成功」「两次都失败」两条路径）；
-// 正式调用固定传 traceHost / traceHostFallback。
+// traceThroughIP 穿过指定 IP 取一次 trace，返回国家代码与机房代码。先问主域名（测速
+// 同款，命中率最高），失败再换备用域名补一次。两个域名各自带独立超时，任一次成功就
+// 返回，两次都失败才把最后一次的错误交上去。hosts 参数只为测试可注入。
 func traceThroughIP(ctx context.Context, ip string, port int) (loc, colo string, err error) {
 	return traceThroughHosts(ctx, ip, port, traceHost, traceHostFallback)
 }
@@ -89,7 +79,7 @@ func traceThroughHosts(ctx context.Context, ip string, port int, mainHost, fbHos
 		return loc, colo, nil
 	}
 	// 主域名失败（连不上、超时、返回里没 loc），换备用域名补一次，只给更短的
-	// traceFallbackTimeout（4 秒）——它只是补漏，不值得再占满 8 秒。
+	// traceFallbackTimeout（4 秒），它只是补漏，不值得再占满 8 秒。
 	fbCtx, cancelFb := context.WithTimeout(ctx, traceFallbackTimeout)
 	defer cancelFb()
 	return traceVia(fbCtx, fbHost, ip, port)
@@ -139,18 +129,9 @@ func traceVia(ctx context.Context, host, ip string, port int) (loc, colo string,
 	return parseTrace(string(body))
 }
 
-// parseTrace 从 trace 的正文里取 loc / colo。
-//
-// 正文是形如 `key=value` 的一行一项，例如：
-//
-//	fl=xxx
-//	h=cloudflare-ech.com
-//	ip=172.64.229.246
-//	loc=JP
-//	colo=NRT
-//
-// 没拿到 loc 就当失败：只拿到 colo（甚至什么都没拿到）时说「这个 IP 在
-// NRT」同样会误导人，而这一行的存在意义就是不误导。
+// parseTrace 从 trace 的正文里取 loc / colo。正文是形如 `key=value` 的一行一项，
+// 例如 loc=JP、colo=NRT。没拿到 loc 就当失败：只拿到 colo（甚至什么都没拿到）时说
+// 「这个 IP 在 NRT」同样会误导人，而这一行的存在意义就是不误导。
 func parseTrace(body string) (loc, colo string, err error) {
 	for _, line := range strings.Split(body, "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
@@ -170,12 +151,10 @@ func parseTrace(body string) (loc, colo string, err error) {
 	return loc, colo, nil
 }
 
-// exitInfo 是「这个节点落在哪儿」的一句话描述。
-//
-// 为什么用 colo（机房代码）而不是 loc（国家代码）：2026-11-17 实测了 6 个
-// 优选 IP，返回的 loc **全部是 CN**——那是我们自己宽带出口的国家，不是节点的。
-// 真正跟着 IP 变的是 colo：同一个网络下，不同 IP 分别落到 FRA / LAX / NRT。
-// 所以「这个 IP 把我送进了哪个机房」才是能解释速度差异的那条事实。
+// exitInfo 是「这个节点落在哪儿」的一句话描述。用 colo（机房代码）而不是 loc（国家
+// 代码）：2026-11-17 实测 6 个优选 IP，返回的 loc 全部是 CN，那是我们自己宽带出口的
+// 国家，不是节点的。真正跟着 IP 变的是 colo，同一个网络下不同 IP 分别落到 FRA / LAX /
+// NRT。所以「这个 IP 把我送进了哪个机房」才是能解释速度差异的那条事实。
 func exitInfo(colo string) string {
 	if colo == "" {
 		return "位置未知"
@@ -188,16 +167,12 @@ func exitInfo(colo string) string {
 	return "机房 " + colo + "（位置未知）"
 }
 
-// place 是机房代码到「国家 + 城市」的对照表。
-//
-// 只收常见的那批：Cloudflare 有 300 多个机房，而实际被优选到的就那十几个。
-// 表里查不到时调用方会显示「位置未知」，不会瞎猜。
-// 注意香港/台湾按国内口径写成「中国香港」「中国台湾」。
-//
-// code 是两位国家代码（ISO 3166-1 alpha-2），**只给「按国家筛」用**：
-// 引擎和界面里那套筛选都认两位代码，而这张表里的 country 是中文名，
-// 拿中文名去比 HK/JP 永远对不上。放在同一张表里而不是另起一张：
-// 两张表各自维护，早晚会出现「这里改了那里没改」，而这张表已经有测试盯着。
+// place 是机房代码到「国家 + 城市」的对照表。只收常见的那批：Cloudflare 有 300 多个
+// 机房，实际被优选到的就那十几个，查不到时调用方显示「位置未知」，不瞎猜。
+// 香港/台湾按国内口径写成「中国香港」「中国台湾」。
+// code 是两位国家代码（ISO 3166-1 alpha-2），只给「按国家筛」用：引擎和界面那套筛选
+// 都认两位代码，而 country 是中文名，拿中文名去比 HK/JP 永远对不上。放同一张表而不是
+// 另起一张：两张表各自维护早晚会出现「这里改了那里没改」，而这张表已经有测试盯着。
 type place struct{ code, country, city string }
 
 var coloGeo = map[string]place{
@@ -268,14 +243,14 @@ func countryCode(colo string) string {
 //
 // 返回值是这次改造新加的：位置信息以前只写进日志（用户得自己去那一长行里
 // 对序号），现在界面每个节点要显示「日本·东京 NRT」。同一次探测的结果
-// 两处都要用，不能各探一遍——那是两倍的外部请求，还可能给出两个答案。
+// 两处都要用，不能各探一遍，那是两倍的外部请求，还可能给出两个答案。
 //
 // 探几个由 exitProbePlan 决定：跟着实际结果条数走（界面有几条就探几条），
 // 封顶 exitProbesMax。这些正是列表里排在最前面的那几条，所以输出的序号
 // 和界面一一对应（1 对 1、2 对 2）。超出上限时写一行日志说明，不让后半段
 // 突然变成「位置未知」却没人解释。
 //
-// 探不到的 IP 不会出现在返回的 map 里——查不到就说查不到，不编。
+// 探不到的 IP 不会出现在返回的 map 里，查不到就说查不到，不编。
 func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]string {
 	return s.logExitColos(ctx, ips, "")
 }
@@ -284,7 +259,7 @@ func (s *Server) logExitCountries(ctx context.Context, ips []string) map[string]
 //
 // 为什么要多这个参数：v6 那一轮也要探机房位置（用户要求「IPv6 的真实机房
 // 位置也展示出来」），而一次测速里 v4 先探、v6 后探，两行日志去掉标签是
-// 一模一样的中文 —— 用户看到两条相同的「各节点实际出口」根本分不清哪条
+// 一模一样的中文，用户看到两条相同的「各节点实际出口」根本分不清哪条
 // 对应哪张表。tag 传空串时输出和历史完全一致（v4 那条路径行为不变）。
 func (s *Server) logExitColos(ctx context.Context, ips []string, tag string) map[string]string {
 	colos := make(map[string]string, len(ips))
@@ -338,7 +313,7 @@ func (s *Server) logExitColos(ctx context.Context, ips []string, tag string) map
 			known++
 		}
 	}
-	// 一个都没探到就只留一句结论，别把 5 条「探测不到」铺开——那既占地方，
+	// 一个都没探到就只留一句结论，别把 5 条「探测不到」铺开，那既占地方，
 	// 又像是出了问题（其实只是这个网络到那个域名不通，和测速结果无关）。
 	if known == 0 {
 		s.appendLog(tag + "各节点实际出口：探测不到（连不上 " + traceHost + "，与测速结果无关）")

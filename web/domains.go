@@ -2,23 +2,15 @@ package web
 
 // 「要加速的域名」的增删改。
 //
-// 为什么单独一套接口，而不是让界面复用 /api/config：
-//
-//	/api/config 是**全量覆盖**式的保存——请求里没带的字段要么被清空、
-//	要么按默认值写回去。用它做「加一个域名」这种增量操作，等于每次加一个
-//	域名都要把整份配置重新提交一遍，任何一处没带全就会被悄悄改掉。
-//
-// 所以域名页改成三个小接口（加 / 删 / 切换包含子域），每个都是「改一项、
-// 存一次、立刻写进 AdGuard」。用户点「添加」就生效，不用再去点保存。
-//
-// 检测仍然在服务端做（见 cfcheck.go）：前端那个「检测」按钮只是为了满足
-// 「先验证再添加」的交互，真正的判断不能放在浏览器里——否则改个 JS 就能
-// 把不走的域名塞进来。
+// 不走 /api/config：那是全量覆盖，加一个域名要整份重交，漏一项就被悄悄改掉。
+// 这里每个动作一个接口，改一项、存一次、立刻写进 AdGuard。
+// 域名是否真走 Cloudflare 只能在服务端判（cfcheck.go），前端那个「检测」只为交互。
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,38 +59,26 @@ func decodeDomainBody(r *http.Request) (domain string, wildcard bool, err error)
 
 // syncRewrites 把当前域名配置写进 AdGuard，返回一句给用户看的话。
 //
-// 不把错误往上抛成接口失败：域名已经存进配置了，写 AdGuard 失败（地址没填、
-// 连不上、还没测速）不该让「添加」这个动作整个失败——用户会以为白点了。
-// 该说的是「加进去了，但还没真正生效，原因是 X」。
-//
-// 这几句话都很短，因为它们会原样进 toast（一行放得下才不会被折成两行挡住
-// 下面的说明），也会进日志。
-//
-// 关于 AdGuard 上「谁的地盘」：写重写从 2026-11-18 起只动本工具认领的域名
-// （见 dns.Provider.ReplaceRewrites）。这里的 want 由 rewritePlan 组装，除了
-// 当前域名列表，还包含账本里「以前管过、现在不管了」的域名——用户刚删掉的那
-// 个域名就在里面，所以界面上那句「AdGuard 里对应的重写也会一起清掉」仍然成立。
+// 不返回 error：域名已经存进配置了，写 AdGuard 失败（地址没填、连不上、还没测速）
+// 不该让「添加」整个失败，该说的是「加进去了，但还没真正生效，原因是 X」。
+// 返回的句子都很短，因为它会原样进 toast 和日志。
 func (s *Server) syncRewrites(cfg config.Config) string {
 	msg, _ := s.syncRewritesHosts(cfg, hostsWantFor(cfg), hostsOffFor(cfg))
 	return msg
 }
 
-// syncRewritesHosts 是带上「这一块现在该写哪些条目」的版本，返回值第二个是
-// 「重写表真的写成功了吗」——调用方要靠它决定账本要不要更新（写失败就不能改，
-// 否则下次会以为记录已经在 AdGuard 上了）。
+// syncRewritesHosts 多一个「这一块现在该写哪些条目」，第二个返回值是「重写表
+// 真写成功了吗」：写失败就不能动账本，否则下次会以为记录已经在 AdGuard 上了。
 //
-// hostsWant / hostsOff 这对参数把三种情形分开：
-//   - 正常同步：want = 账本，off = false；
-//   - 关掉开关 / 清空来源：want = nil、off = true，效果是**收回**；
-//   - 刚打开开关：want = 刚拉到的清单、off = false，效果是**立刻写进去**，
-//     不用等到下一轮测速（用户原话：「开启的时候没再同步一次」）。
+// hostsWant / hostsOff 把三种情形分开：正常同步（want=账本, off=false）、
+// 关掉或清空来源（want=nil, off=true，效果是收回）、刚到开关（want=刚拉的清单）。
 func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]string, hostsOff bool) (string, bool) {
 	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
 		return "已保存；还没填 AdGuard 地址，填好后才会写进去", false
 	}
 	// 没有测速结果、也没有 hosts 条目时才真的没东西可写。
 	// 只看 LastIP 的话，一个「只配了 hosts 源、还没跑过测速」的用户点一下
-	// 添加域名，就会得到「还没有测速结果」——而 hosts 那几十条其实是可以写的。
+	// 添加域名，就会得到「还没有测速结果」，而 hosts 那几十条其实是可以写的。
 	if cfg.LastIP == "" && len(hostsWant) == 0 && len(cfg.HostsEntries) == 0 {
 		return "已保存；还没有测速结果，下次测速后写进 AdGuard", false
 	}
@@ -107,32 +87,19 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 		return "已保存；连不上 AdGuard（" + friendlyErr(err) + "）", false
 	}
 	names := cfg.RewriteDomains()
-	// 这里用的是「上一次测速结果」而不是「这一轮刚测的」——因为这是个
-	// 改域名清单的动作，本来就没有新一轮结果。v4 用 LastIP、v6 用
-	// LastIPv6IPs，两边对称。
-	//
-	// **必须带上 v6**：want 里没有的答案会被当成多余删掉，只给 v4 的话，
-	// 用户只是点了一下「加域名」，家里所有 v6 的重写就被悄悄删掉了，而界面
-	// 上只会说「已写入 AdGuard：N 条」。
+	// want 里没有的答案会被当成多余删掉，所以 v6 和 hosts 两边都必须带上：
+	// 少一边就等于「点一下加域名，另一边被悄悄清空」。
 	want := make(map[string]map[string]bool, len(names))
 	if cfg.LastIP != "" {
 		want = rewritePlan(cfg, names, rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs))
 	}
-	// hosts 那一块也要带上。少了这一步，用户每加一个加速域名就会把 hosts 源
-	// 写的那几十条**整份删掉**（want 里没有的域名，在认领语义下等于"不该有
-	// 记录"），而界面上只会显示一句"已写入 AdGuard：1 条"。
-	//
-	// off 时传 nil 进去：这一步就变成**收回**——mergeHostsWant 会把账本里那些
-	// 「不再归它管」的域名给空集合，等于从 AdGuard 上删掉它们。用户关掉开关
-	// 时立即走这一段（见 web/switch.go），不用等到下一轮测速，否则「点完开关
-	// 什么也没发生」看起来就是没生效。
+	// off 时传的是 nil：mergeHostsWant 会把账本里那些域名置成空集合，等于收回。
 	hostsStat := mergeHostsWant(want, cfg, names, hostsWant)
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {
 		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）", false
 	}
-	// 收回成功之后账本要跟着清空，否则下一轮还会以为这些域名仍归它管，
-	// 反复去删一批已经不在的记录。
+	// 收回成功了账本就要清空，否则下一轮还会去删一批已经不存在的记录。
 	if hostsOff && len(cfg.HostsEntries) > 0 {
 		s.mu.Lock()
 		s.cfg.HostsEntries = nil
@@ -143,22 +110,20 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 			log.Printf("保存配置失败: %v", err)
 		}
 	}
-	// 记下这一轮认领的域名。删域名这条路上它特别关键：账本是「下次同步该清
-	// 哪些旧记录」的唯一依据。
+	// 记下这一轮认领的域名。删域名这条路全靠它知道下次该清哪些旧记录。
 	s.rememberRewritten(names)
-	// 这句话会原样进 toast，所以要短。没有 hosts 源时保持原来的说法一个字都
-	// 不加——多一句「含 0 条 hosts 源」只会让人以为哪里没配好。
-	msg := "已写入 AdGuard：" + itoa(stats.Written) + " 条"
+	// 这句话原样进 toast，要短。没有 hosts 源时一个字都不加，否则会让人以为没配好。
+	msg := "已写入 AdGuard：" + strconv.Itoa(stats.Written) + " 条"
 	var parts []string
 	if extra := len(names) - len(cfg.Domains); extra > 0 {
-		parts = append(parts, itoa(extra)+" 条子域通配符")
+		parts = append(parts, strconv.Itoa(extra)+" 条子域通配符")
 	}
 	if hostsStat.added > 0 {
-		parts = append(parts, itoa(hostsStat.added)+" 条 hosts 源")
+		parts = append(parts, strconv.Itoa(hostsStat.added)+" 条 hosts 源")
 	}
-	// 关掉开关这一路，重点不是「写进去了几条」，而是「收回来了几条」。
+	// 关掉开关这一路，重点不是写进去几条，是收回来几条。
 	if hostsOff && hostsStat.cleared > 0 {
-		return "已关闭 hosts 源，从 AdGuard 收回 " + itoa(hostsStat.cleared) + " 条", true
+		return "已关闭 hosts 源，从 AdGuard 收回 " + strconv.Itoa(hostsStat.cleared) + " 条", true
 	}
 	if len(parts) > 0 {
 		msg += "（含 " + strings.Join(parts, "、") + "）"
@@ -166,25 +131,7 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 	return msg, true
 }
 
-func itoa(n int) string {
-	// 只用来拼一两处日志，不值得为它引 strconv 的语义噪音。
-	if n == 0 {
-		return "0"
-	}
-	var b [8]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}
-
 // handleDomains 是 /api/domains 的分发口：POST 加、DELETE 删。
-//
-// 两个动作走同一个路径而不是 /api/domains/add 与 /api/domains/delete：
-// 它们操作的是同一个资源集合，用 HTTP 方法区分才是对的，也少两个路径。
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
@@ -217,7 +164,7 @@ func (s *Server) handleDomainCheck(w http.ResponseWriter, r *http.Request) {
 
 // handleDomainAdd 检测 + 存进配置 + 立刻写 AdGuard。
 //
-// 检测不通过时返回 400 并且**什么都不改**——这正是用户要的「不是的不让添加」。
+// 检测不通过时返回 400 并且**什么都不改**，这正是用户要的「不是的不让添加」。
 // 检测不了（DNS 查不到）时照样添加，但把原因带回去让界面标黄，理由见
 // cfcheck.go 顶部：网络抖一下就把用户填的域名扔掉，比放过去糟得多。
 func (s *Server) handleDomainAdd(w http.ResponseWriter, r *http.Request) {

@@ -172,7 +172,7 @@ func (c *adguardClient) removeRewrite(e agRewrite) error {
 // 2026-11-18 之前这里是「清空整张表、再按 want 全量重建」，两个毛病：
 //
 //  1. 用户在 AdGuard 后台自己加的、或者别的工具写的重写规则，每轮测速都被
-//     一起删掉——而界面上只会说「已写入 AdGuard：N 条」，看起来一切正常。
+//     一起删掉，而界面上只会说「已写入 AdGuard：N 条」，看起来一切正常。
 //  2. 删光和重建之间有一段窗口，重写表是空的。这段时间里家里设备来查域名
 //     拿不到重写结果，只能回落到正常解析（对「加速」这个目的来说等于白跑）。
 //
@@ -186,7 +186,7 @@ func (c *adguardClient) removeRewrite(e agRewrite) error {
 // config.Config.RewrittenDomains）。
 //
 // 一个无法区分的情况，写在明处：同一个域名下如果用户自己也加了一条重写，
-// 那条会被我们删掉——AdGuard 的重写记录里没有「谁写的」这个字段，只能按
+// 那条会被我们删掉，AdGuard 的重写记录里没有「谁写的」这个字段，只能按
 // 「域名归谁管」划分地盘。域名一旦被本工具接管，它的重写就由本工具全权负责，
 // 界面上要说明白，不能只留在代码注释里。
 func (c *adguardClient) ReplaceRewrites(want map[string]map[string]bool) (SyncStats, error) {
@@ -200,7 +200,7 @@ func (c *adguardClient) ReplaceRewrites(want map[string]map[string]bool) (SyncSt
 	// 现有记录里「已经写对了的」答案，加的时候用来跳过重复添加。
 	//
 	// 只算**启用**状态的：用户把某条停用过之后，它对我们来说等于不存在，
-	// 该删了重写成启用状态——否则会出现「记录在、但不生效」这种界面上完全
+	// 该删了重写成启用状态，否则会出现「记录在、但不生效」这种界面上完全
 	// 看不出来的坏状态（重写表里明明有一条，域名就是不解析成那个 IP）。
 	have := make(map[string]map[string]bool, len(want))
 	for _, ent := range list {

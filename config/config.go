@@ -48,28 +48,20 @@ type SpeedConfig struct {
 	TopN                int `json:"top_n"`                // 最终保留的候选 IP 数量
 	BandwidthCandidates int `json:"bandwidth_candidates"` // 进入带宽测速的候选数
 	// ExtraSources 是用户自己指定的候选来源，一行一条，三种写法：
-	//   · IP 段   104.16.0.0/13   —— 本地在这些段里随机采样
-	//   · 单 IP   104.16.1.1      —— 直接进候选，不抽样
-	//   · 链接    https://...     —— 不本地解析，原样交给测速引擎自己去拉
+	//   · IP 段   104.16.0.0/13  ：本地在这些段里随机采样
+	//   · 单 IP   104.16.1.1     ：直接进候选，不抽样
+	//   · 链接    https://...    ：不本地解析，原样交给测速引擎自己去拉
 	//
-	// 留空 = 用内置的 Cloudflare 官方 15 个段（升级前的行为，一字未改）。
-	// 非空 = **只用这些**：既不叠加官方段，也不再拉内置的两个外部聚合源。
-	//
-	// 为什么必须是「只用」而不是「叠加」：实测 zip.cm.edu.kg 一个源就能给
-	// 12757 个 IP，叠加进来等于用户填的段被彻底淹没，设了跟没设一样。
+	// 留空 = 用内置的 Cloudflare 官方 15 个段。非空 = 只用这些，既不叠加官方段，
+	// 也不再拉内置的两个外部聚合源：实测一个聚合源就能给 12757 个 IP，叠加等于
+	// 用户填的段被彻底淹没。
 	ExtraSources []string `json:"extra_sources,omitempty"`
 
-	// EngineOverrides 是用户在「高级设置」里改过的测速引擎参数，
-	// 键名与 engine.Schema 一一对应（比如 "HTTP_LATENCY_ENABLED": true）。
-	//
-	// 为什么用 map 而不是四十多个具名字段：cfnb 有 99 个参数、24 个布尔开关，
-	// 全做成字段会让这个结构体变成一个没人看得懂的参数垃圾桶，而每加一个
-	// 参数要动 config / engine / web / 前端四处，漏一处就静默失效。
-	// 用一张表（engine.Schema）+ 一个 map，只有一处需要改。
-	//
-	// 只存「和默认值不同」的项（见 engine.NormalizeOverrides）：全是默认值时
-	// 这里是 nil，config.json 里不会多出一个空对象，也不会因为以后改默认值
-	// 而让老配置「被用户设定过」。
+	// EngineOverrides 是用户在「高级设置」里改过的测速引擎参数，键名与 engine.Schema
+	// 一一对应（比如 "HTTP_LATENCY_ENABLED": true）。用 map 而不是四十多个具名字段：
+	// cfnb 有 99 个参数、24 个布尔开关，做成字段会变成参数垃圾桶，且每加一个要动
+	// config / engine / web / 前端四处，漏一处就静默失效。
+	// 只存和默认值不同的项（见 engine.NormalizeOverrides），全是默认值时这里是 nil。
 	EngineOverrides map[string]any `json:"engine_overrides,omitempty"`
 }
 
@@ -82,34 +74,26 @@ type DDNSConfig struct {
 
 	// TTL 是写出的解析记录的生存时间（秒），0 表示用本程序的默认值
 	// （Cloudflare 自动、DNSPod 600、华为云 300、阿里云不传）。
-	// 这两个字段是 2026-11-17 才加的，老配置文件里没有，反序列化后就是零值，
-	// 效果等同于以前写死的 1/600/300——升级不会改变用户现有记录的样子。
+	// 这两个字段 2026-11-17 才加，老配置反序列化后是零值，效果等同于以前写死的
+	// 1/600/300，升级不会改变用户现有记录的样子。
 	TTL int `json:"ttl,omitempty"`
 	// Proxied 只对 Cloudflare 有效：true 表示开橙色云朵（走 Cloudflare 代理）。
 	Proxied bool `json:"proxied,omitempty"`
 
 	// IPCount 是一次往域名里写几条记录：按测速排名从优到劣取前 N 条。
-	// 0 表示 1 条——老配置文件没有这个字段，行为必须和以前一模一样。
+	// 0 表示 1 条，老配置没有这个字段，行为必须和以前一模一样。
 	IPCount int `json:"ip_count,omitempty"`
 
-	// RecordType 是要写的记录类型 / 同步模式：
-	//   空 / "A"  → 只写 A（IPv4）
-	//   "AAAA"    → 只写 AAAA（IPv6）
-	//   "A+AAAA"  → 两族都写（2026-11-18 新增）
-	// 老配置文件没有这个字段，反序列化后是空串，效果等同于 A——升级不会改变
-	// 用户现有记录的任何一行。
-	//
-	// 字段名和 JSON key 保持 record_type 不变：改名会让所有已经存下来的配置
-	// 在升级后「读不出自己选过什么」，一声不响地回到 A。
+	// RecordType 是要写的记录类型：空 / "A" 只写 A，"AAAA" 只写 AAAA，
+	// "A+AAAA" 两族都写（2026-11-18 新增）。老配置读进来是空串，效果等同于 A。
+	// JSON key 保持 record_type 不变：改名会让已存下来的配置升级后读不出自己选过
+	// 什么，一声不响地回到 A。
 	RecordType string `json:"record_type,omitempty"`
 }
 
 // EffectiveRecordMode 返回实际要写的同步模式：A / AAAA / A+AAAA。
-//
-// 收敛规则本身在 ddns.NormalizeRecordMode（单一出处，别在这儿再抄一遍
-// switch——抄了就会有两份规则各自漂移）。这里只负责「读进来的路径不报错」：
-// 空串和任何写坏的值都按 A。开机、升级读配置不该因为一个字段写错就整体失败；
-// 真正拦住非法值的是保存 `/api/config` 时的校验。
+// 收敛规则本身在 ddns.NormalizeRecordMode（单一出处）。这里只保证读配置不报错：
+// 空串和写坏的值都按 A，开机不该因为一个字段写错就整体失败，拦住非法值是保存时的事。
 func (d DDNSConfig) EffectiveRecordMode() string {
 	if m, err := ddns.NormalizeRecordMode(d.RecordType); err == nil {
 		return m
@@ -126,13 +110,9 @@ func (d DDNSConfig) EffectiveIPCount() int {
 }
 
 // NodeStat 是「上次测速里每个 IP 的质量数据」，只用于界面展示。
-//
-// 为什么要落盘：这几个数字是测速现算的，不在任何接口里，重启就没了。
-// 而用户升级 App、重启容器的频率远高于他跑测速的频率——不存下来，
-// 打开页面看到的就是一排「—」，反而像坏了。
-//
-// 全部字段都可省略：老配置文件里没有这一项，读进来是空切片，
-// 界面就按「只有 IP、没有质量数据」渲染，和以前一样。
+// 要落盘是因为这几个数字测速现算、不在任何接口里，重启就没了；而用户重启容器的
+// 频率远高于跑测速，不存下来打开页面就是一排「—」，反而像坏了。
+// 全部字段可省略：老配置读进来是空切片，界面按「只有 IP、没有质量数据」渲染。
 type NodeStat struct {
 	IP    string  `json:"ip"`
 	Speed float64 `json:"speed,omitempty"` // Mbps，0 表示这轮没测到
@@ -155,59 +135,34 @@ type Config struct {
 	AdGuard AdGuardConfig `json:"adguard"`
 	Domains []string      `json:"domains"` // 要写入 AdGuard 重写的域名列表
 	// DomainMeta 是每个域名的附加信息（是否包含子域、什么时候加的）。
-	//
-	// 没有把 Domains 直接换成结构体切片，是因为 `Domains []string` 这件事
-	// 已经被引擎参数、DDNS 推送、导入导出、老配置全部依赖着——换类型等于
-	// 每一处都要跟着改，风险远大于收益。这里用「主列表 + 旁挂元信息」：
-	// Domains 仍是唯一的权威（有哪些域名），缺条目就当「不包含子域」，
-	// 老配置读进来照样能用。
+	// 没有把 Domains 换成结构体切片：`Domains []string` 这件事已被引擎参数、DDNS 推送、
+	// 导入导出、老配置全依赖着，换类型风险远大于收益。用「主列表 + 旁挂元信息」，
+	// Domains 仍是唯一权威，缺条目就当「不包含子域」。
 	DomainMeta map[string]DomainMeta `json:"domain_meta,omitempty"`
 	Speed      SpeedConfig           `json:"speed"`
 	DDNS       DDNSConfig            `json:"ddns"`
 
-	// IPv6ProbeURL 是 v6 测速用的 IPv6 段来源，**一行一个链接**。
-	//
-	// 为什么是一个多行字符串而不是 []string：这一栏原来只收一个链接，字段和
-	// json 键（ipv6_probe_url）都已经写进了用户的 config.json 和备份文件。
-	// 换类型等于所有老配置都要迁移，而多行字符串天然向后兼容——老值里没有换行，
-	// 拆出来就是一条。想取链接列表用 IPv6SourceURLs()，别自己 split。
-	//
-	// 为什么不塞进 Speed.ExtraSources：那里是 IPv4 主测速的来源，解析器只认
-	// IPv4 地址（nodeTokenRe / To4 判断）。v6 段混进去会被静默丢掉，用户看到
-	// 的就是「我明明填了，测速还是只用那一个内置段」。两条链路各自存各自的，
-	// 改这里不会影响主测速，也不会动 AdGuard / DDNS 的任何写入。
-	//
-	// 空 = 自动测速不跑 v6（只测 IPv4）；手动点「开始探测」时仍会回退到
-	// 内置的 CF v6 段（v1.6.7 行为）。
+	// IPv6ProbeURL 是 v6 测速用的 IPv6 段来源，一行一个链接。
+	// 用多行字符串而不是 []string：字段和 json 键都已写进用户的 config.json 和备份，
+	// 换类型等于所有老配置都要迁移。取列表用 IPv6SourceURLs()，别自己 split。
+	// 不塞进 Speed.ExtraSources：那里的解析器只认 IPv4（nodeTokenRe / To4），v6 段
+	// 混进去会被静默丢掉。空 = 自动测速不跑 v6，手动「开始探测」仍回退到内置 CF v6 段。
 	IPv6ProbeURL string `json:"ipv6_probe_url,omitempty"`
 
-	// HostsEnabled / HostsSource / HostsEntries 是「GitHub Hosts 源」那一块。
-	//
-	// 它和上面那些字段解决的是同一类问题（让局域网设备少走弯路），但走的是
-	// **另一条路**：不是「测速挑最快的 Cloudflare 节点」，而是「把别人维护的
-	// hosts 列表原样写进 AdGuard 的重写表」。所以：
-	//   - 开关、来源、结果都单独一套，不碰 Speed / DDNS；
-	//   - 关掉它就等于这一块不存在，AdGuard 里由它写的那些域名会被清掉
-	//     （靠下面对账，见 HostsEntries），不会留下指向旧 IP 的残骸。
-	//
-	// 为什么不复用「要加速的域名」：那一栏的答案来自测速结果，所有域名共用
-	// 同一个最优 IP；hosts 源里每个域名各有各的 IP，混在一起就没法表达了。
+	// HostsEnabled / HostsSource / HostsEntries 是「GitHub Hosts 源」那一块：不测速，
+	// 把别人维护的 hosts 列表原样写进 AdGuard 重写表。开关、来源、结果各一套，不碰
+	// Speed / DDNS；关掉就等于这一块不存在，由它写的域名会被清掉（靠 HostsEntries 对账）。
+	// 不复用「要加速的域名」：那一栏所有域名共用同一个最优 IP，而 hosts 源里每个域名
+	// 各有各的 IP。
 	HostsEnabled bool `json:"hosts_enabled,omitempty"`
 	// HostsSource 是 hosts 列表来源，**一行一个链接**（和 IPv6ProbeURL 同构，
 	// 连校验函数都是同一个）。空 = 没配来源。
 	HostsSource string `json:"hosts_source,omitempty"`
-	// HostsEntries 是上一次**成功**拉取并解析出来的「域名 → IP」。
-	//
-	// 它一身两职，两个职责都非得持久化不可：
-	//  1. 拉取失败时的兜底——网络抖一下就把几十条重写全删掉、下一轮再全加回来，
-	//     AdGuard 表每轮都在抖，等于把「稳定」这件事交给对方站点的可用性；
-	//  2. 「上一轮我认领了哪些域名」的账本——某个域名从源里消失之后，只有它还
-	//     记得，下次同步才能把 AdGuard 上那条旧记录清掉（同 RewrittenDomains
-	//     之于「要加速的域名」）。
-	//
-	// 存的是原始解析结果（域名→IP），不是「已经写进 AdGuard 的域名」：两者
-	// 在冲突时会不一样（与加速域名同名的那些不归它写），用原始结果才能在下一次
-	// 正确判断「这条现在还该不该存在」。
+	// HostsEntries 是上一次成功拉取并解析出来的「域名 → IP」，一身两职，都得持久化：
+	// 拉取失败时兜底（否则网络抖一下几十条重写全删、下轮再全加回来）；以及当「上一轮
+	// 我认领了哪些域名」的账本（某域名从源里消失后只有它还记得，下次同步才能清掉旧记录）。
+	// 存原始解析结果而不是「已写进 AdGuard 的域名」：两者在冲突时不一样（与加速域名同名
+	// 的不归它写），用原始结果才能正确判断「这条现在还该不该存在」。
 	HostsEntries map[string]string `json:"hosts_entries,omitempty"`
 	// HostsSyncedAt 是上次成功同步的时间（只给界面显示，不参与判断）。
 	HostsSyncedAt string `json:"hosts_synced_at,omitempty"`
@@ -220,34 +175,22 @@ type Config struct {
 	// 只存 LastIP 的话，重启后那一下会把多出来的几条悄悄删掉。
 	LastIPs []string `json:"last_ips,omitempty"`
 	// LastNodes 与 LastIPs 一一对应，多带速度、延迟、机房。
-	// 只给界面看，不参与任何推送逻辑——推送认的仍然是 LastIPs。
+	// 只给界面看，不参与任何推送逻辑，推送认的仍然是 LastIPs。
 	LastNodes []NodeStat `json:"last_nodes,omitempty"`
 
-	// 上一条 v6 优选的结果。和上面那组 v4 字段是**两套独立的记录**，
-	// 谁失败都不该影响另一个：v6 这一轮跑空时，v4 的结果照旧。
-	//
-	// 为什么要落盘而不是只放内存：v6 优选一次要 1~2 分钟，跑完只存在
-	// 内存里的话，用户升级一次应用、或者容器重启一下，结果就没了，
+	// 上一条 v6 优选的结果。和上面那组 v4 字段是两套独立记录，谁失败都不影响另一个。
+	// 要落盘：v6 优选一次要 1~2 分钟，只放内存的话用户升级应用、容器重启一下就没了，
 	// 打开界面看到「还没有结果」，反而像功能坏了。
 	LastIPv6      string     `json:"last_ipv6,omitempty"`
 	LastIPv6IPs   []string   `json:"last_ipv6_ips,omitempty"`
 	LastIPv6Nodes []NodeStat `json:"last_ipv6_nodes,omitempty"`
 	LastIPv6Time  string     `json:"last_ipv6_time,omitempty"`
 
-	// RewrittenDomains 是「上一次成功写进 AdGuard 重写的域名清单」，也就是
-	// 本工具在 AdGuard 上认领过的域名。它只用来回答一个问题：**哪些旧记录
-	// 现在可以删了**。
-	//
-	// 为什么非要有这个账本：写 AdGuard 从 2026-11-18 起改成「只动自己管的
-	// 域名」，而「自己管的」就是当前域名列表（RewriteDomains）。用户从列表里
-	// 删掉 a.com 之后，a.com 就不在列表里了，程序也就再没理由碰它——AdGuard
-	// 上那条 a.com → 旧 IP 的记录会一直留着，家里设备查 a.com 还是走老地址，
-	// 而界面上什么都看不出来。等于把一个「明目张胆的误删」换成一个「看不见的
-	// 残留」。有这份账本，下次同步就知道「a.com 以前归我管、现在不管了」，
-	// 把它清掉。
-	//
-	// 不删它也不影响别的：账本里的域名如果又加回列表，它立刻变回「自己管的」，
-	// 照常重写，不需要任何迁移。
+	// RewrittenDomains 是「上一次成功写进 AdGuard 重写的域名清单」，也就是本工具认领过的
+	// 域名，只用来回答一个问题：哪些旧记录现在可以删了。写 AdGuard 只动自己管的域名，
+	// 而「自己管的」就是当前域名列表；用户删掉 a.com 之后就再没理由碰它，AdGuard 上那条
+	// a.com → 旧 IP 会一直留着，家里设备还走老地址，界面上却看不出来，等于把明目张胆的
+	// 误删换成一个看不见的残留。域名加回列表时它立刻变回「自己管的」，不需要迁移。
 	RewrittenDomains []string `json:"rewritten_domains,omitempty"`
 
 	// PendingSave 为 true 表示本次 Load 从 ddns.env 应用了一次性覆盖，
@@ -255,18 +198,14 @@ type Config struct {
 	PendingSave bool `json:"-"`
 
 	// RestoredFromBackup 为 true 表示主配置文件不见了，本次是从 config.json.bak
-	// 恢复出来的。调用方应当把这个情况显式告诉用户——「静默退回默认值」正是
+	// 恢复出来的。调用方应当把这个情况显式告诉用户，「静默退回默认值」正是
 	// 2026-11-17 配置丢失事故里最误导人的地方：后台看起来一切正常，只是全空了。
 	RestoredFromBackup bool `json:"-"`
 
 	// RestoredFromUpgradeBackup 为 true 表示这次是从「升级前自动备份」恢复的
-	// （数据目录整个被清空、config.json.bak 也没了那种），恢复来源目录见
-	// RestoreMarkerSource()。
-	//
-	// 和上面那个分成两个字段，是因为要让用户看懂到底出了什么事：
-	//   · 只有 .bak → 「升级把它们删了，但备份文件还在同一个目录里」
-	//   · 连 .bak 都没了 → 「整个目录被删了，靠升级前搬到外面的那份救回来」
-	// 两句话的严重程度不一样，混成一句用户就没法判断要不要报警。
+	// （数据目录整个被清空、config.json.bak 也没了那种），来源见 RestoreMarkerSource()。
+	// 和上面那个分两个字段，是因为严重程度不一样：只有 .bak 没了是「升级删了备份还在
+	// 同一个目录」，连 .bak 都没了是「整个目录被删、靠搬到外面那份救回来」。
 	RestoredFromUpgradeBackup bool `json:"-"`
 }
 
@@ -276,12 +215,9 @@ var (
 	mu          sync.Mutex
 )
 
-// backupSuffix 是配置文件的备份后缀。
-//
-// 每次写 config.json 前都会把旧内容留在 config.json.bak 里。目的有两个：
-//  1. 新写的那份如果本身是坏的（磁盘满、被截断），还能拿回上一版；
-//  2. config.json 万一被外部删掉（升级/清理脚本），Load 能从 .bak 恢复，
-//     而不是静默退回默认值。
+// backupSuffix 是配置文件的备份后缀。每次写 config.json 前都把旧内容留在
+// config.json.bak：新写的那份本身坏了（磁盘满、被截断）还能拿回上一版，
+// config.json 被外部删掉时 Load 也能从它恢复，而不是静默退回默认值。
 const backupSuffix = ".bak"
 
 // resolvePath 返回配置文件路径，可用 CFDDNS_CONFIG 环境变量覆盖。
@@ -308,13 +244,9 @@ func Default() *Config {
 }
 
 // Load 从磁盘加载配置；文件不存在时返回默认配置（不报错，首次启动即如此）。
-//
-// 两种情况下会从 ddns.env / 进程环境取值：
-//  1. 首次启动（config.json 还不存在）——用安装向导填的域名、服务商、间隔打底；
-//  2. ddns.env 里带 CFDDNS_APPLY_ENV=1——表示用户在「应用设置」里刚改过，
-//     需要一次性覆盖已有配置（应用后由调用方清掉标记）。
-//
-// 除此之外 config.json 就是唯一真相，后台界面改了就以它为准。
+// 两种情况下会从 ddns.env / 进程环境取值：首次启动时用安装向导填的域名、服务商、
+// 间隔打底；ddns.env 里带 CFDDNS_APPLY_ENV=1 时一次性覆盖已有配置。除此之外
+// config.json 就是唯一真相。
 func Load() (*Config, error) {
 	c := Default()
 	data, err := os.ReadFile(resolvePath())
@@ -323,9 +255,8 @@ func Load() (*Config, error) {
 		if err := json.Unmarshal(data, c); err != nil {
 			return nil, err
 		}
-		// 这份配置是启动时从「升级前备份」捡回来的（见 restore.go）。
-		// 必须让界面也知道——捡回来的配置看起来和正常的完全一样，
-		// 不说的话用户会以为升级一切顺利，而实际上中间出过事。
+		// 这份配置是从「升级前备份」捡回来的（见 restore.go）。必须让界面也知道：
+		// 捡回来的配置看起来和正常的完全一样，不说的话用户会以为升级一切顺利。
 		if restoredFromUpgradeBackup() {
 			c.RestoredFromBackup = true
 			c.RestoredFromUpgradeBackup = true
@@ -336,12 +267,9 @@ func Load() (*Config, error) {
 			c.PendingSave = true
 		}
 	case os.IsNotExist(err):
-		// 主文件不见了。先看有没有上一次写入前留下的 .bak（见 Save）：
-		// 有就恢复它，别让整份配置静默退回默认值。
-		//
-		// 这一条是为 2026-11-17 那次事故加的。当时升级把整个数据目录清空了，
-		// 程序读到「文件不存在」就当成首次启动、用默认值继续跑，用户看到的是
-		// 一个空白的后台——如果当时有 .bak，至少能自己爬起来。
+		// 主文件不见了。先看有没有上一次写入前留下的 .bak（见 Save）：有就恢复它，
+		// 别让整份配置静默退回默认值。2026-11-17 那次升级把整个数据目录清空，
+		// 程序把「文件不存在」当成首次启动、用默认值继续跑，用户看到的是空白后台。
 		if bak, berr := os.ReadFile(resolvePath() + backupSuffix); berr == nil && len(bak) > 0 {
 			if uerr := json.Unmarshal(bak, c); uerr == nil {
 				c.RestoredFromBackup = true
@@ -350,7 +278,7 @@ func Load() (*Config, error) {
 			}
 		}
 		// 首次启动（安装向导刚写完 ddns.env）：用它打底，并立刻落盘。
-		// 这里必须也置 PendingSave —— 否则 config.json 一直不存在、
+		// 这里必须也置 PendingSave，否则 config.json 一直不存在、
 		// 「已应用」标记永远清不掉，等用户以后在后台改了配置，
 		// 下次重启又会被安装时的旧值覆盖回去。
 		seedFromEnvFile(c, LoadEnvFile(EnvFilePath()))
@@ -420,14 +348,10 @@ func NormalizeDomain(s string) string {
 	return s
 }
 
-// IPv6SourceURLs 把 v6 段来源按行拆成链接列表。
-//
-// 规则和「优选 IP 段」那边保持一致：一行一个，空行和 # 开头的注释行跳过。
-// 返回的每条都已 trim，顺序保持原样（先填的先拉，日志里按这个顺序报错）。
-//
-// 为什么要有这个方法、而不是各处自己 strings.Split：判断「用户到底填没填」
-// 分散在好几个地方（自动流程要不要跑 v6、探测要不要去拉、界面提示怎么写），
-// 每处都自己拆一次迟早会出现「这里认为填了、那里认为没填」的分歧。
+// IPv6SourceURLs 把 v6 段来源按行拆成链接列表，规则和「优选 IP 段」一致：
+// 一行一个，空行和 # 注释跳过，顺序保持原样（先填的先拉，日志按这个顺序报错）。
+// 抽成方法是为了「用户到底填没填」只有一个判据，各处分头 split 迟早会出现
+// 「这里认为填了、那里认为没填」的分歧。
 func (c *Config) IPv6SourceURLs() []string {
 	var out []string
 	for _, line := range strings.Split(c.IPv6ProbeURL, "\n") {
@@ -440,11 +364,8 @@ func (c *Config) IPv6SourceURLs() []string {
 	return out
 }
 
-// HostsSourceURLs 把 hosts 来源按行拆成链接列表。
-//
-// 和 IPv6SourceURLs 同一套规矩（一行一个、空行与 # 注释跳过），单独一个方法
-// 只是为了两处调用点能各说各的：哪天 hosts 那栏允许「只填域名不要协议」
-// 之类的例外，改这里就行，不会连带改掉 v6 的解析。
+// HostsSourceURLs 和 IPv6SourceURLs 同一套规矩，单独一个方法是为了两处能各改各的：
+// 哪天 hosts 那栏允许「只填域名不要协议」之类的例外，改这里不会连带改掉 v6 的解析。
 func (c *Config) HostsSourceURLs() []string {
 	var out []string
 	for _, line := range strings.Split(c.HostsSource, "\n") {
@@ -491,7 +412,7 @@ func (c *Config) Save() error {
 	if err := os.Chmod(name, 0o600); err != nil {
 		return err
 	}
-	// 落盘前把上一版留一份 .bak。失败不影响主流程——备份是加分项，
+	// 落盘前把上一版留一份 .bak。失败不影响主流程，备份是加分项，
 	// 不能因为它写不了就导致用户存不了配置。
 	if old, rerr := os.ReadFile(p); rerr == nil && len(old) > 0 {
 		_ = os.WriteFile(p+backupSuffix, old, 0o600)
@@ -499,24 +420,16 @@ func (c *Config) Save() error {
 	if err := os.Rename(name, p); err != nil {
 		return err
 	}
-	// 主文件已经落盘了，顺手在备份目录里也留一份（见 backup.go）。
-	//
-	// 放在这里、而不是只交给宿主机的 upgrade_init：那条路 2026-11-17 证明过
-	// 靠不住（脚本没跑，装完配置就空了）。用户只要在后台点过一次保存，
-	// 这里就会有一份最新的，下一次升级才真的能自己捡回来。
-	//
-	// 返回值刻意丢掉：备份写不进去（目录不存在、只读挂着、权限不对）绝不能
-	// 让「保存配置」这个动作失败——那才是真要命的事。
+	// 主文件已经落盘了，顺手在备份目录里也留一份（见 backup.go）。不交给宿主机的
+	// upgrade_init：那条路 2026-11-17 证明靠不住（脚本没跑，装完配置就空了）。
+	// 返回值刻意丢掉：备份写不进去绝不能让「保存配置」这个动作失败。
 	writeSnapshot()
 	return nil
 }
 
-// RewriteDomains 返回真正要写进 AdGuard 重写的域名。
-//
-// 勾了「包含子域」的域名会多出一条 `*.域名`：AdGuard Home 的重写支持通配符，
-// 一条 `*.a.com` 能盖住所有子域，比逐条列省事，也不会漏掉用户后来新建的子域。
-//
-// 顺序是「主域名，紧跟它的通配符」，和界面上的顺序一致，日志读起来才对得上。
+// RewriteDomains 返回真正要写进 AdGuard 重写的域名：勾了「包含子域」的会多出一条
+// `*.域名`（重写支持通配符，一条能盖住所有子域，也不会漏掉用户后来新建的）。
+// 顺序是「主域名，紧跟它的通配符」，和界面上一致，日志读起来才对得上。
 func (c Config) RewriteDomains() []string {
 	out := make([]string, 0, len(c.Domains)*2)
 	for _, d := range c.Domains {
@@ -528,10 +441,8 @@ func (c Config) RewriteDomains() []string {
 	return out
 }
 
-// PruneDomainMeta 删掉不在 Domains 里的元信息。
-//
-// 不清理的话，用户删掉一个域名再加回来，会「继承」上一次的包含子域设置和
-// 添加时间——看起来像删不掉。所以每次 Load 都按 Domains 对一遍。
+// PruneDomainMeta 删掉不在 Domains 里的元信息。不清理的话，用户删掉一个域名再加回来
+// 会「继承」上一次的包含子域设置和添加时间，看起来像删不掉。每次 Load 都对一遍。
 func (c *Config) PruneDomainMeta() {
 	if len(c.DomainMeta) == 0 {
 		return
@@ -562,7 +473,7 @@ func (c *Config) Clone() Config {
 	} else {
 		cp.Domains = append(make([]string, 0, len(c.Domains)), c.Domains...)
 	}
-	// DomainMeta 是 map，浅拷贝只会拷到同一个底层哈希表——保存配置时一边写、
+	// DomainMeta 是 map，浅拷贝只会拷到同一个底层哈希表，保存配置时一边写、
 	// 测速线程一边读，和下面 EngineOverrides 是同一类问题。
 	if len(c.DomainMeta) > 0 {
 		m := make(map[string]DomainMeta, len(c.DomainMeta))
@@ -589,7 +500,7 @@ func (c *Config) Clone() Config {
 	}
 	// RewrittenDomains 是「测速线程写、域名页读」的一份账本，同样不能共享底层
 	// 数组：测速那一路会在同步成功后整段替换它，而另一处正在遍历判断哪些域名
-	// 该清——共享底层数组就会边读边改。
+	// 该清，共享底层数组就会边读边改。
 	if len(c.RewrittenDomains) > 0 {
 		cp.RewrittenDomains = append(make([]string, 0, len(c.RewrittenDomains)), c.RewrittenDomains...)
 	}
@@ -607,7 +518,7 @@ func (c *Config) Clone() Config {
 	if len(c.Speed.ExtraSources) > 0 {
 		cp.Speed.ExtraSources = append(make([]string, 0, len(c.Speed.ExtraSources)), c.Speed.ExtraSources...)
 	}
-	// EngineOverrides 是 map，浅拷贝只会拷到同一个底层哈希表——保存配置时
+	// EngineOverrides 是 map，浅拷贝只会拷到同一个底层哈希表，保存配置时
 	// 一边删键一边被测速线程读，是 Go 里会直接 panic 的那种并发写。
 	if len(c.Speed.EngineOverrides) > 0 {
 		m := make(map[string]any, len(c.Speed.EngineOverrides))

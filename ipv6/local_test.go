@@ -49,10 +49,10 @@ func writeProc(t *testing.T, lines ...string) string {
 // 场景：只有 link-local / ULA / 回环 / 临时 / 废弃 / 未检测完——都不合格。
 func TestAllFiltered(t *testing.T) {
 	cases := []struct {
-		name string
-		addr string
+		name  string
+		addr  string
 		flags int
-		want filterReason
+		want  filterReason
 	}{
 		{"回环", "::1", 0x80, reasonLoopback},
 		{"链路本地", "fe80::1", 0x80, reasonLinkLocal},
@@ -107,8 +107,8 @@ func TestPickBestPrefixAndShortestName(t *testing.T) {
 	p := writeProc(t,
 		procLine("2001:db8::1", "br-docker0", 64, 0x10, 0x80), // 前缀对，但名字长
 		procLine("2001:db8::2", "enp1s0", 128, 0x10, 0x80),    // 名字短，但前缀不是 64
-		procLine("2001:db8::3", "eth0", 64, 0x10, 0x80),        // 前缀 64 + 名字最短 → 应挑它
-		procLine("2001:db8::4", "veth9", 64, 0x10, 0x80),       // 前缀对，名字比 eth0 长
+		procLine("2001:db8::3", "eth0", 64, 0x10, 0x80),       // 前缀 64 + 名字最短 → 应挑它
+		procLine("2001:db8::4", "veth9", 64, 0x10, 0x80),      // 前缀对，名字比 eth0 长
 	)
 	rep, err := ReadFrom(p)
 	if err != nil {

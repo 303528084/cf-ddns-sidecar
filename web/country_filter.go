@@ -1,18 +1,13 @@
 package web
 
-// 「按真实机房位置筛节点」——IPv4 和 IPv6 共用的一套。
+// 「按真实机房位置筛节点」，IPv4 和 IPv6 共用的一套。
 //
-// 为什么要有这么一层：候选地址里的 `#US` 是**占位标签**（web/candidates.go 为了
-// 满足引擎的解析格式补的，引擎遇到没有国家标签的裸 IP 会逐条去探测），真实位置
-// 要测完再去问 Cloudflare 的 `/cdn-cgi/trace`。所以「只留香港」这类设置在引擎
-// 内部按标签筛，筛的是假数据：轻则空转（`#US` 不在黑名单里），重则把候选全杀光
-// （白名单只勾 HK 时）。
+// 候选地址里的 `#US` 是占位标签（candidates.go 为满足引擎解析格式补的），真实位置要测完
+// 再去问 /cdn-cgi/trace。所以在引擎内部按标签筛等于筛假数据：轻则空转（`#US` 不在黑名单
+// 里），重则把候选全杀光（白名单只勾 HK 时）。
 //
-// 做法：引擎侧一律不按国家筛（见 countryFilterKeys），测完拿到真实机房位置之后
-// 再在这里筛。代价是被筛掉的节点也白测了一遍——日志里如实写出来，不装作没发生。
-//
-// 2026-11-18 先在 v6 上做了这件事，同一天按用户要求把 v4 也改成同一套，
-// 两条路径共用这里的判断，免得「v4 筛得对 v6 筛得错」这种分叉。
+// 做法：引擎侧一律不按国家筛（见 countryFilterKeys），测完拿到真实机房位置再在这里筛。
+// 代价是被筛掉的节点也白测了一遍，日志里如实写出来，不装作没发生。
 
 import (
 	"fmt"
@@ -73,11 +68,9 @@ type countryFilter struct {
 func (f countryFilter) Active() bool { return len(f.Allow) > 0 || len(f.Deny) > 0 }
 
 // countryFilterFrom 把「高级设置」里四组国家开关与名单翻译成一个筛法。
-//
-// 为什么白名单取交集、黑名单取并集：两份白名单都是「只留」，两个「只留」
-// 同时成立就是同时满足；两份黑名单都是「不要」，任一成立就成立。
-// 注意名单要走 effectiveValue：名单没被改过时配置里没有这个键，但它有一个
-// 非空的默认值（前置白名单默认 HK），直接读覆盖表会读成空名单 = 不筛。
+// 白名单取交集、黑名单取并集：两个「只留」同时成立就是同时满足，两个「不要」任一成立
+// 就成立。名单要走 effectiveValue：没被改过时配置里没有这个键，但它有非空默认值（前置
+// 白名单默认 HK），直接读覆盖表会读成空名单 = 不筛。
 func countryFilterFrom(cfg config.Config) countryFilter {
 	var f countryFilter
 	ov := cfg.Speed.EngineOverrides
@@ -142,11 +135,9 @@ func denyMerge(cur map[string]bool, list []string) map[string]bool {
 
 // effectiveValue 取「这一轮实际生效的值」：用户改过就用用户的，没改过用默认值。
 //
-// 为什么非得回落到默认值：NormalizeOverrides 只保存**和默认值不同**的项。
-// 所以「打开前置白名单、名单就用默认的 HK」在配置里只剩一个 true，
-// ALLOWED_COUNTRIES 这个键压根不存在。只看覆盖表会读成「名单是空的」，
-// 于是筛了等于没筛——用户以为在只留香港，其实一个都没筛（2026-11-18 在容器里
-// 真跑一轮才发现：日志里那句「按 前置白名单「SG」」在默认名单下会整句消失）。
+// 必须回落到默认值，因为 NormalizeOverrides 只保存和默认值不同的项：所以「打开前置
+// 白名单、名单就用默认的 HK」在配置里只剩一个 true，ALLOWED_COUNTRIES 这个键压根不存在。
+// 只看覆盖表会读成「名单是空的」，筛了等于没筛（2026-11-18 在容器里真跑一轮才发现）。
 func effectiveValue(ov map[string]any, key string) any {
 	if v, ok := ov[key]; ok {
 		return v
@@ -167,7 +158,7 @@ func switchOn(ov map[string]any, key string) bool {
 //
 // 三种来源都要认：`[]string`（刚在界面上改过）、`[]any`（从 config.json 读回来，
 // JSON 里数组元素没有具体类型）、`"HK,JP"`（手改配置文件写成一行）。
-// 统一转成大写两位代码——界面上存的就是大写，但手改的不一定。
+// 统一转成大写两位代码，界面上存的就是大写，但手改的不一定。
 func countryList(v any) []string {
 	var raw []string
 	switch t := v.(type) {
@@ -200,13 +191,10 @@ type countryFilterStat struct {
 	UnknownKept    int            // 位置查不到、但留下了的条数（只开黑名单时）
 }
 
-// filterResultByCountry 按真实机房位置筛一遍结果，返回新结果与统计。
-//
-// 三条规则，对「位置查不到」的处理各不相同，这是刻意的：
-//   - 只开白名单：查不到位置的一律剔掉。「只留香港」的意思是没证据是香港的
-//     不算数；留着才是最坏的错——用户以为在筛选，其实没筛。
-//   - 只开黑名单：查不到位置的留着。不能因为查不到就假定它违规。
-//   - 什么都不开：原样返回同一个指针，一条都不动（绝大多数用户的路径）。
+// filterResultByCountry 按真实机房位置筛一遍结果，返回新结果与统计。三条规则，对「位置
+// 查不到」的处理各不相同，这是刻意的：只开白名单时一律剔掉（「只留香港」的意思是没证据
+// 是香港的不算数，留着才是最坏的错）；只开黑名单时留着（不能因为查不到就假定它违规）；
+// 什么都不开时原样返回同一个指针，一条都不动。
 func filterResultByCountry(res *engine.Result, colos map[string]string, f countryFilter) (*engine.Result, countryFilterStat) {
 	st := countryFilterStat{Dropped: map[string]int{}}
 	if res == nil {
@@ -269,7 +257,7 @@ func (s countryFilterStat) detail() string {
 	text := strings.Join(parts, "、")
 	if s.UnknownKept > 0 {
 		// 只开黑名单、又一条都没剔掉时，parts 是空的，这里不能直接接一个
-		// 「；」——日志会变成「按 DNS 黑名单「US」；；另有 10 条…」那种双分号。
+		// 「；」，日志会变成「按 DNS 黑名单「US」；；另有 10 条…」那种双分号。
 		tail := fmt.Sprintf("另有 %d 条位置查不到，黑名单不管它们，留着", s.UnknownKept)
 		if text == "" {
 			text = tail
@@ -303,7 +291,7 @@ func (s countryFilterStat) emptyMsg(f countryFilter, who string) string {
 // Cloudflare 问 trace，测试里做不到；而这一步的三条分支（不筛 / 筛完还有 /
 // 筛完一条不剩）恰恰是最容易写错的地方。
 //
-// 没有配置任何国家规则时原样返回，一条都不动——这是绝大多数用户的路径，
+// 没有配置任何国家规则时原样返回，一条都不动，这是绝大多数用户的路径，
 // 不能因为加了筛选就让他们的结果有任何变化。
 func (s *Server) refineResultByCountry(cfg config.Config, res *engine.Result, colos map[string]string, who string) (*engine.Result, error) {
 	cf := countryFilterFrom(cfg)
