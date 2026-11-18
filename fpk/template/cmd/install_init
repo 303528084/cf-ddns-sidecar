@@ -15,8 +15,7 @@ else
     DATA_ROOT="/var/apps/${APP_NAME}-data"
 fi
 
-# 前提：飞牛已经把共享目录挂上（detect_volume_root 靠它顺着软链找到卷号），
-# 或者上一次安装已经把数据目录安置好了。
+# 前提：飞牛已经把共享目录挂上，或者上一次安装已经把数据目录安置好了。
 #
 # 有 TRIM_PKGVAR 时**无条件**跑一次：install_init 是「容器还没建出来」的最后时机，
 # docker 一旦按一个不存在的挂载源把空目录建出来（属主 root），容器里的 uid 1000

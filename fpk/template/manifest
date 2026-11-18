@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=备份目录搬到飞牛建议的位置 @appdata/<应用名>/backup；升级时自动把旧位置的备份搬过来，旧目录保留不删
+changelog=删掉一段从来没生效过的「把数据搬到存储卷」老代码，不再让人误以为还有这层保护；其他行为一行未变
 disable_authorization_path=true
