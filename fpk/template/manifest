@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=修一个「关掉开关像没生效」的问题。上一版关掉 GitHub hosts 源的开关时，要等到下一轮测速（默认 60 分钟）才把记录收回来，中间这段时间记录还在、日志也不给新行，看起来就是开关坏了。现在点一下开关就立刻收回，日志当场写「把 AdGuard 上由它写的 N 条记录收回来」「已关闭 hosts 源，从 AdGuard 收回 N 条」，不用等测速；开关开着但把来源链接清空，也按同样方式收回。其余行为一字未改。
+changelog=打开 GitHub hosts 源的开关，现在会立刻同步一次，不用等到下一轮测速。点开之后一两秒内，清单里的域名就出现在 AdGuard 重写表里，界面会报「已写入 AdGuard：N 条（含 M 条 hosts 源）」，卡片下面那行「上次同步」也当场刷新；之后仍然跟着每轮测速（默认 60 分钟）定时同步。链接打不开、或者一条都拉不到时不会清掉已有记录，下一轮再试。其余行为与 v1.7.7 一致。
 disable_authorization_path=true

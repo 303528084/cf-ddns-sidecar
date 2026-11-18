@@ -79,18 +79,32 @@ func decodeDomainBody(r *http.Request) (domain string, wildcard bool, err error)
 // 当前域名列表，还包含账本里「以前管过、现在不管了」的域名——用户刚删掉的那
 // 个域名就在里面，所以界面上那句「AdGuard 里对应的重写也会一起清掉」仍然成立。
 func (s *Server) syncRewrites(cfg config.Config) string {
+	msg, _ := s.syncRewritesHosts(cfg, hostsWantFor(cfg), hostsOffFor(cfg))
+	return msg
+}
+
+// syncRewritesHosts 是带上「这一块现在该写哪些条目」的版本，返回值第二个是
+// 「重写表真的写成功了吗」——调用方要靠它决定账本要不要更新（写失败就不能改，
+// 否则下次会以为记录已经在 AdGuard 上了）。
+//
+// hostsWant / hostsOff 这对参数把三种情形分开：
+//   - 正常同步：want = 账本，off = false；
+//   - 关掉开关 / 清空来源：want = nil、off = true，效果是**收回**；
+//   - 刚打开开关：want = 刚拉到的清单、off = false，效果是**立刻写进去**，
+//     不用等到下一轮测速（用户原话：「开启的时候没再同步一次」）。
+func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]string, hostsOff bool) (string, bool) {
 	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
-		return "已保存；还没填 AdGuard 地址，填好后才会写进去"
+		return "已保存；还没填 AdGuard 地址，填好后才会写进去", false
 	}
 	// 没有测速结果、也没有 hosts 条目时才真的没东西可写。
 	// 只看 LastIP 的话，一个「只配了 hosts 源、还没跑过测速」的用户点一下
 	// 添加域名，就会得到「还没有测速结果」——而 hosts 那几十条其实是可以写的。
-	if cfg.LastIP == "" && len(cfg.HostsEntries) == 0 {
-		return "已保存；还没有测速结果，下次测速后写进 AdGuard"
+	if cfg.LastIP == "" && len(hostsWant) == 0 && len(cfg.HostsEntries) == 0 {
+		return "已保存；还没有测速结果，下次测速后写进 AdGuard", false
 	}
 	provider, err := dns.New(cfg.AdGuard.Instance())
 	if err != nil {
-		return "已保存；连不上 AdGuard（" + friendlyErr(err) + "）"
+		return "已保存；连不上 AdGuard（" + friendlyErr(err) + "）", false
 	}
 	names := cfg.RewriteDomains()
 	// 这里用的是「上一次测速结果」而不是「这一轮刚测的」——因为这是个
@@ -108,18 +122,14 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	// 写的那几十条**整份删掉**（want 里没有的域名，在认领语义下等于"不该有
 	// 记录"），而界面上只会显示一句"已写入 AdGuard：1 条"。
 	//
-	// 开关关掉、或者来源被清空时传 nil 进去：这一步就变成**收回**
-	// ——mergeHostsWant 会把账本里那些「不再归它管」的域名给空集合，等于从
-	// AdGuard 上删掉它们。用户关掉开关时立即走这一段（见 web/switch.go），
-	// 不用等到下一轮测速，否则「点完开关什么也没发生」看起来就是没生效。
-	hostsWant := hostsWantFor(cfg)
-	// hostsWant 为 nil ＝ 这一块现在不该有任何记录（开关关掉 / 来源为空），
-	// 于是 mergeHostsWant 会把账本里的域名给空集合，也就是从 AdGuard 收回。
-	hostsOff := hostsWant == nil
+	// off 时传 nil 进去：这一步就变成**收回**——mergeHostsWant 会把账本里那些
+	// 「不再归它管」的域名给空集合，等于从 AdGuard 上删掉它们。用户关掉开关
+	// 时立即走这一段（见 web/switch.go），不用等到下一轮测速，否则「点完开关
+	// 什么也没发生」看起来就是没生效。
 	hostsStat := mergeHostsWant(want, cfg, names, hostsWant)
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {
-		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）"
+		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）", false
 	}
 	// 收回成功之后账本要跟着清空，否则下一轮还会以为这些域名仍归它管，
 	// 反复去删一批已经不在的记录。
@@ -148,12 +158,12 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	}
 	// 关掉开关这一路，重点不是「写进去了几条」，而是「收回来了几条」。
 	if hostsOff && hostsStat.cleared > 0 {
-		return "已关闭 hosts 源，从 AdGuard 收回 " + itoa(hostsStat.cleared) + " 条"
+		return "已关闭 hosts 源，从 AdGuard 收回 " + itoa(hostsStat.cleared) + " 条", true
 	}
 	if len(parts) > 0 {
 		msg += "（含 " + strings.Join(parts, "、") + "）"
 	}
-	return msg
+	return msg, true
 }
 
 func itoa(n int) string {

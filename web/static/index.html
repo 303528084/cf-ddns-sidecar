@@ -940,7 +940,7 @@
         <div class="card-b">
           <div class="field switch">
             <input type="checkbox" class="tgl" id="hs-enabled" onchange="onToggle('hosts_enabled',this.checked,this)">
-            <label for="hs-enabled">启用（每轮测速后跟着同步一次）</label>
+            <label for="hs-enabled">启用（打开即同步一次，之后每轮测速跟着同步）</label>
           </div>
           <div class="field">
             <label>hosts 列表链接</label>
@@ -950,7 +950,8 @@
           </div>
           <div class="hint" id="hs-state"></div>
           <div class="hint">这一块和「要加速的域名」互不影响：同一个域名两边都有时，用本机测速出来的那个 IP。
-            0.0.0.0、127.0.0.1 这种拦截条目会跳过，不写进重写。关掉开关会把这一块写过的记录清掉。</div>
+            0.0.0.0、127.0.0.1 这种拦截条目会跳过，不写进重写。开关打开或关掉都会当刻同步一次，
+            不用等下一轮测速；关掉时会把这一块写过的记录收回。</div>
         </div>
       </div>
     </section>
@@ -2794,7 +2795,7 @@ function toggleRewrites() {
 async function onToggle(key, value, el) {
   const was = !value;
   try {
-    await api("/api/switch", {
+    const resp = await api("/api/switch", {
       method: "POST",
       body: JSON.stringify({ key: key, value: value })
     });
@@ -2817,7 +2818,13 @@ async function onToggle(key, value, el) {
         }
       }
     }
-    toast("已生效");
+    // 打开/关闭 hosts 源会在后台真跑一次同步，回一句带条数的说明比「已生效」有用得多。
+    if (key === "hosts_enabled") {
+      toast((resp && resp.message) || "已生效");
+      loadConfig();
+    } else {
+      toast("已生效");
+    }
   } catch (e) {
     if (el) el.checked = was;
     toast("保存失败：" + e.message);

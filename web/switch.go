@@ -78,6 +78,20 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	s.cfg = &cfg
 	s.mu.Unlock()
 
+	// 打开 hosts 源时**当场**拉一次清单并写进 AdGuard，不等下一轮测速。
+	//
+	// 定时同步挂在测速那一轮（默认 60 分钟），用户点开开关后如果什么都不发生，
+	// 就要盯着一个「开着但没效果」的开关干等——反过来也是同一个毛病：关掉要
+	// 当刻收回，打开也要当刻写进去。
+	if key == "hosts_enabled" && body.Value {
+		note := s.enableHostsNow(cfg)
+		s.appendLog(note)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "key": key, "value": body.Value, "message": note,
+		})
+		return
+	}
+
 	// 关掉 hosts 源时立即把它写过的记录收回来，不等到下一轮测速。
 	//
 	// 为什么要专门加这一步：清理由 `mergeHostsWant` 顺手完成（账本里

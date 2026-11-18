@@ -22,8 +22,10 @@ package web
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
 )
@@ -290,10 +292,55 @@ func mergeHostsWant(want map[string]map[string]bool, cfg config.Config, names []
 // 单独提出来是为了能测：`syncRewrites` 要连真 AdGuard，测不动；
 // 而「关掉开关后到底传不传账本」正是这条功能最容易接错的地方。
 func hostsWantFor(cfg config.Config) map[string]string {
-	if !cfg.HostsEnabled || len(cfg.HostsSourceURLs()) == 0 {
+	if hostsOffFor(cfg) {
 		return nil
 	}
 	return cfg.HostsEntries
+}
+
+// hostsOffFor 说「这一块现在是不是该一条都不留」：开关没开、或者来源被清空。
+//
+// 和 hostsWantFor 分开是因为两处用得上但语义不同：syncRewrites 要判断
+// 「这次是不是在收回」（收回完要把账本清掉），而不只是「want 是不是 nil」
+// ——刚打开开关、但这一次没拉到条目时 want 也是 nil，那不是收回。
+func hostsOffFor(cfg config.Config) bool {
+	return !cfg.HostsEnabled || len(cfg.HostsSourceURLs()) == 0
+}
+
+// enableHostsNow 在开关打开的那一刹那把清单拉下来、立刻写进 AdGuard。
+//
+// 为什么非要做这一步：定时同步挂在测速那一轮（默认 60 分钟一次）。用户打开
+// 开关后如果什么都不发生，他得等到下一轮测速才看得到效果，中间只能盯着一个
+// 「开着的开关」——这和刚修掉的「关掉不生效」是同一个毛病，只是方向反过来。
+//
+// 拉不到、写不进都不算致命：账本保持原样，下一轮测速自然会重试。
+func (s *Server) enableHostsNow(cfg config.Config) string {
+	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
+		return "已开启 hosts 源；还没填 AdGuard 地址，填好后自动会写"
+	}
+	if len(cfg.HostsSourceURLs()) == 0 {
+		return "已开启 hosts 源；先把清单链接填上再保存"
+	}
+	// 15 秒够拉一份几十 KB 的清单了；再长用户会以为界面卡住。
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	entries := s.resolveHosts(ctx, cfg) // 这里会打「N 条可用」或「拉取失败」
+	if len(entries) == 0 {
+		return "已开启 hosts 源；这一次没拉到可用条目，下次测速再试"
+	}
+	note, ok := s.syncRewritesHosts(cfg, entries, false)
+	if !ok {
+		return note
+	}
+	s.mu.Lock()
+	s.cfg.HostsEntries = entries
+	s.cfg.HostsSyncedAt = time.Now().Format("2006-01-02 15:04:05")
+	toSave := s.cfg.Clone()
+	s.mu.Unlock()
+	if err := toSave.Save(); err != nil {
+		log.Printf("保存配置失败: %v", err)
+	}
+	return "已开启 hosts 源：" + note
 }
 
 // resolveHosts 决定这一轮 hosts 写入用哪些条目。

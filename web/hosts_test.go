@@ -10,9 +10,11 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
@@ -310,5 +312,87 @@ func TestHostsWantForOffMeansClear(t *testing.T) {
 	cfg.HostsSource = "  \n# 只剩注释\n"
 	if got := hostsWantFor(cfg); got != nil {
 		t.Fatalf("来源为空时必须给 nil，实际 %v", got)
+	}
+}
+
+// TestEnableHostsNowWritesImmediately 锁住「打开开关当刻就写进 AdGuard」。
+//
+// 用户原话：「开启的时候没再同步一次，应该是开启后马上同步一次 host，
+// 后面再随着测速定时同步才对。」这条用例盯的就是这一下：一个假 hosts 源
+// 加一个假 AdGuard，打开开关后重写表里必须已经有清单里那些域名。
+func TestEnableHostsNowWritesImmediately(t *testing.T) {
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("1.1.1.1 a.example.com\n2.2.2.2 b.example.com\n"))
+	}))
+	defer src.Close()
+
+	var mu sync.Mutex
+	current := map[string]string{}
+	ag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/control/rewrite/list":
+			out := make([]map[string]any, 0, len(current))
+			for d, a := range current {
+				out = append(out, map[string]any{"domain": d, "answer": a, "enabled": true})
+			}
+			_ = json.NewEncoder(w).Encode(out)
+		case "/control/rewrite/add":
+			var e struct {
+				Domain string `json:"domain"`
+				Answer string `json:"answer"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&e)
+			current[e.Domain] = e.Answer
+			_, _ = w.Write([]byte("{}"))
+		case "/control/rewrite/delete":
+			var e struct {
+				Domain string `json:"domain"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&e)
+			delete(current, e.Domain)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer ag.Close()
+
+	s := newToolsTestServer(t, func(c *config.Config) {
+		c.AdGuard.URL = ag.URL
+		c.HostsEnabled = true
+		c.HostsSource = src.URL
+		// 有测速结果，才能顺带验到「加速域名照常写」。
+		c.LastIP = "104.16.0.9"
+		c.Domains = []string{"mine.example.com"}
+	})
+
+	note := s.enableHostsNow(s.cfg.Clone())
+	if !strings.Contains(note, "已开启 hosts 源") {
+		t.Fatalf("返回值应说明已开启，实际 %q", note)
+	}
+
+	mu.Lock()
+	got := map[string]string{}
+	for k, v := range current {
+		got[k] = v
+	}
+	mu.Unlock()
+
+	if got["a.example.com"] != "1.1.1.1" || got["b.example.com"] != "2.2.2.2" {
+		t.Errorf("打开开关后 AdGuard 里应立刻有清单那两条，实际 %v", got)
+	}
+	if got["mine.example.com"] != "104.16.0.9" {
+		t.Errorf("加速域名那条也要照常写，实际 %v", got)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cfg.HostsEntries) != 2 {
+		t.Errorf("账本应记下这 2 条，实际 %v", s.cfg.HostsEntries)
+	}
+	if s.cfg.HostsSyncedAt == "" {
+		t.Error("HostsSyncedAt 应该写上，卡片要显示「上次同步」")
 	}
 }
