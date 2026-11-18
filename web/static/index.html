@@ -934,6 +934,25 @@
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-h"><h2>GitHub hosts 源</h2><span class="sub">把别人维护的 hosts 清单也写进重写</span></div>
+        <div class="card-b">
+          <div class="field switch">
+            <input type="checkbox" class="tgl" id="hs-enabled" onchange="onToggle('hosts_enabled',this.checked,this)">
+            <label for="hs-enabled">启用（每轮测速后跟着同步一次）</label>
+          </div>
+          <div class="field">
+            <label>hosts 列表链接</label>
+            <textarea id="hs-src" rows="2" placeholder="https://hosts.gitcdn.top/hosts.txt"></textarea>
+            <div class="hint">一行一个链接。要填列表文件本身的地址（一般以 hosts.txt 结尾），不是项目首页——
+              填成首页会提示「这个链接返回的是网页」。</div>
+          </div>
+          <div class="hint" id="hs-state"></div>
+          <div class="hint">这一块和「要加速的域名」互不影响：同一个域名两边都有时，用本机测速出来的那个 IP。
+            0.0.0.0、127.0.0.1 这种拦截条目会跳过，不写进重写。关掉开关会把这一块写过的记录清掉。</div>
+        </div>
+      </div>
     </section>
 
     <!-- ========== DDNS ========== -->
@@ -1660,6 +1679,10 @@ async function loadConfig() {
   // v6 段链接现在只有一个入口（测速设置页），和「优选 IP 段」并排。
   // 后端存的是一个多行字符串，直接原样回填——别按行重排，用户的空行会变。
   $("sp-v6-src").value = c.ipv6_probe_url || "";
+  // hosts 源那一块（独立设置，和上面的域名/测速都不共用）
+  $("hs-enabled").checked = !!c.hosts_enabled;
+  $("hs-src").value = c.hosts_source || "";
+  renderHostsState(c);
   renderAdvanced(c);
   $("dd-enabled").checked = !!c.ddns_enabled;
   $("dd-provider").value = c.ddns_provider || "cloudflare";
@@ -1672,6 +1695,25 @@ async function loadConfig() {
   renderRecordType();
   $("dd-proxied").checked = !!c.ddns_proxied;
   renderProvider();
+}
+
+// renderHostsState 只报事实：上次什么时候同步的、写进去多少条。
+//
+// 为什么要有这一行：hosts 源是外部链接，拉没拉到、认下几条，用户从界面上
+// 完全看不出来（日志里才有）。而这几十条重写会直接影响他家里能不能上某个站，
+// 所以「上次同步是两小时前」这种信息必须一眼可见——它同时也是「链接是不是
+// 悄悄失效了」的唯一信号。
+function renderHostsState(c) {
+  const el = $("hs-state");
+  const n = c.hosts_entry_count || 0;
+  if (!n) {
+    el.textContent = c.hosts_enabled
+      ? "还没同步过。下一轮测速（或点「立即测速」）时会拉一次。"
+      : "";
+    return;
+  }
+  el.textContent = "上次同步：" + (c.hosts_synced_at || "时间未知") +
+    "，已写进 AdGuard " + n + " 条。";
 }
 
 // ---------- 高级设置（引擎参数） ----------
@@ -2811,6 +2853,10 @@ async function saveAll() {
         // 「传了空串」含义不同——后者是用户主动清空，得真的清掉。
         // 这里不按行拆成数组，原样交上去：后端按行解析、逐行报错时能报第几行。
         ipv6_probe_url: $("sp-v6-src").value,
+        // hosts 源同样总是带上。开关是布尔，链接用指针收：「没传」和「传了
+        // 空串」意思不一样，后者是用户主动清空，得真的清掉。
+        hosts_enabled: $("hs-enabled").checked,
+        hosts_source: $("hs-src").value,
         ddns_enabled: $("dd-enabled").checked,
         ddns_provider: $("dd-provider").value,
         ddns_domain: $("dd-domain").value.trim(),

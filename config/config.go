@@ -181,6 +181,37 @@ type Config struct {
 	// 内置的 CF v6 段（v1.6.7 行为）。
 	IPv6ProbeURL string `json:"ipv6_probe_url,omitempty"`
 
+	// HostsEnabled / HostsSource / HostsEntries 是「GitHub Hosts 源」那一块。
+	//
+	// 它和上面那些字段解决的是同一类问题（让局域网设备少走弯路），但走的是
+	// **另一条路**：不是「测速挑最快的 Cloudflare 节点」，而是「把别人维护的
+	// hosts 列表原样写进 AdGuard 的重写表」。所以：
+	//   - 开关、来源、结果都单独一套，不碰 Speed / DDNS；
+	//   - 关掉它就等于这一块不存在，AdGuard 里由它写的那些域名会被清掉
+	//     （靠下面对账，见 HostsEntries），不会留下指向旧 IP 的残骸。
+	//
+	// 为什么不复用「要加速的域名」：那一栏的答案来自测速结果，所有域名共用
+	// 同一个最优 IP；hosts 源里每个域名各有各的 IP，混在一起就没法表达了。
+	HostsEnabled bool `json:"hosts_enabled,omitempty"`
+	// HostsSource 是 hosts 列表来源，**一行一个链接**（和 IPv6ProbeURL 同构，
+	// 连校验函数都是同一个）。空 = 没配来源。
+	HostsSource string `json:"hosts_source,omitempty"`
+	// HostsEntries 是上一次**成功**拉取并解析出来的「域名 → IP」。
+	//
+	// 它一身两职，两个职责都非得持久化不可：
+	//  1. 拉取失败时的兜底——网络抖一下就把几十条重写全删掉、下一轮再全加回来，
+	//     AdGuard 表每轮都在抖，等于把「稳定」这件事交给对方站点的可用性；
+	//  2. 「上一轮我认领了哪些域名」的账本——某个域名从源里消失之后，只有它还
+	//     记得，下次同步才能把 AdGuard 上那条旧记录清掉（同 RewrittenDomains
+	//     之于「要加速的域名」）。
+	//
+	// 存的是原始解析结果（域名→IP），不是「已经写进 AdGuard 的域名」：两者
+	// 在冲突时会不一样（与加速域名同名的那些不归它写），用原始结果才能在下一次
+	// 正确判断「这条现在还该不该存在」。
+	HostsEntries map[string]string `json:"hosts_entries,omitempty"`
+	// HostsSyncedAt 是上次成功同步的时间（只给界面显示，不参与判断）。
+	HostsSyncedAt string `json:"hosts_synced_at,omitempty"`
+
 	// 运行状态（持久化便于重启后回显）
 	LastIP   string `json:"last_ip,omitempty"`
 	LastTime string `json:"last_time,omitempty"`
@@ -409,6 +440,23 @@ func (c *Config) IPv6SourceURLs() []string {
 	return out
 }
 
+// HostsSourceURLs 把 hosts 来源按行拆成链接列表。
+//
+// 和 IPv6SourceURLs 同一套规矩（一行一个、空行与 # 注释跳过），单独一个方法
+// 只是为了两处调用点能各说各的：哪天 hosts 那栏允许「只填域名不要协议」
+// 之类的例外，改这里就行，不会连带改掉 v6 的解析。
+func (c *Config) HostsSourceURLs() []string {
+	var out []string
+	for _, line := range strings.Split(c.HostsSource, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // Save 原子写回磁盘。
 func (c *Config) Save() error {
 	mu.Lock()
@@ -544,6 +592,16 @@ func (c *Config) Clone() Config {
 	// 该清——共享底层数组就会边读边改。
 	if len(c.RewrittenDomains) > 0 {
 		cp.RewrittenDomains = append(make([]string, 0, len(c.RewrittenDomains)), c.RewrittenDomains...)
+	}
+	// HostsEntries 是 map，同样一身两职：一轮测速结束会把整张表换成新拉到的
+	// 结果，同一时刻 AdGuard 同步那一路正在遍历它算「该写哪些、该清哪些」。
+	// 浅拷贝就是同一个底层哈希表，一边改一边读会直接 panic。
+	if len(c.HostsEntries) > 0 {
+		m := make(map[string]string, len(c.HostsEntries))
+		for k, v := range c.HostsEntries {
+			m[k] = v
+		}
+		cp.HostsEntries = m
 	}
 	// ExtraSources 同理：保存配置时会整段替换，测速时另一个 goroutine 正在读它。
 	if len(c.Speed.ExtraSources) > 0 {

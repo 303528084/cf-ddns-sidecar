@@ -326,6 +326,18 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 			managed[d] = sorted
 		}
 	}
+	// hosts 源写的那几十条同样是本工具写的：不列进来，界面会把它们全标成
+	// 「不归这个程序管」——用户看到一屏"不是我的"，第一反应是「它没在工作」。
+	// 答案就取账本里记的那个 IP（正是上一轮写进去的）。
+	for d, ip := range cfg.HostsEntries {
+		if ip == "" {
+			continue
+		}
+		if _, ok := managed[d]; ok {
+			continue // 和加速域名重名：实际写的是测速结果，上面已经列了
+		}
+		managed[d] = []string{ip}
+	}
 
 	// 以前管过、现在不在列表里的域名：这些是「下次同步会整条清掉」的。
 	nameSet := make(map[string]bool, len(names))
@@ -334,9 +346,15 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 	}
 	stale := make([]string, 0, len(cfg.RewrittenDomains))
 	for _, d := range cfg.RewrittenDomains {
-		if d != "" && !nameSet[d] {
-			stale = append(stale, d)
+		if d == "" || nameSet[d] {
+			continue
 		}
+		// hosts 源还认领着它（比如从「要加速的域名」里删了，但它本来就在
+		// hosts 清单里），下一轮会把这条重新写成清单里的地址，不是清掉。
+		if _, ok := managed[d]; ok {
+			continue
+		}
+		stale = append(stale, d)
 	}
 	sort.Strings(stale)
 

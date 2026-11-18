@@ -9,7 +9,8 @@ package web
 //
 // 两类开关都收：
 //   - 高级设置的引擎开关：key 是 Schema 里的参数名，必须确实是 KindBool；
-//   - DDNS 的两个：ddns_enabled / ddns_proxied。
+//   - DDNS 的两个：ddns_enabled / ddns_proxied；
+//   - GitHub hosts 源的 hosts_enabled（见 web/hosts.go）。
 //
 // 其他任何 key 一律 400，不猜、不猜着存——否则一个拼错的名字会在 config.json
 // 里留个垃圾键，而 NormalizeOverrides 下次保存时又会把它悄悄丢掉，前后不一致。
@@ -47,6 +48,8 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		cfg.DDNS.Enabled = body.Value
 	case key == "ddns_proxied":
 		cfg.DDNS.Proxied = body.Value
+	case key == "hosts_enabled":
+		cfg.HostsEnabled = body.Value
 	default:
 		// 引擎开关：必须存在于参数表里、且确实是布尔开关。
 		spec, ok := engine.Lookup(key)

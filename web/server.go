@@ -719,12 +719,18 @@ type configResp struct {
 	IntervalMinutes int         `json:"interval_minutes"`
 	ExtraSources    []string    `json:"extra_sources"`
 	IPv6ProbeURL    string      `json:"ipv6_probe_url"`
-	DDNSEnabled     bool        `json:"ddns_enabled"`
-	DDNSProvider    string      `json:"ddns_provider"`
-	DDNSDomain      string      `json:"ddns_domain"`
-	DDNSTTL         int         `json:"ddns_ttl"`
-	DDNSProxied     bool        `json:"ddns_proxied"`
-	DDNSIPCount     int         `json:"ddns_ip_count"`
+	// hosts 源那一块（GitHub hosts 清单写进 AdGuard 重写）。和上面那些设置
+	// 完全独立，见 web/hosts.go 顶部。
+	HostsEnabled    bool   `json:"hosts_enabled"`
+	HostsSource     string `json:"hosts_source"`
+	HostsEntryCount int    `json:"hosts_entry_count"`
+	HostsSyncedAt   string `json:"hosts_synced_at"`
+	DDNSEnabled     bool   `json:"ddns_enabled"`
+	DDNSProvider    string `json:"ddns_provider"`
+	DDNSDomain      string `json:"ddns_domain"`
+	DDNSTTL         int    `json:"ddns_ttl"`
+	DDNSProxied     bool   `json:"ddns_proxied"`
+	DDNSIPCount     int    `json:"ddns_ip_count"`
 	// DDNSRecordType 是要写的记录类型：A（IPv4）或 AAAA（IPv6）。
 	// 和上面的开关不同，它有两个合法值，所以用「空 = A」没法表达「用户主动选了 A」；
 	// 真要区分得用指针。这里取值受限、且老界面不会传，用字符串足够：
@@ -758,6 +764,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			IntervalMinutes: c.Speed.IntervalMinutes,
 			ExtraSources:    c.Speed.ExtraSources,
 			IPv6ProbeURL:    c.IPv6ProbeURL,
+			HostsEnabled:    c.HostsEnabled,
+			HostsSource:     c.HostsSource,
+			HostsEntryCount: len(c.HostsEntries),
+			HostsSyncedAt:   c.HostsSyncedAt,
 			DDNSEnabled:     c.DDNS.Enabled,
 			DDNSProvider:    c.DDNS.Provider,
 			DDNSDomain:      c.DDNS.Domain,
@@ -777,15 +787,19 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseV6SourceInput 把「IPv6 段链接」那一栏的原始文本按行校验成链接列表。
+// parseSourceURLLines 把「一行一个链接」的输入框按行校验成链接列表。
 //
-// 只认链接（http:// 或 https://）：这一栏刻意不支持直接写 IP 段，因为它的
-// 语义就是「去哪里拉一份 v6 段清单」。想手写段请用上面的「优选 IP 段」。
-// 空行丢掉；# 开头的注释行原样保留（用户拿它分隔/记事），只是不参与拉取。
+// label 是这一栏在界面上的名字（「IPv6 段链接」/「hosts 源链接」），出错时
+// 原样带回给用户——只报「第 3 行不是合法链接」而不说是哪一栏，两个都在同一个
+// 页面上时用户还得自己找。
 //
-// 为什么要单独一个函数、而不是各写一份：保存配置和导入备份校验的是同一栏，
+// 只认链接（http:// 或 https://）：这两栏的语义都是「去哪里拉一份清单」。
+// 想手写 IP 段请用「优选 IP 段」。空行丢掉；# 开头的注释行原样保留（用户拿它
+// 分隔/记事），只是不参与拉取。
+//
+// 为什么必须共用一份实现、而不是各写一份：保存配置和导入备份校验的是同一栏，
 // 两份规则各自漂移就会出现「界面存得进、备份导不进」这类没人想得到的分歧。
-func parseV6SourceInput(raw string) ([]string, error) {
+func parseSourceURLLines(raw, label string) ([]string, error) {
 	var out []string
 	for i, l := range strings.Split(raw, "\n") {
 		t := strings.TrimSpace(l)
@@ -799,12 +813,17 @@ func parseV6SourceInput(raw string) ([]string, error) {
 		u, perr := url.Parse(t)
 		if perr != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return nil, fmt.Errorf(
-				"「IPv6 段链接」第 %d 行不是合法链接：%s。每行要填 http:// 或 https:// 开头的地址",
-				i+1, t)
+				"「%s」第 %d 行不是合法链接：%s。每行要填 http:// 或 https:// 开头的地址",
+				label, i+1, t)
 		}
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// parseV6SourceInput 是「IPv6 段链接」那一栏的校验，规则见 parseSourceURLLines。
+func parseV6SourceInput(raw string) ([]string, error) {
+	return parseSourceURLLines(raw, "IPv6 段链接")
 }
 
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
@@ -829,6 +848,11 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		// v6 段来源用指针，理由同上：没传 = 不动（旧客户端、老的导入文件），
 		// 传了空串 = 用户主动清空，要真的清掉。
 		IPv6ProbeURL *string `json:"ipv6_probe_url"`
+		// hosts 源那一块。开关和链接都用指针：没传 = 不动（老界面、老的导入
+		// 文件里没有这两项），传了空串 = 用户主动清空来源。用普通 bool 的话
+		// 「没传」和「关掉」都是 false，一次只改 AdGuard 地址的保存就会把它关掉。
+		HostsEnabled *bool   `json:"hosts_enabled"`
+		HostsSource  *string `json:"hosts_source"`
 		DDNSEnabled  bool    `json:"ddns_enabled"`
 		DDNSProvider string  `json:"ddns_provider"`
 		DDNSDomain   string  `json:"ddns_domain"`
@@ -902,6 +926,17 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		v6Lines = lines
 	}
 
+	// hosts 源链接：同一套逐行校验，错一行就整单退回并指明第几行。
+	var hostsLines []string
+	if body.HostsSource != nil {
+		lines, herr := parseSourceURLLines(*body.HostsSource, "hosts 源链接")
+		if herr != nil {
+			writeJSON(w, 400, map[string]string{"error": herr.Error()})
+			return
+		}
+		hostsLines = lines
+	}
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	cfg.AdGuard.URL = strings.TrimSpace(body.AdGuardURL)
@@ -950,6 +985,12 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if body.IPv6ProbeURL != nil {
 		// 存成多行字符串（一行一个链接），和字段定义保持一致。
 		cfg.IPv6ProbeURL = strings.Join(v6Lines, "\n")
+	}
+	if body.HostsSource != nil {
+		cfg.HostsSource = strings.Join(hostsLines, "\n")
+	}
+	if body.HostsEnabled != nil {
+		cfg.HostsEnabled = *body.HostsEnabled
 	}
 	// 引擎参数：同样「没传就不动」。NormalizeOverrides 会丢掉未知键、把
 	// 类型转成 cfnb 认识的（"443,8443" → []int{443,8443}）、把越界值钳住，
@@ -1568,13 +1609,37 @@ func (s *Server) runOnce(cfg config.Config) error {
 	//
 	// 写的是 cfg.RewriteDomains() 而不是 cfg.Domains：勾了「包含子域」的域名
 	// 会多出一条 `*.域名`，AdGuard 的重写支持通配符，一条就盖住所有子域。
+	//
+	// 从 2026-11-18 起这张表上有**两块内容**：加速域名（答案是测速结果）和
+	// GitHub hosts 源（答案是清单里写的地址）。它们共用一个 ReplaceRewrites，
+	// 但边界写在 web/hosts.go 顶部：独立开关 + 独立账本，冲突时加速域名优先。
 	rewriteNames := cfg.RewriteDomains()
-	if cfg.AdGuard.URL != "" && len(rewriteNames) > 0 {
+
+	// hosts 源：只有配了 AdGuard 才去拉。没配 AdGuard 的话这几十条没地方写，
+	// 每轮白拉一次外部链接只是给对方的站点添流量，日志里还多一行噪音。
+	//
+	// ctx 单独一个：上面那个的预算在测速和 v6 上已经花得差不多了，沿用它会
+	// 一条都拉不回来（和出口探测那里同一个理由）。
+	var hostsEntries map[string]string
+	if cfg.AdGuard.URL != "" {
+		hostsCtx, hostsCancel := context.WithTimeout(context.Background(), 40*time.Second)
+		hostsEntries = s.resolveHosts(hostsCtx, cfg)
+		hostsCancel()
+	}
+
+	// 这一轮允不允许改写 hosts 账本。只有真的动过 AdGuard 重写表（写成功）才
+	// 更新；地址没填、或者压根没东西可写时保持原样——账本记的是「AdGuard 上
+	// 现在有哪些是我的」，没动过表就不该动它。
+	hostsLedgerOK := false
+
+	needSync := len(rewriteNames) > 0 || len(hostsEntries) > 0 || len(cfg.HostsEntries) > 0
+	if cfg.AdGuard.URL != "" && needSync {
 		provider, perr := dns.New(cfg.AdGuard.Instance())
 		if perr != nil {
 			s.appendLog("AdGuard 写入失败: " + perr.Error())
 		} else {
 			want := rewritePlan(cfg, rewriteNames, rewriteAnswers(best, v6RoundIPs))
+			hostsStat := mergeHostsWant(want, cfg, rewriteNames, hostsEntries)
 			stats, werr := provider.ReplaceRewrites(want)
 			if werr != nil {
 				s.appendLog("写入 AdGuard 失败: " + werr.Error())
@@ -1582,6 +1647,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 				// 记下这一轮认领的域名：下次用户从列表里删掉某个域名时，
 				// 靠这份账本才知道 AdGuard 上那条旧记录该清掉。
 				s.rememberRewritten(rewriteNames)
+				hostsLedgerOK = true
 				wild := len(rewriteNames) - len(cfg.Domains)
 				fam := "仅 IPv4"
 				if len(v6RoundIPs) > 0 {
@@ -1593,6 +1659,26 @@ func (s *Server) runOnce(cfg config.Config) error {
 				} else {
 					s.appendLog(fmt.Sprintf("已写入 AdGuard：%d 条重写（%d 个域名，%s）%s",
 						stats.Written, len(cfg.Domains), fam, keptNote(stats.Kept)))
+				}
+				// hosts 那一块单独说一句。合成一句会变成「已写入 AdGuard：70 条
+				// （1 个域名…）」——用户数一下 AdGuard 里的条数对不上，还得自己猜
+				// 那 69 条是从哪来的。只报非零项，一个「写入 0 条」纯属噪音。
+				//
+				// 这里说「进重写表」而不是「写入」：上面那句的数字是**这次真的
+				// 动了多少条**（答案没变的不会重写），这一句是**这些域名归它管**。
+				// 两个都用「写入」，就会出现「已写入 1 条」紧跟「写入 3 条」。
+				var hp []string
+				if hostsStat.added > 0 {
+					hp = append(hp, fmt.Sprintf("%d 条进 AdGuard 重写表", hostsStat.added))
+				}
+				if hostsStat.skipped > 0 {
+					hp = append(hp, fmt.Sprintf("%d 条与加速域名重名已跳过（用测速结果那个 IP）", hostsStat.skipped))
+				}
+				if hostsStat.cleared > 0 {
+					hp = append(hp, fmt.Sprintf("清掉 %d 条不再归它管的", hostsStat.cleared))
+				}
+				if len(hp) > 0 {
+					s.appendLog("hosts 源：" + strings.Join(hp, "，"))
 				}
 			}
 		}
@@ -1659,6 +1745,16 @@ func (s *Server) runOnce(cfg config.Config) error {
 	s.cfg.LastIPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
 	s.cfg.LastNodes = nodes
 	s.cfg.LastTime = now
+	// hosts 账本：只在真的动过 AdGuard 重写表之后才更新。写失败时保持原样，
+	// 下一轮自然会再试一次——账本是自愈的，不需要人补救。这里不单独 Save，
+	// 跟着下面这一整份配置一起落盘（每轮本来就要写一次 last_ip/last_time）。
+	if hostsLedgerOK {
+		s.cfg.HostsEntries = hostsEntries
+		s.cfg.HostsSyncedAt = ""
+		if len(hostsEntries) > 0 {
+			s.cfg.HostsSyncedAt = now
+		}
+	}
 	s.lastDurSec = int(time.Since(startedAt).Seconds())
 	toSave := s.cfg.Clone()
 	s.mu.Unlock()

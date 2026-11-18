@@ -81,7 +81,10 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
 		return "已保存；还没填 AdGuard 地址，填好后才会写进去"
 	}
-	if cfg.LastIP == "" {
+	// 没有测速结果、也没有 hosts 条目时才真的没东西可写。
+	// 只看 LastIP 的话，一个「只配了 hosts 源、还没跑过测速」的用户点一下
+	// 添加域名，就会得到「还没有测速结果」——而 hosts 那几十条其实是可以写的。
+	if cfg.LastIP == "" && len(cfg.HostsEntries) == 0 {
 		return "已保存；还没有测速结果，下次测速后写进 AdGuard"
 	}
 	provider, err := dns.New(cfg.AdGuard.Instance())
@@ -96,7 +99,14 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	// **必须带上 v6**：want 里没有的答案会被当成多余删掉，只给 v4 的话，
 	// 用户只是点了一下「加域名」，家里所有 v6 的重写就被悄悄删掉了，而界面
 	// 上只会说「已写入 AdGuard：N 条」。
-	want := rewritePlan(cfg, names, rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs))
+	want := make(map[string]map[string]bool, len(names))
+	if cfg.LastIP != "" {
+		want = rewritePlan(cfg, names, rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs))
+	}
+	// hosts 那一块也要带上。少了这一步，用户每加一个加速域名就会把 hosts 源
+	// 写的那几十条**整份删掉**（want 里没有的域名，在认领语义下等于"不该有
+	// 记录"），而界面上只会显示一句"已写入 AdGuard：1 条"。
+	hostsStat := mergeHostsWant(want, cfg, names, cfg.HostsEntries)
 	stats, err := provider.ReplaceRewrites(want)
 	if err != nil {
 		return "已保存；写 AdGuard 失败（" + friendlyErr(err) + "）"
@@ -104,10 +114,20 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	// 记下这一轮认领的域名。删域名这条路上它特别关键：账本是「下次同步该清
 	// 哪些旧记录」的唯一依据。
 	s.rememberRewritten(names)
+	// 这句话会原样进 toast，所以要短。没有 hosts 源时保持原来的说法一个字都
+	// 不加——多一句「含 0 条 hosts 源」只会让人以为哪里没配好。
+	msg := "已写入 AdGuard：" + itoa(stats.Written) + " 条"
+	var parts []string
 	if extra := len(names) - len(cfg.Domains); extra > 0 {
-		return "已写入 AdGuard：" + itoa(stats.Written) + " 条（含 " + itoa(extra) + " 条子域通配符）"
+		parts = append(parts, itoa(extra)+" 条子域通配符")
 	}
-	return "已写入 AdGuard：" + itoa(stats.Written) + " 条"
+	if hostsStat.added > 0 {
+		parts = append(parts, itoa(hostsStat.added)+" 条 hosts 源")
+	}
+	if len(parts) > 0 {
+		msg += "（含 " + strings.Join(parts, "、") + "）"
+	}
+	return msg
 }
 
 func itoa(n int) string {

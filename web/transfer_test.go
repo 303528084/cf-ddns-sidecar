@@ -177,6 +177,13 @@ func fullConfig() config.Config {
 	c.Speed.ExtraSources = []string{"104.16.0.0/13", "https://example.com/ips.txt"}
 	c.Speed.EngineOverrides = map[string]any{"IP_CALIBRATION_ENABLED": true}
 	c.IPv6ProbeURL = "https://example.com/v6.txt\n# 备用源\nhttps://example.com/v6-2.txt"
+	// hosts 源那一块：开关必须开着（关着的值等于默认值，漏导也看不出来），
+	// 链接里也带一行注释，顺便验注释会不会被拆坏。
+	c.HostsEnabled = true
+	c.HostsSource = "https://hosts.gitcdn.top/hosts.txt\n# 备用源\nhttps://example.com/hosts.txt"
+	// hosts 账本：上一轮写进 AdGuard 的域名 → IP。它决定「源里删掉一个域名之后
+	// 能不能把旧记录清掉」，和 RewrittenDomains 一样必须跟着备份走。
+	c.HostsEntries = map[string]string{"github.com": "140.82.113.4", "raw.githubusercontent.com": "185.199.108.133"}
 	c.DDNS.Enabled = true
 	c.DDNS.Provider = "cloudflare"
 	c.DDNS.Domain = "cf.example.com"
@@ -214,6 +221,7 @@ func TestBuildBundleCarriesEveryUserSetting(t *testing.T) {
 	for _, k := range []string{
 		"ipv6_probe_url", "ddns_ttl", "ddns_proxied", "ddns_ip_count",
 		"ddns_record_type", "domain_meta", "rewritten_domains",
+		"hosts_enabled", "hosts_source", "hosts_entries",
 	} {
 		if _, ok := c[k]; !ok {
 			t.Errorf("导出文件里少了 %q —— 恢复之后这一项会被静默重置：%s", k, raw)
@@ -238,6 +246,15 @@ func TestBuildBundleCarriesEveryUserSetting(t *testing.T) {
 	}
 	if got := c["ipv6_probe_url"]; got != in.IPv6ProbeURL {
 		t.Errorf("IPv6 段链接没原样带上: %q", got)
+	}
+	if got := c["hosts_enabled"]; got != true {
+		t.Errorf("hosts 源开关没带上: %v —— 恢复后这一块会整块被跳过", got)
+	}
+	if got := c["hosts_source"]; got != in.HostsSource {
+		t.Errorf("hosts 源链接没原样带上: %q", got)
+	}
+	if got, _ := c["hosts_entries"].(map[string]any); len(got) != 2 {
+		t.Errorf("hosts 账本应带 2 条，实际 %v", c["hosts_entries"])
 	}
 	meta, _ := c["domain_meta"].(map[string]any)
 	if len(meta) != 2 {
@@ -266,6 +283,9 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	s.cfg.Domains = []string{"other.example.com"}
 	s.cfg.DomainMeta = map[string]config.DomainMeta{"other.example.com": {Wildcard: true}}
 	s.cfg.IPv6ProbeURL = ""
+	s.cfg.HostsEnabled = false
+	s.cfg.HostsSource = "https://other.example.com/hosts.txt"
+	s.cfg.HostsEntries = map[string]string{"other.example.com": "1.2.3.4"}
 	s.cfg.DDNS.TTL = 0
 	s.cfg.DDNS.Proxied = false
 	s.cfg.DDNS.IPCount = 1
@@ -305,6 +325,14 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	if got.IPv6ProbeURL != want.IPv6ProbeURL {
 		t.Errorf("IPv6 段链接: %q ≠ %q", got.IPv6ProbeURL, want.IPv6ProbeURL)
 	}
+	// hosts 源：开关 + 链接 + 账本全都要回来。开关丢了会导致 AdGuard 上那几十条
+	// 在下一轮被整份清掉；账本丢了则相反——源里删掉的域名会永远留在 AdGuard 上。
+	if !got.HostsEnabled || got.HostsSource != want.HostsSource {
+		t.Errorf("hosts 源没恢复: enabled=%v source=%q", got.HostsEnabled, got.HostsSource)
+	}
+	if len(got.HostsEntries) != 2 || got.HostsEntries["github.com"] != "140.82.113.4" {
+		t.Errorf("hosts 账本没恢复: %v", got.HostsEntries)
+	}
 	if got.DDNS.TTL != 600 || !got.DDNS.Proxied || got.DDNS.IPCount != 3 {
 		t.Errorf("DDNS 三项没恢复: TTL=%d proxied=%v 条数=%d",
 			got.DDNS.TTL, got.DDNS.Proxied, got.DDNS.IPCount)
@@ -337,11 +365,15 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	}
 }
 
-// TestImportOldBundleKeepsNewSettings 老备份（这六项之外的一切都有、这六项都没有）
-// 导入时，这六项必须保持当前值，而且要在响应里明说「没有恢复」。
+// TestImportOldBundleKeepsNewSettings 老备份（这八项之外的一切都有、这八项都没有）
+// 导入时，这八项必须保持当前值，而且要在响应里明说「没有恢复」。
 //
 // 用户 2026-11-18 导出的那份 1.7.3 备份正是这个形状。若不这样处理，一次
 // 「恢复备份」会把记录类型拨回 A、v6 段链接清空——界面只说「已恢复」。
+//
+// 八项而不是六项：v1.7.6 加了 hosts 源那一块（开关 + 链接），老文件里同样
+// 没有它，所以「文件里没有、保持原值」的清单跟着变成 8 项。这个数字每加一个
+// 用户能设的项就会变——它变了不是坏事，说明清单确实在跟着配置走。
 func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s, _ := newPasswordTestServer(t, "")
 	token := s.signToken()
@@ -350,13 +382,15 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s.cfg.Domains = []string{"keep.example.com"}
 	s.cfg.DomainMeta = map[string]config.DomainMeta{"keep.example.com": {Wildcard: true}}
 	s.cfg.IPv6ProbeURL = "https://example.com/keep-v6.txt"
+	s.cfg.HostsEnabled = true
+	s.cfg.HostsSource = "https://hosts.example.com/hosts.txt"
 	s.cfg.DDNS.TTL = 3600
 	s.cfg.DDNS.Proxied = true
 	s.cfg.DDNS.IPCount = 5
 	s.cfg.DDNS.RecordType = ddns.TypeAAAA
 	s.mu.Unlock()
 
-	// v1.7.3 那代导出的文件：用户在界面上能改的其它项都在，只缺下面这六项。
+	// v1.7.3 那代导出的文件：用户在界面上能改的其它项都在，只缺下面这八项。
 	// 形状照用户 2026-11-18 那份真实备份抄的，不是凭空编的。
 	old := `{
 	  "app":"cf-ddns-sidecar","format":1,"version":"1.7.3",
@@ -385,8 +419,8 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("响应解析失败: %s", rec.Body.String())
 	}
-	if len(resp.Kept) != 6 {
-		t.Errorf("应明确列出 6 项「文件里没有、保持原值」，实际 %v", resp.Kept)
+	if len(resp.Kept) != 8 {
+		t.Errorf("应明确列出 8 项「文件里没有、保持原值」，实际 %v", resp.Kept)
 	}
 
 	s.mu.Lock()
@@ -402,6 +436,11 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	if got.DDNS.TTL != 3600 || !got.DDNS.Proxied || got.DDNS.IPCount != 5 {
 		t.Errorf("DDNS 三项被改掉了: TTL=%d proxied=%v 条数=%d",
 			got.DDNS.TTL, got.DDNS.Proxied, got.DDNS.IPCount)
+	}
+	// hosts 那一块：老文件里没有它，所以「开着」和「填了链接」都得留着。
+	// 关掉等于用户下次测速时 AdGuard 上那几十条被整份清掉，而界面写着「已恢复」。
+	if !got.HostsEnabled || got.HostsSource != "https://hosts.example.com/hosts.txt" {
+		t.Errorf("hosts 源被老备份改掉了: enabled=%v source=%q", got.HostsEnabled, got.HostsSource)
 	}
 	if m, ok := got.DomainMeta["keep.example.com"]; !ok || !m.Wildcard {
 		t.Errorf("「包含子域」标记被清掉了: %v", got.DomainMeta)

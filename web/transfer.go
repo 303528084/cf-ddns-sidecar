@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -79,9 +80,21 @@ type bundleConfig struct {
 	// IPv6ProbeURL 是 v6 段链接（一行一个）。指针的理由：用户把这一栏
 	// 清空是合法操作，得和「老文件里没这个字段」分开。
 	IPv6ProbeURL *string `json:"ipv6_probe_url,omitempty"`
-	DDNSEnabled  bool    `json:"ddns_enabled"`
-	DDNSProvider string  `json:"ddns_provider"`
-	DDNSDomain   string  `json:"ddns_domain"`
+	// hosts 源那一块（GitHub hosts 清单写进 AdGuard 重写）。
+	// 两个都用指针，理由同上：「关掉」和「没这一项」必须分开，否则从一份老
+	// 文件恢复会把用户打开的开关静默关掉。
+	HostsEnabled *bool   `json:"hosts_enabled,omitempty"`
+	HostsSource  *string `json:"hosts_source,omitempty"`
+	// HostsEntries 是 hosts 那一块的账本（域名 → 上一轮写进去的 IP）。
+	//
+	// 和 RewrittenDomains 一样属于「严格说是运行状态、但不带就会留下残骸」：
+	// 换台机器恢复之后，如果 hosts 源里已经没有某个域名，账本是唯一知道要去
+	// AdGuard 上把它清掉的东西。条数上限同样是为了不让人拿一份来路不明的
+	// 文件授权程序去动几千个域名。
+	HostsEntries map[string]string `json:"hosts_entries,omitempty"`
+	DDNSEnabled  bool              `json:"ddns_enabled"`
+	DDNSProvider string            `json:"ddns_provider"`
+	DDNSDomain   string            `json:"ddns_domain"`
 	// 下面四项全是「0 / false 也是用户真切能选的值」（TTL 0 = 用各家默认、
 	// 橙云关掉 = 谁都看得见的选项）。所以必须用指针，不能用零值代表缺失。
 	DDNSTTL        *int    `json:"ddns_ttl,omitempty"`
@@ -156,6 +169,18 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 	ipCount := cfg.DDNS.IPCount
 	recordType := cfg.DDNS.RecordType
 	v6 := cfg.IPv6ProbeURL
+	hostsOn := cfg.HostsEnabled
+	hostsSrc := cfg.HostsSource
+
+	// hosts 账本同样要拷一份：导出期间一轮测速跑完会整段替换它，直接引用
+	// 那张表就可能导出成一半旧一半新。
+	var hostsBook map[string]string
+	if len(cfg.HostsEntries) > 0 {
+		hostsBook = make(map[string]string, len(cfg.HostsEntries))
+		for k, v := range cfg.HostsEntries {
+			hostsBook[k] = v
+		}
+	}
 
 	return bundle{
 		App:        bundleApp,
@@ -175,6 +200,9 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 			ExtraSources:     append([]string{}, cfg.Speed.ExtraSources...),
 			EngineOverrides:  cfg.Speed.EngineOverrides,
 			IPv6ProbeURL:     &v6,
+			HostsEnabled:     &hostsOn,
+			HostsSource:      &hostsSrc,
+			HostsEntries:     hostsBook,
 			DDNSEnabled:      cfg.DDNS.Enabled,
 			DDNSProvider:     cfg.DDNS.Provider,
 			DDNSDomain:       cfg.DDNS.Domain,
@@ -318,6 +346,42 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 			joined := strings.Join(lines, "\n")
 			b.Config.IPv6ProbeURL = &joined
 		}
+	}
+	if b.Config.HostsSource != nil {
+		lines, err := parseSourceURLLines(*b.Config.HostsSource, "hosts 源链接")
+		if err != nil {
+			warns = append(warns, err.Error()+"，这一项已忽略（保持当前设置）")
+			b.Config.HostsSource = nil
+		} else {
+			joined := strings.Join(lines, "\n")
+			b.Config.HostsSource = &joined
+		}
+	}
+	// hosts 账本：域名归一化，IP 必须真能解析。
+	//
+	// 这里的校验比对 RewrittenDomains 更硬一点是必要的：账本里的 IP 会被原样
+	// 写进 AdGuard 的重写答案，一个手改出来的乱码地址不会报错，只会变成一条
+	// 把域名指到黑洞的记录，表现是「某几个网站突然打不开」。
+	if len(b.Config.HostsEntries) > 0 {
+		out := make(map[string]string, len(b.Config.HostsEntries))
+		dropped := 0
+		for k, v := range b.Config.HostsEntries {
+			d := config.NormalizeDomain(k)
+			v = strings.TrimSpace(v)
+			if !plausibleHostname(d) || net.ParseIP(v) == nil || len(out) >= maxHostsEntries {
+				dropped++
+				continue
+			}
+			out[d] = v
+		}
+		if dropped > 0 {
+			warns = append(warns, fmt.Sprintf(
+				"hosts 账本里有 %d 条看不懂或超出上限，已忽略", dropped))
+		}
+		if len(out) == 0 {
+			out = nil
+		}
+		b.Config.HostsEntries = out
 	}
 
 	// 密钥白名单：不在表里的 key 直接丢掉并提示，别静默吞了。
@@ -465,6 +529,22 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		cfg.IPv6ProbeURL = *b.Config.IPv6ProbeURL
 	}
 	note("IPv6 段链接", b.Config.IPv6ProbeURL != nil)
+	// hosts 源那一块。用 nil 判断「文件里没有这一项」：老备份里没有它，此时
+	// 保持当前值，不能顺手把用户打开的开关关掉、把链接清空。
+	if b.Config.HostsEnabled != nil {
+		cfg.HostsEnabled = *b.Config.HostsEnabled
+	}
+	note("GitHub hosts 源开关", b.Config.HostsEnabled != nil)
+	if b.Config.HostsSource != nil {
+		cfg.HostsSource = *b.Config.HostsSource
+	}
+	note("GitHub hosts 源链接", b.Config.HostsSource != nil)
+	// 账本同 RewrittenDomains：不进 restored / kept（它不是用户设的项），
+	// 但文件里有就得用——否则换机恢复之后，源里已经没有的那些域名会在
+	// AdGuard 上留下永久残留。文件里没有（老备份）就保持当前值。
+	if len(b.Config.HostsEntries) > 0 {
+		cfg.HostsEntries = b.Config.HostsEntries
+	}
 
 	cfg.DDNS.Enabled = b.Config.DDNSEnabled
 	cfg.DDNS.Provider = b.Config.DDNSProvider
