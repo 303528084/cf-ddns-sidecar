@@ -39,14 +39,24 @@ fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 主备份位置：<app> 的兄弟目录。平台删 <app> 时它不受影响。
+# 主备份位置。v1.6.3 起有 TRIM_PKGVAR 就用官方位置（数据根目录下的 backup
+# 子目录），没有就退回 v1.4.x 的兄弟目录。**compose、cmd/main、本脚本三处
+# 必须写同一个路径**，否则脚本备到 A、容器挂的是 B，表现为「备份目录可用，
+# 里面永远是空的」。
 #
-# v1.3.2 起这个目录通常是一个**指向存储卷的符号链接**（由 cmd/main 在每次启动时
-# 安置好，链到 /volN/<app>-backup）。所以这里先把它解析成真实路径再动手：
-#   · `find` / `mkdir -p` 对「命令行的软链」都不会跟进去，直接写会在卷上留一堆
-#     空目录、而清理那一步又看不见里面有什么，等于定时炸弹；
-#   · 解析失败（链是坏的、或者还是 v1.3.1 那种真实目录）就退回原路径。
-BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+# 顺带说明为什么还要 readlink -f：v1.3.2 起那个兄弟目录通常是一个指向存储卷的
+# 符号链接（由 cmd/main 安置），而 `find` / `mkdir -p` 对「命令行的软链」都不会
+# 跟进去，直接写会在卷上留一堆空目录、清理那一步又看不见里面有什么。所以先解析
+# 成真实路径再动手；解析失败就退回原路径。
+#
+# 注意：真机上这个脚本**可能压根不执行**（覆盖升级时飞牛不跑宿主机生命周期
+# 脚本，v1.5.0 探针已证）。所以它只是「能跑就跑」的额外一层，
+# 程序自己写快照那条路（config.writeSnapshot）才是主力，两边写同一个目录。
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    BACKUP_ROOT="${TRIM_PKGVAR}/backup"
+else
+    BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+fi
 BACKUP_REAL="$(readlink -f "$BACKUP_ROOT" 2>/dev/null)"
 [ -n "$BACKUP_REAL" ] && BACKUP_ROOT="$BACKUP_REAL"
 # 老位置（v1.1.0～v1.3.0 用的），只作为「兄弟目录建不出来」时的退路，

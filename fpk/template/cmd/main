@@ -409,15 +409,24 @@ init_on_start() {
     #
     # 属主对齐失败才退回放开 0777——宁可权限宽一点，也不要让备份悄悄写不进去。
     # 这一段整体失败也不影响启动。
-    BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+    # v1.6.3：备份改到官方建议的位置 —— 数据根目录下的 backup 子目录。
+    #
+    # 必须和 compose 的 `${TRIM_PKGVAR:-…}/backup:/app/backup` 保持一致。
+    # 两边不一致的后果很难查：脚本把 A 目录建好、改好属主，容器挂的却是 B，
+    # 现象是「日志说备份目录可用，程序却报写不进去」——v1.4.0 就是这么坏的。
     if [ -n "$VAR_ROOT" ]; then
-        # 探针期间备份位置刻意不动（安全网不能跟着实验一起挪），只保证目录在。
+        BACKUP_ROOT="${VAR_ROOT}/backup"
         mkdir -p "$BACKUP_ROOT" 2>/dev/null \
             || LOC_BACKUP_ERR="建不了备份目录 ${BACKUP_ROOT}"
-    elif [ -n "$VOL_ROOT" ]; then
-        ensure_backup_root "${VOL_ROOT}/${APP_NAME}-backup"
     else
-        ensure_backup_root ""
+        # 平台没给 TRIM_PKGVAR（老版本飞牛，或用户自己写 compose 跑）：
+        # 沿用 v1.4.x 那套「应用目录的兄弟目录，能搬到存储卷就搬」的老路。
+        BACKUP_ROOT="/var/apps/${APP_NAME}-backup"
+        if [ -n "$VOL_ROOT" ]; then
+            ensure_backup_root "${VOL_ROOT}/${APP_NAME}-backup"
+        else
+            ensure_backup_root ""
+        fi
     fi
     # 注意：chown 要作用在真实目录上。符号链接本身 chown 只是改链接的属主，
     # 容器写的是链接指向的那个目录，权限还是没放开。

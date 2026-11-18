@@ -55,6 +55,38 @@ for f in ddns.env config.json dashboard-password; do
     fi
 done
 
+# —— 旧备份搬迁（v1.6.3）——
+#
+# v1.6.2 及更早的备份在 /var/apps/<app>-backup（应用目录的**兄弟**）；
+# v1.6.3 起改到数据根目录下的 backup 子目录。换了挂载源，新位置天然是空的，
+# 老位置那几份就成了孤儿——**不是丢数据**（config.json 还在数据目录里），
+# 但下一次升级的窗口里就没有安全网了。
+#
+# 为什么这段必须写在这里、不能写进 cmd/*：
+# 真机日志证明飞牛对 Docker 应用做覆盖升级时**不执行任何宿主机生命周期脚本**
+# （cmd/main 和 upgrade_init 都没跑，唯一跑起来的是点「应用设置」触发的
+# config_callback）。写在 cmd/* 里等于写在永远不会被调用的地方。
+# 容器入口是唯一每次启动都一定执行的地方。
+#
+# 两个刻意的限制：
+#   · 只在「新位置一份都没有」时才搬——新位置已经有备份说明搬过了，
+#     再搬一次会把老的盖掉，等于用旧配置覆盖新配置；
+#   · 老目录只读挂载、搬完不删——留作回退点。
+LEGACY_BACKUP_DIR="${CFDDNS_LEGACY_BACKUP_DIR:-/app/legacy-backup}"
+mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+if [ -d "$BACKUP_DIR" ] && [ -d "$LEGACY_BACKUP_DIR" ]; then
+    if ! ls -d "$BACKUP_DIR"/[0-9]*-[0-9]* >/dev/null 2>&1; then
+        if ls -d "$LEGACY_BACKUP_DIR"/[0-9]*-[0-9]* >/dev/null 2>&1; then
+            if cp -a "$LEGACY_BACKUP_DIR"/. "$BACKUP_DIR"/ 2>/dev/null; then
+                echo "[信息] 已把旧位置的备份搬到新位置：$LEGACY_BACKUP_DIR -> $BACKUP_DIR" >&2
+            else
+                echo "[警告] 旧备份搬不过来（$LEGACY_BACKUP_DIR -> $BACKUP_DIR），" \
+                     "下一次升级暂时没有安全网，请把这一行发我。" >&2
+            fi
+        fi
+    fi
+fi
+
 # —— 备份目录（v1.4.1）——
 #
 # 跟数据目录同一套逻辑，但有一处刻意不同：**不把里面的文件放开权限**。
