@@ -1126,6 +1126,20 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	// 周期走完才更新（最长能差一小时）。
 	s.wakeScheduler()
 
+	// v4 / v6 的来源被设成「关闭」之后，AdGuard 里由它写进去的那一族要当刻收回。
+	// 不这么做的话，「关闭」这件事要等到下一轮测速（默认 60 分钟）才生效，中间这段
+	// 时间用户看到的就是「关了还在」，而日志里什么都不说。hosts 开关那边是同一个
+	// 理由，见 switch.go 里那段注释。
+	//
+	// 只在真有一族是关闭状态时才连 AdGuard：两族都开着的时候答案不会变，白连一次
+	// 只是让「保存」这个按钮多等一两秒。
+	if cfg.AdGuard.URL != "" &&
+		(cfg.EffectiveSourceMode() == config.SourceOff || cfg.EffectiveIPv6SourceMode() == config.SourceOff) {
+		if note := s.syncRewrites(cfg); note != "" {
+			s.appendLog(note)
+		}
+	}
+
 	// 开了云朵这件事必须留在日志里。以后用户看到「域名解析的 IP 不是最优 IP」
 	// 时，日志里这一行能直接解释原因，是 Cloudflare 接手了，不是推送错了。
 	if cfg.DDNS.Proxied && cfg.DDNS.Provider == "cloudflare" {
@@ -1375,6 +1389,30 @@ func rewriteAnswers(bestV4 string, v6IPs []string) map[string]bool {
 		answers[v6IPs[0]] = true
 	}
 	return answers
+}
+
+// rewriteAnswersFor 按「当前的开关状态」算这一组域名该有哪些答案。
+//
+// 和 rewriteAnswers 的区别：那个是「这一轮测出什么」，这个是「现在允不允许有这一族」。
+// 源设成「关闭」之后，对应的地址一个都不给——任何一次重同步都会把那一族从 AdGuard
+// 里删掉。关掉开关却还留着记录，用户合理的判断就是「开关没生效」。
+//
+// 为什么不复用 LastIP / LastIPv6IPs 直接拼：那两个字段在关掉之后**不会清空**，
+// 它们是「上次测出来的结果」，拿它算答案等于把刚关掉的那一族又写回去。以前就是这么
+// 出问题的：v6 关掉后点一下「添加域名」，AdGuard 里那条 v6 又冒出来了。
+//
+// 所以关掉的那一族在这里被换成「没有」交给 rewriteAnswers，「取最优一条、空串不算」
+// 这些规则只留在那一个地方，免得两处各写一遍、改了一处另一处还留着旧规则。
+func rewriteAnswersFor(cfg config.Config) map[string]bool {
+	v4 := cfg.LastIP
+	if cfg.EffectiveSourceMode() == config.SourceOff {
+		v4 = ""
+	}
+	var v6 []string
+	if cfg.EffectiveIPv6SourceMode() != config.SourceOff {
+		v6 = cfg.LastIPv6IPs
+	}
+	return rewriteAnswers(v4, v6)
 }
 
 // keptNote 把「保留了 N 条别人的记录」拼成日志尾巴，没有就返回空串。这句是给用户吃的

@@ -453,12 +453,12 @@ func (s *Server) handleAdguardRewrites(w http.ResponseWriter, r *http.Request) {
 
 	// 期望集合：每个要加速的域名 → 当前最优 IP（v4 + v6）。用 RewriteDomains() 而不是
 	// Domains：勾了包含子域的那些会多一条 `*.域名`，漏掉的话界面会把我们自己写的通配符
-	// 标成「会被清掉」。LastIP 为空的判断和 syncRewrites 保持一致：那种情况下什么都不写，
-	// 所以 managed 留空，现存记录全被标成「会被清掉」，这恰好是实话。
+	// 标成「会被清掉」。答案走 rewriteAnswersFor，和 syncRewritesHosts 同一个函数：
+	// 两处各算一套的话，界面说「保留」而实际同步会删掉，按这个预览核对反而更糊涂。
+	// 那一族关掉时这里就不列它，所以「下一轮会删掉」在预览里也是实话。
 	names := cfg.RewriteDomains()
 	managed := make(map[string][]string, len(names))
-	if cfg.LastIP != "" {
-		answers := rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs)
+	if answers := rewriteAnswersFor(cfg); len(answers) > 0 {
 		sorted := make([]string, 0, len(answers))
 		for a := range answers {
 			sorted = append(sorted, a)

@@ -587,6 +587,9 @@ func TestDomainAddKeepsIPv6Answer(t *testing.T) {
 		c.AdGuard.URL = ag.URL
 		c.LastIP = "104.16.132.229"
 		c.LastIPv6IPs = []string{"2606:4700::1", "2606:4700::2"}
+		// 空值按「关闭」读，关掉的那一族不进 AdGuard。这条测试要的是 v6 那一条
+		// 别丢，所以得先把 v6 打开，否则测的是另一件事。
+		c.IPv6SourceMode = config.SourceBuiltin
 	})
 
 	rec := sendJSON(t, s, http.MethodPost, "/api/domains", `{"domain":"v6.test","wildcard":false}`)

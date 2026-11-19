@@ -8,6 +8,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -67,6 +68,20 @@ func (s *Server) syncRewrites(cfg config.Config) string {
 	return msg
 }
 
+// rewriteSyncNote 把一次同步的结果拼成一句短话。
+//
+// 收回要单独说：关掉一族之后新增恒为 0，只报「写入 0 条」等于什么都没交代，
+// 而用户这时候正等着看那一族被收走。
+func rewriteSyncNote(stats dns.SyncStats) string {
+	switch {
+	case stats.Written > 0 && stats.Removed > 0:
+		return fmt.Sprintf("已写入 AdGuard：%d 条，收回 %d 条", stats.Written, stats.Removed)
+	case stats.Written == 0 && stats.Removed > 0:
+		return fmt.Sprintf("已从 AdGuard 收回 %d 条", stats.Removed)
+	}
+	return fmt.Sprintf("已写入 AdGuard：%d 条", stats.Written)
+}
+
 // syncRewritesHosts 多一个「这一块现在该写哪些条目」，第二个返回值是「重写表
 // 真写成功了吗」：写失败就不能动账本，否则下次会以为记录已经在 AdGuard 上了。
 //
@@ -76,10 +91,16 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 	if strings.TrimSpace(cfg.AdGuard.URL) == "" {
 		return "已保存；还没填 AdGuard 地址，填好后才会写进去", false
 	}
+	// 答案按开关状态算，不是按 LastIP 拼：某一族关掉之后，它的地址不能再出现在
+	// 期望集合里，否则每次重同步都会把刚关掉的那一族又写回 AdGuard。
+	answers := rewriteAnswersFor(cfg)
+	// 两族都关了是「这个域名不该再有本工具写的记录」，和「有族开着但还没测出地址」
+	// 是两件事：后者必须一条都不动，否则会把上一轮好好的结果抹掉。
+	allOff := cfg.EffectiveSourceMode() == config.SourceOff && cfg.EffectiveIPv6SourceMode() == config.SourceOff
 	// 没有测速结果、也没有 hosts 条目时才真的没东西可写。
 	// 只看 LastIP 的话，一个「只配了 hosts 源、还没跑过测速」的用户点一下
 	// 添加域名，就会得到「还没有测速结果」，而 hosts 那几十条其实是可以写的。
-	if cfg.LastIP == "" && len(hostsWant) == 0 && len(cfg.HostsEntries) == 0 {
+	if len(answers) == 0 && !allOff && len(hostsWant) == 0 && len(cfg.HostsEntries) == 0 {
 		return "已保存；还没有测速结果，下次测速后写进 AdGuard", false
 	}
 	provider, err := dns.New(cfg.AdGuard.Instance())
@@ -90,8 +111,9 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 	// want 里没有的答案会被当成多余删掉，所以 v6 和 hosts 两边都必须带上：
 	// 少一边就等于「点一下加域名，另一边被悄悄清空」。
 	want := make(map[string]map[string]bool, len(names))
-	if cfg.LastIP != "" {
-		want = rewritePlan(cfg, names, rewriteAnswers(cfg.LastIP, cfg.LastIPv6IPs))
+	if len(answers) > 0 || allOff {
+		// answers 为空且 allOff 时，rewritePlan 给每个域名一个空集合，等于全收回。
+		want = rewritePlan(cfg, names, answers)
 	}
 	// off 时传的是 nil：mergeHostsWant 会把账本里那些域名置成空集合，等于收回。
 	hostsStat := mergeHostsWant(want, cfg, names, hostsWant)
@@ -113,7 +135,8 @@ func (s *Server) syncRewritesHosts(cfg config.Config, hostsWant map[string]strin
 	// 记下这一轮认领的域名。删域名这条路全靠它知道下次该清哪些旧记录。
 	s.rememberRewritten(names)
 	// 这句话原样进 toast，要短。没有 hosts 源时一个字都不加，否则会让人以为没配好。
-	msg := "已写入 AdGuard：" + strconv.Itoa(stats.Written) + " 条"
+	// 收回也要说出来：关掉一族之后新增是 0，只说「写入 0 条」等于什么都没交代。
+	msg := rewriteSyncNote(stats)
 	var parts []string
 	if extra := len(names) - len(cfg.Domains); extra > 0 {
 		parts = append(parts, strconv.Itoa(extra)+" 条子域通配符")

@@ -236,6 +236,9 @@ func TestAdguardRewritesPreview(t *testing.T) {
 		// v6 也写上：以前这里只放 v4 的 IP，导致 v6 那条明明会保留、界面上
 		// 却被标成「会被清掉」。
 		c.LastIPv6IPs = []string{"2606:4700::1"}
+		// v6 的来源必须显式开着：空值按「关闭」读，关掉的那一族不参与期望答案。
+		// 这两行要一起写，只给地址不给来源，等于说「测出来了但用户不让用」。
+		c.IPv6SourceMode = config.SourceBuiltin
 		// 账本里记着 old.example.com，但它已经不在 Domains 里了 → 下次同步清掉。
 		c.RewrittenDomains = []string{"openai.com", "openrouter.ai", "old.example.com"}
 	})
