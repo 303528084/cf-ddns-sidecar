@@ -23,7 +23,7 @@ import (
 // 这 8 个键**必须**从交给引擎的覆盖表里剔除：引擎拿它们按占位标签筛，
 // 结果只会是错的。加新键时记得同步 v6NotPassed 和这里的测试。
 var countryFilterKeys = []string{
-	"FILTER_COUNTRIES_ENABLED", "ALLOWED_COUNTRIES", // 前置白名单（键名和用途是反的，见项目卡片）
+	"FILTER_COUNTRIES_ENABLED", "ALLOWED_COUNTRIES", // 前置白名单（键名和用途是反的：这个开关管的是白名单）
 	"FILTER_BLOCKED_COUNTRIES_ENABLED", "BLOCKED_COUNTRIES", // DNS 黑名单
 	"PRE_FILTER_BLOCKED_ENABLED", "PRE_FILTER_BLOCKED_COUNTRIES", // 前置黑名单
 	"OUTPUT_FILTER_COUNTRIES_ENABLED", "OUTPUT_ALLOWED_COUNTRIES", // 输出白名单
