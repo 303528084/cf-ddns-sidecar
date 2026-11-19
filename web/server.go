@@ -91,6 +91,9 @@ type Server struct {
 	cfg     *config.Config
 	running bool
 	logs    []string
+	// history 是最近几轮测速的摘要（见 history.go）。只留在内存 + 数据目录的
+	// history.json 里，不进配置、不进备份、不进导出包。
+	history []roundRecord
 	lastErr string
 	// 定时器状态：下一次什么时候跑、上一次成没成、连续失败几次。
 	// 以前后台只能看到「上次测速时间」，看不出「它到底还活着吗、还是每小时
@@ -173,6 +176,8 @@ func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, 
 			s.logs = tail
 		}
 	}
+	// 历史也是同理：重启一次就清空的话，「昨天凌晨那轮为什么失败」永远查不到。
+	s.loadHistory()
 	return s
 }
 
@@ -208,6 +213,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/domains/wildcard", s.auth(s.handleDomainWildcard))
 	mux.HandleFunc("/api/adguard/rewrites", s.auth(s.handleAdguardRewrites))
 	mux.HandleFunc("/api/run", s.auth(s.handleRun))
+	mux.HandleFunc("/api/history", s.auth(s.handleHistory))
 	// 本机 IPv6 只读检测（阶段①）。只读、不改任何状态，但含本机网卡细节，仍需登录。
 	mux.HandleFunc("/api/ipv6", s.auth(s.handleIPv6))
 	// IPv6 阶段①探测：只测 CF 的 v6 节点、不写任何解析。
@@ -1171,7 +1177,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	// 出事时想回看上一轮发生了什么已经没有了。改成插一行分隔。
 	s.appendLog("—— 手动触发的测速 ——")
 
-	go func() { _ = s.runOnce(cfg) }()
+	go func() { _ = s.runOnce(cfg, triggerManual) }()
 
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
@@ -1186,7 +1192,7 @@ func (s *Server) RunOnce() error {
 	s.running = true
 	cfg := s.cfg.Clone()
 	s.mu.Unlock()
-	return s.runOnce(cfg)
+	return s.runOnce(cfg, triggerBoot)
 }
 
 // retryDelay 是测速失败后自动重试的等待时间。抽成变量是为了测试能改成 0。
@@ -1285,9 +1291,10 @@ func buildNodeStats(res *engine.Result, colos map[string]string) []config.NodeSt
 
 // failBeforeRun 记录「还没把候选交给引擎就失败」的情况，并把错误写进日志。
 //
-// 为什么不能只 return err：定时器那条路径是 `go func() { _ = s.runOnce(cfg) }()`，
+// 为什么不能只 return err：定时器那条路径是 `_ = s.runOnce(cfg, triggerTimer)`，
 // 错误被丢掉了。2026-11-17 那次「候选全被筛掉」就是这样，日志停在「候选预筛：
 // 剔除 N 个」半句话，用户完全看不出这一轮为什么没有结果，只会以为程序卡住了。
+// （出错也会在历史里记一行，那是另一条让人看见的路。）
 func (s *Server) failBeforeRun(msg string) error {
 	s.mu.Lock()
 	s.lastErr = msg
@@ -1526,7 +1533,9 @@ func (s *Server) runIPv4Round(ctx context.Context, cfg config.Config) (*engine.R
 	return res, colos, nil
 }
 
-func (s *Server) runOnce(cfg config.Config) error {
+// runOnce 跑一轮完整流程。trigger 是「谁触发的」，只用来在历史里标一行
+// （手动 / 定时 / 开机），不参与任何逻辑判断。
+func (s *Server) runOnce(cfg config.Config, trigger string) error {
 	startedAt := time.Now()
 	defer func() {
 		s.mu.Lock()
@@ -1560,6 +1569,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			s.failCount++
 			s.mu.Unlock()
 			s.appendLog("测速失败: " + msg)
+			s.recordRound(startedAt, roundRecord{Trigger: trigger, Err: msg})
 			return err
 		}
 		// 最优 IP 必须在筛完之后再取，否则被筛掉的那个会一路带到 AdGuard 和 DDNS，
@@ -1586,6 +1596,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// v6RoundIPs 是这一轮的结果，写 AdGuard / DDNS 都用它而不是 cfg.LastIPv6
 	// （那是上一次成功的，可能是上一个小时的，拿去写解析等于塞一个早就不通的地址）。
 	var v6RoundIPs []string
+	// v6Nodes 是这一轮 v6 的明细，跟 v6RoundIPs 一起给历史用。探测刚跑完时
+	// s.v6ProbeNodes 正好是这一轮的结果，拷一份走，别和历史记录共享底层数组。
+	var v6Nodes []config.NodeStat
 	if len(cfg.IPv6Sources()) > 0 {
 		if s.claimIPv6Probe() {
 			s.appendLog("开始 v6 优选…")
@@ -1599,6 +1612,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 				}
 			} else {
 				v6RoundIPs = ips
+				s.mu.Lock()
+				v6Nodes = append([]config.NodeStat(nil), s.v6ProbeNodes...)
+				s.mu.Unlock()
 			}
 		} else {
 			s.appendLog("v6 探测正在手动进行中，这一轮跳过 v6 优选")
@@ -1608,7 +1624,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// v4 关掉之后 v6 就是这一轮唯一的腿。它没测出地址等于这一轮什么都没测到，
 	// 不能顺着往下把 last_ok 刷成「成功」——那会让界面显示一切正常，而记录一条没更新。
 	if v4Mode == config.SourceOff && len(v6RoundIPs) == 0 {
-		return s.failBeforeRun("v4 已关闭，这一轮 v6 也没测出可用地址（原因看上几行日志）")
+		err := s.failBeforeRun("v4 已关闭，这一轮 v6 也没测出可用地址（原因看上几行日志）")
+		s.recordRound(startedAt, roundRecord{Trigger: trigger, Err: err.Error()})
+		return err
 	}
 
 	// 时间戳放在 v6 之后取：v6 可能要跑 1~2 分钟，用开始时刻会让「上次测速」
@@ -1706,6 +1724,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 两张表，一次只能动一张，所以按族循环。某一族这轮没结果就只跳过那一族，
 	// 绝不能拿 v4 地址去顶 AAAA（ddns 包的族校验会拦，这里先说明白更好读）。
 	ddnsMode := cfg.DDNS.EffectiveRecordMode()
+	// ddnsWritten 是这一轮真的推上去的记录条数，只有历史那张表用。
+	// 按族累加：A 和 AAAA 是两条记录集，各算各的。
+	ddnsWritten := 0
 	switch {
 	case cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "":
 		missing := config.MissingCredentials(cfg.DDNS.Provider)
@@ -1740,6 +1761,7 @@ func (s *Server) runOnce(cfg config.Config) error {
 			}
 			s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
 				cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), family))
+			ddnsWritten += len(pushIPs)
 		}
 	case len(res.IPs) == 0 && len(v6RoundIPs) == 0:
 		s.appendLog("域名解析未推送：本次没有可用的 IP")
@@ -1768,6 +1790,25 @@ func (s *Server) runOnce(cfg config.Config) error {
 	if err := toSave.Save(); err != nil {
 		log.Printf("保存配置失败: %v", err)
 	}
+
+	// 历史放在最后记：走到这里「写了多少条、花了多久」才都定下来。
+	// nodes 和 cfg.LastNodes 是同一个底层数组，历史要自己拷一份，
+	// 否则以后谁在配置那份上原地改一格，历史里的数字会跟着变。
+	var bSpeed, bDelay float64
+	if len(nodes) > 0 {
+		bSpeed, bDelay = nodes[0].Speed, nodes[0].Delay
+	}
+	s.recordRound(startedAt, roundRecord{
+		At:      now,
+		Trigger: trigger,
+		OK:      true,
+		Best:    best,
+		Speed:   bSpeed,
+		Delay:   bDelay,
+		Written: ddnsWritten,
+		Nodes:   append([]config.NodeStat(nil), nodes...),
+		V6Nodes: v6Nodes,
+	})
 	return nil
 }
 
@@ -1818,7 +1859,7 @@ func (s *Server) StartScheduler() {
 			if busy {
 				continue
 			}
-			_ = s.runOnce(cfg)
+			_ = s.runOnce(cfg, triggerTimer)
 		}
 	}()
 }

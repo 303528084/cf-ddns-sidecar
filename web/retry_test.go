@@ -28,7 +28,7 @@ func TestRunOnceRetriesExactlyOnce(t *testing.T) {
 	// 指向不存在的路径：引擎一定起不来
 	s.enginePath = filepath.Join(t.TempDir(), "no-such-main.py")
 
-	err := s.runOnce(s.cfg.Clone())
+	err := s.runOnce(s.cfg.Clone(), triggerTimer)
 	if err == nil {
 		t.Fatal("引擎路径不存在时必须返回错误，不能假装成功")
 	}
@@ -71,8 +71,8 @@ func TestFailCountAccumulates(t *testing.T) {
 	})
 	s.enginePath = filepath.Join(t.TempDir(), "no-such-main.py")
 
-	_ = s.runOnce(s.cfg.Clone())
-	_ = s.runOnce(s.cfg.Clone())
+	_ = s.runOnce(s.cfg.Clone(), triggerTimer)
+	_ = s.runOnce(s.cfg.Clone(), triggerTimer)
 
 	s.mu.Lock()
 	n := s.failCount

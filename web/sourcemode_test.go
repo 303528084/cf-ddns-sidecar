@@ -115,7 +115,7 @@ func TestRunOnceBothFamiliesOffDoesNothing(t *testing.T) {
 	})
 	s.enginePath = filepath.Join(t.TempDir(), "no-such-main.py")
 
-	if err := s.runOnce(s.cfg.Clone()); err != nil {
+	if err := s.runOnce(s.cfg.Clone(), triggerTimer); err != nil {
 		t.Fatalf("两族都关闭不算失败，实际返回 %v", err)
 	}
 
