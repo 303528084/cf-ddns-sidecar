@@ -1,7 +1,7 @@
 {
     ".url": {
         "cf-ddns-sidecar.Application": {
-            "title": "优选IP DDNS",
+            "title": "Cloudflare 优选 IP · DDNS",
             "desc": "Cloudflare 优选 IP + AdGuard Home 重写 + DDNS 同步",
             "icon": "images/icon_{0}.png",
             "type": "iframe",

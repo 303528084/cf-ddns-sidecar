@@ -1,6 +1,6 @@
 appname=cf-ddns-sidecar
 version={{VERSION}}
-display_name=Cloudflare 优选 DDNS
+display_name=优选 IP · DDNS
 desc=自动测速选取最快 Cloudflare 边缘 IP，写入 AdGuard Home DNS 重写并同步到自有域名 DDNS，生成优选域名。
 platform=x86
 source=thirdparty
