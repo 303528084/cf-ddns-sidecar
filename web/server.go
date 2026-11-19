@@ -663,9 +663,13 @@ type statusResp struct {
 	LastIPs []string `json:"last_ips"`
 
 	// 上一轮测出来的 IPv6（同样排好序）。只用于概览页「当前最优 IP」那一格多显示
-	// 一行 v6 地址——没有 v6 的机器上这一行不出现。只存内存：v6 结果本来就不落配置，
-	// 重启后要等下一轮才回来，那时显示「只有 IPv4」也不算错。
+	// 一行 v6 地址——没有 v6 的机器上这一行不出现。重启后由 New 从配置里回填，
+	// 否则卡片这行会消失、而下面的 v6 表格还在（那张表空了会回落配置）。
 	LastV6IPs []string `json:"last_v6_ips"`
+
+	// 上面那批里最快那条的位置，v6 那行用它显示「国家(机房)」。
+	// 和 v4 那格的「位置 · 条数」同一套写法，两族看起来才是一件事。
+	LastV6Place string `json:"last_v6_place"`
 
 	// Nodes 与 last_ips 一一对应，多带速度、延迟、机房。
 	// 以前界面只有一个光秃秃的 IP，用户看不出「为什么这条排第一」，
@@ -679,6 +683,16 @@ type statusResp struct {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
+	// 概览页 v6 那行的位置取这一批最快的那条。LastIPv6Nodes 和 LastIPv6IPs 是同一次
+	// buildNodeStats 出来的，下标一一对应；老配置里 Place 还是空的，就按机房代码现拼。
+	v6Place := ""
+	if len(s.lastV6IPs) > 0 && len(cfg.LastIPv6Nodes) > 0 {
+		if p := cfg.LastIPv6Nodes[0].Place; p != "" {
+			v6Place = p
+		} else {
+			v6Place = exitInfo(cfg.LastIPv6Nodes[0].Colo)
+		}
+	}
 	resp := statusResp{
 		Version:         version,
 		Running:         s.running,
@@ -700,6 +714,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		FailCount:       s.failCount,
 		LastIPs:         append([]string{}, cfg.LastIPs...),
 		LastV6IPs:       append([]string{}, s.lastV6IPs...),
+		LastV6Place:     v6Place,
 		Nodes:           append([]config.NodeStat{}, cfg.LastNodes...),
 		LastDurationSec: s.lastDurSec,
 	}

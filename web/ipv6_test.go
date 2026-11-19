@@ -54,9 +54,9 @@ func TestHandleIPv6(t *testing.T) {
 	}
 }
 
-// statusLastV6 走一次 /api/status 的响应体，只看概览页那行 v6 读到的地址。
+// statusLastV6 走一次 /api/status 的响应体，只看概览页那行 v6 读到的地址和位置。
 // 直接调 handleStatus：鉴权在包装层，这个函数自己只写 JSON。
-func statusLastV6(t *testing.T, s *Server) []string {
+func statusLastV6(t *testing.T, s *Server) ([]string, string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	s.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/api/status", nil))
@@ -64,12 +64,13 @@ func statusLastV6(t *testing.T, s *Server) []string {
 		t.Fatalf("状态码 = %d，期望 200", rec.Code)
 	}
 	var resp struct {
-		LastV6IPs []string `json:"last_v6_ips"`
+		LastV6IPs   []string `json:"last_v6_ips"`
+		LastV6Place string   `json:"last_v6_place"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("响应不是合法 JSON: %v", err)
 	}
-	return resp.LastV6IPs
+	return resp.LastV6IPs, resp.LastV6Place
 }
 
 // TestStatusLastV6SeededFromConfig 守「重启之后概览页那行 v6 还在」。
@@ -81,18 +82,26 @@ func TestStatusLastV6SeededFromConfig(t *testing.T) {
 	cfg.IPv6SourceMode = config.SourceBuiltin
 	cfg.LastIPv6 = "2408:8207:1::1"
 	cfg.LastIPv6IPs = []string{"2408:8207:1::1", "2408:8207:1::2"}
+	cfg.LastIPv6Nodes = []config.NodeStat{
+		{IP: "2408:8207:1::1", Speed: 6.4, Colo: "HKG", Place: "中国香港·香港(HKG)"},
+		{IP: "2408:8207:1::2", Speed: 5.1, Colo: "LAX", Place: "美国·洛杉矶(LAX)"},
+	}
 
 	s := New(cfg, "", "", t.TempDir(), Auth{}, "", nil)
-	got := statusLastV6(t, s)
+	got, place := statusLastV6(t, s)
 	if len(got) != 2 || got[0] != "2408:8207:1::1" || got[1] != "2408:8207:1::2" {
 		t.Fatalf("重启后报出的 v6 = %v，期望接着配置里那两条", got)
+	}
+	// 位置给的是最快那条的，不是「随便一条」。
+	if place != "中国香港·香港(HKG)" {
+		t.Fatalf("v6 那行的位置 = %q，期望最快那条的 %q", place, "中国香港·香港(HKG)")
 	}
 
 	// 探测跑过之后以内存那份为准：它比配置新，而且 v6 关掉时只有它能被清空。
 	s.mu.Lock()
 	s.lastV6IPs = []string{"2408:8207:9::9"}
 	s.mu.Unlock()
-	if got := statusLastV6(t, s); len(got) != 1 || got[0] != "2408:8207:9::9" {
+	if got, _ := statusLastV6(t, s); len(got) != 1 || got[0] != "2408:8207:9::9" {
 		t.Fatalf("内存里有新结果时 = %v，期望报新的那条", got)
 	}
 }
@@ -103,9 +112,14 @@ func TestStatusLastV6EmptyWhenOff(t *testing.T) {
 	cfg := config.Default()
 	cfg.IPv6SourceMode = config.SourceOff
 	cfg.LastIPv6IPs = []string{"2408:8207:1::1"}
+	cfg.LastIPv6Nodes = []config.NodeStat{{IP: "2408:8207:1::1", Colo: "HKG", Place: "中国香港·香港(HKG)"}}
 
 	s := New(cfg, "", "", t.TempDir(), Auth{}, "", nil)
-	if got := statusLastV6(t, s); len(got) != 0 {
+	got, place := statusLastV6(t, s)
+	if len(got) != 0 {
 		t.Fatalf("v6 关掉之后报出 %v，期望空", got)
+	}
+	if place != "" {
+		t.Fatalf("v6 关掉之后还报位置 %q，期望空", place)
 	}
 }

@@ -398,15 +398,19 @@
      等于没显示。上面一道极淡的分隔线：这行说的是另一族，和上面那几行不是
      一件事，不加线会读成「172.64.x.x 下面挂着个 v6」。 */
   .kpi .v6row{
-    display:flex;align-items:center;gap:5px;margin-top:7px;padding-top:7px;
-    border-top:1px solid var(--line2);
+    margin-top:7px;padding-top:7px;border-top:1px solid var(--line2);
     font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.45;
   }
+  /* 地址那一行不换行：地址本身在冒号处折（见 loadStatus 的 wbr），
+     复制按钮必须跟着地址走，不能掉到自己一行去。 */
+  .kpi .v6line{display:flex;align-items:center;gap:5px}
   .kpi .v6row .t6{
     flex:none;font-size:9.5px;letter-spacing:.2px;padding:1px 4px;
     color:var(--accent);background:var(--accent-soft);border-radius:3px;
   }
   .kpi .v6row #s-ip6{min-width:0}
+  /* 位置单独一块，和地址一样从左边起。 */
+  .kpi .v6row .p6{font-family:var(--font);font-size:11px;color:var(--dim)}
   /* 第一张（最优 IP）是这一屏的重点：只加一道左侧竖线，不加渐变底色、
      不做右上角光斑。用 inset 阴影画这道线而不是 border-left，是为了不
      把这格的内容推到旁边一格错开 1px。 */
@@ -955,11 +959,17 @@
                读起来会以为在说 v6。 -->
           <div class="s"><span id="s-place">还没测过</span><span id="s-iphint"></span></div>
           <div class="v6row hidden" id="s-ip6-row">
-            <span class="t6">IPv6</span>
-            <span id="s-ip6">—</span>
-            <button class="copy-mini" title="复制 IPv6 地址" onclick="copyIP($('s-ip6').textContent)">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
-            </button>
+            <div class="v6line">
+              <span class="t6">IPv6</span>
+              <span id="s-ip6">—</span>
+              <button class="copy-mini" title="复制 IPv6 地址" onclick="copyIP($('s-ip6').textContent)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+              </button>
+            </div>
+            <!-- 位置单独一行：卡片宽 255px，地址自己就占 183px，硬塞同一行必然折成
+                 「地址一半 + 国家」那种断法。也不并在地址那行里靠 flex 换行——窄屏
+                 地址占满整行，复制按钮会被挤到自己一行去。 -->
+            <div class="p6" id="s-ip6-place"></div>
           </div>
         </div>
 
@@ -2297,12 +2307,12 @@ function renderV6ProbeResult(j, note, list) {
       const lat = node.delay > 0
         ? `<span class="num">${fmt2(node.delay)} ms</span>`
         : `<span class="num dim">—</span>`;
-      const { place, code } = placeParts(node);
+      const { place, full, code } = placeParts(node);
       // 前 n 条就是这一轮选中的，和 v4 那张表一个判法。
       const write = i < n;
       return `<tr class="${i === 0 ? "best" : ""}">
         <td class="c-rk"><span class="rk">${i + 1}</span></td>
-        <td class="c-loc"><b>${place}</b>${code}</td>
+        <td class="c-loc"><b title="${full}">${place}</b>${code}</td>
         ${ipCell(node.ip, "c-v6")}
         <td class="c-spd">${spd}</td>
         <td class="c-lat">${lat}</td>
@@ -2353,13 +2363,24 @@ async function loadStatus() {
   // 用元素而不是零宽空格，textContent 拿到的仍是干净地址，复制不受影响。
   const v6ips = Array.isArray(s.last_v6_ips) ? s.last_v6_ips : [];
   $("s-ip6-row").classList.toggle("hidden", !v6ips.length);
-  if (v6ips.length) $("s-ip6").innerHTML = escapeHtml(v6ips[0]).replace(/:/g, ":<wbr>");
+  if (v6ips.length) {
+    $("s-ip6").innerHTML = escapeHtml(v6ips[0]).replace(/:/g, ":<wbr>");
+    // 位置和地址是同一批出来的（后端取 last_v6_ips 第一条那条的位置），
+    // 这里不另外挑一次，否则又是两处各算各的。
+    const p6 = placeParts({ place: s.last_v6_place });
+    $("s-ip6-place").innerHTML = s.last_v6_place ? p6.place : "";
+    $("s-ip6-place").title = s.last_v6_place ? p6.full : "";
+  }
 
-  // 卡 1 副行：位置 · 可用 N 条
-  $("s-place").textContent = !top ? "还没测过"
-    : top.place ? top.place
-    : top.colo ? "机房 " + top.colo
-    : "位置未知";
+  // 卡 1 副行：位置 · 可用 N 条。位置只写国家，城市挂在悬停提示上（见 placeParts）。
+  if (!top) {
+    $("s-place").textContent = "还没测过";
+    $("s-place").title = "";
+  } else {
+    const p = placeParts(top);
+    $("s-place").innerHTML = p.place;
+    $("s-place").title = p.full;
+  }
   // 只留「几条可用」。原来还写了「写前 N 条」，1100px 那种宽度下会被
   // 省略号截掉一半；而表格里每行的「已写入/备选」已经说清了写哪几条。
   $("s-iphint").textContent = alt > 1 ? " · " + alt + " 条可用" : "";
@@ -2445,18 +2466,25 @@ async function loadStatus() {
 // 为什么抽出来：上面 IPv4 表和下面 IPv6 表上下并排，「机房位置」这一格必须
 // 长得一模一样——字号、代码颜色、查不到时的「位置未知」都得同源。以前只有
 // IPv4 一处有这段逻辑，v6 加这一列时照抄一份迟早会走偏。
+//
+// 地名只取国家那一截：后端给的是「国家·城市」，而城市是选机房的细节（洛杉矶还是
+// 圣何塞），和左边国家名挤在一格里读起来像两个地名叠着。城市不丢，挂在 title 上。
 function placeParts(node) {
   let place = "位置未知";
+  let full = "位置未知";
   let code = "";
   const raw = node && node.place;
   if (raw) {
     const m = /^(.*?)\s*\(([A-Z0-9]{2,4})\)$/.exec(raw);
-    if (m) { place = escapeHtml(m[1]); code = `<span class="code">${escapeHtml(m[2])}</span>`; }
-    else { place = escapeHtml(raw); }
+    const name = m ? m[1] : raw;
+    full = name;
+    place = name.split("·")[0];
+    if (m) code = `<span class="code">${escapeHtml(m[2])}</span>`;
   } else if (node && node.colo) {
-    place = "机房 " + escapeHtml(node.colo);
+    place = "机房 " + node.colo;
+    full = place;
   }
-  return { place, code };
+  return { place: escapeHtml(place), full: escapeHtml(full), code };
 }
 
 // renderIPList 画「本次测速结果」这张表，并把节点数组返回给调用方。
@@ -2499,7 +2527,7 @@ function renderIPList(s) {
     // 位置那格：后端给的是「日本·东京(NRT)」一整个字符串，把机房代码
     // 拆出来单独用浅色小字排——一眼看到的是地名，代码是查证用的。
     // 拆分规则和下面 IPv6 表共用 placeParts，两张表才不会长得不一样。
-    const { place, code } = placeParts(node);
+    const { place, full, code } = placeParts(node);
 
     const spd = speed
       ? `<div class="bar"><i style="width:${fastest ? Math.max(6, Math.round(speed / fastest * 100)) : 0}%"></i></div>
@@ -2509,7 +2537,7 @@ function renderIPList(s) {
 
     return `<tr class="${best ? "best" : ""}">
       <td class="c-rk"><span class="rk">${i + 1}</span></td>
-      <td class="c-loc"><b>${place}</b>${code}</td>
+      <td class="c-loc"><b title="${full}">${place}</b>${code}</td>
       ${ipCell(node.ip, "c-ip")}
       <td class="c-spd">${spd}</td>
       <td class="c-lat">${lat}</td>
@@ -3269,12 +3297,12 @@ function detTable(name, nodes) {
       <div class="det-empty">这一轮没有 ${name} 节点。</div>`;
   }
   const rows = list.map((node, i) => {
-    const { place, code } = placeParts(node);
+    const { place, full, code } = placeParts(node);
     const spd = node.speed > 0 ? fmt2(node.speed) + " Mbps" : `<span class="dimtx">—</span>`;
     const lat = node.delay > 0 ? fmt2(node.delay) + " ms" : `<span class="dimtx">—</span>`;
     return `<tr>
       <td class="d-rk">${i + 1}</td>
-      <td class="d-loc"><b>${place}</b>${code}</td>
+      <td class="d-loc"><b title="${full}">${place}</b>${code}</td>
       ${ipCell(node.ip, "d-ip")}
       <td class="d-num">${spd}</td>
       <td class="d-num">${lat}</td>
