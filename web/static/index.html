@@ -36,6 +36,11 @@
     }
   }
   *{box-sizing:border-box}
+  /* 竖向滚动条出现/消失时不要改变内容宽度：这台机器上「测速设置」要滚一屏半，
+     而「历史测速」「登录密码」不用滚，来回切的时候整页会横向跳一下（居中布局，
+     两边各让 8px），看上去就像每一页的宽度不一样。stable 让滚动条的位置
+     一直留着，跳不动。 */
+  html{scrollbar-gutter:stable}
   body{
     margin:0;background:var(--bg);color:var(--text);
     font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
@@ -388,6 +393,18 @@
   .kpi .v .miss{color:var(--dim)}
   .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 「当前最优 IP」的第二行（IPv6）。地址 39 个字符，在 260px 宽的卡里一行放不下，
+     只能在冒号处折断（见 loadStatus 里的 wbr），不截断——截成「2408:8207:…」
+     等于没显示。 */
+  .kpi .v6row{
+    display:flex;align-items:flex-start;gap:5px;margin-top:4px;
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.45;
+  }
+  .kpi .v6row .t6{
+    flex:none;font-size:9.5px;letter-spacing:.2px;padding:1px 4px;margin-top:2px;
+    color:var(--accent);background:var(--accent-soft);border-radius:3px;
+  }
+  .kpi .v6row #s-ip6{min-width:0}
   /* 第一张（最优 IP）是这一屏的重点：只加一道左侧竖线，不加渐变底色、
      不做右上角光斑。用 inset 阴影画这道线而不是 border-left，是为了不
      把这格的内容推到旁边一格错开 1px。 */
@@ -397,6 +414,21 @@
     border-radius:5px;display:grid;place-items:center;flex:none;
   }
   .copy-mini:hover{color:var(--accent);background:var(--accent-soft)}
+
+  /* 表格和明细里的 IP：鼠标移到地址上才冒出一个复制按钮。
+     按钮绝对定位，所以出现和消失都不会把地址挤动——这一列是等宽字体、
+     上下要对齐的。右边的 padding 是给按钮留的落脚处：不留的话鼠标一
+     移向按钮就离开了 .ipx，hover 立刻失效，按钮在指到的瞬间变透明，
+     永远点不着。 */
+  .ipx{position:relative;display:inline-block;padding-right:19px}
+  .ipx .cpbtn{
+    position:absolute;right:1px;top:50%;transform:translateY(-50%);
+    border:none;background:transparent;color:var(--dim);cursor:pointer;padding:2px;
+    border-radius:4px;display:grid;place-items:center;
+    opacity:0;pointer-events:none;transition:opacity .12s;
+  }
+  .ipx:hover .cpbtn,.ipx:focus-within .cpbtn{opacity:1;pointer-events:auto}
+  .ipx .cpbtn:hover{color:var(--accent);background:var(--accent-soft)}
 
   /* ---------- 结果表 ---------- */
   .card-b.tight{padding:0}
@@ -759,6 +791,11 @@
     .rw-item{flex-wrap:wrap;row-gap:2px}
     .rw-item .mark{margin-left:auto}
 
+    /* 窄屏的指标卡只有约 185px 宽，IPv6 那一行连标签一起放会把地址折成四行。
+       把标签让给地址：两行就够，而「2408:」开头本身就说明了这是 v6。 */
+    .kpi .v6row .t6{display:none}
+    .kpi .v6row{font-size:11px}
+
     /* 历史表：八列在 390px 下每列只剩三十几个像素，时间和 IP 都会断成
        两行。只留「时间 / 最快 IP / 状态」三列，被藏起来的四项（触发、
        延迟、速度、写入）点一行在明细里都能看到，不是丢了。
@@ -796,6 +833,9 @@
     table.det td:nth-child(4){grid-area:1/3/2/4;width:auto}
     table.det td:nth-child(5){grid-area:1/4/2/5;width:auto}
     table.det .d-ip{grid-area:2/2/3/5;padding-top:3px}
+    /* 窄屏下 IP 独占一整行，长地址可能折成两行：复制按钮钉在右上角，
+       不然垂直居中会落到两行之间，看着像浮在地址上。 */
+    table.det .d-ip .cpbtn{right:0;top:1px;transform:none}
   }
 
 </style>
@@ -900,9 +940,17 @@
       <div class="kpis">
         <div class="kpi hl">
           <div class="k">当前最优 IP</div>
-          <div class="v mono"><span id="s-ip">—</span><button class="copy-mini" title="复制 IP" onclick="copyText($('s-ip').textContent)">
+          <div class="v mono"><span id="s-ip">—</span><button class="copy-mini" title="复制 IP" onclick="copyIP($('s-ip').textContent)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
           </button></div>
+          <!-- IPv6 那一行：测出来才出现，没测出来这格就只有上面一行 -->
+          <div class="v6row hidden" id="s-ip6-row">
+            <span class="t6">IPv6</span>
+            <span id="s-ip6">—</span>
+            <button class="copy-mini" title="复制 IPv6 地址" onclick="copyIP($('s-ip6').textContent)">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+            </button>
+          </div>
           <div class="s"><span id="s-place">还没测过</span><span id="s-iphint"></span></div>
         </div>
 
@@ -2239,7 +2287,7 @@ function renderV6ProbeResult(j, note, list) {
       return `<tr class="${i === 0 ? "best" : ""}">
         <td class="c-rk"><span class="rk">${i + 1}</span></td>
         <td class="c-loc"><b>${place}</b>${code}</td>
-        <td class="c-v6">${escapeHtml(node.ip || "")}</td>
+        ${ipCell(node.ip, "c-v6")}
         <td class="c-spd">${spd}</td>
         <td class="c-lat">${lat}</td>
         <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}">${write ? "已选用" : "备选"}</span></td>
@@ -2282,6 +2330,14 @@ async function loadStatus() {
   const alt = Array.isArray(s.last_ips) ? s.last_ips.length : 0;
 
   $("s-ip").textContent = s.last_ip || "—";
+
+  // IPv6：有就多显示一行，没有这一行整个不出现（不加「无 IPv6」这类空占位，
+  // 大多数家宽本来就没有 v6，天天挂着一句「没有」只会让人以为哪儿坏了）。
+  // 冒号后面插 <wbr>：地址放不下一行时只在冒号处折，不会从「fe12」中间断开。
+  // 用元素而不是零宽空格，textContent 拿到的仍是干净地址，复制不受影响。
+  const v6ips = Array.isArray(s.last_v6_ips) ? s.last_v6_ips : [];
+  $("s-ip6-row").classList.toggle("hidden", !v6ips.length);
+  if (v6ips.length) $("s-ip6").innerHTML = escapeHtml(v6ips[0]).replace(/:/g, ":<wbr>");
 
   // 卡 1 副行：位置 · 可用 N 条
   $("s-place").textContent = !top ? "还没测过"
@@ -2438,7 +2494,7 @@ function renderIPList(s) {
     return `<tr class="${best ? "best" : ""}">
       <td class="c-rk"><span class="rk">${i + 1}</span></td>
       <td class="c-loc"><b>${place}</b>${code}</td>
-      <td class="c-ip">${escapeHtml(node.ip || "")}</td>
+      ${ipCell(node.ip, "c-ip")}
       <td class="c-spd">${spd}</td>
       <td class="c-lat">${lat}</td>
       <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}">${write ? "已写入" : "备选"}</span></td>
@@ -2574,6 +2630,27 @@ function legacyCopy(text) {
   try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
   document.body.removeChild(ta);
   return ok;
+}
+
+// copyIP 复制一个地址，并且出声。
+// 以前那个按钮直接调 copyText，成功失败都不吭气——点了界面毫无反应，
+// 人会再点两下，然后认定按钮坏了。
+function copyIP(ip) {
+  const v = (ip || "").trim();
+  // 「—」是没测到时的占位符，复制它没有意义。
+  if (!v || v === "—") { toast("这里还没有 IP"); return; }
+  copyText(v).then(ok => toast(ok ? "已复制 " + v : "复制失败，请手动选中这个 IP"));
+}
+
+// ipCell 画一个地址单元格：地址 + 鼠标移上去才出现的复制按钮。
+// 三处（v4 结果表、v6 结果表、历史明细）都走这里，免得图标大小、
+// 点击行为在各处长歪；stopPropagation 是为了点复制时别把历史那行也点开。
+function ipCell(ip, cls) {
+  const v = ip || "";
+  const btn = v ? `<button class="cpbtn" title="复制这个地址" onclick="event.stopPropagation();copyIP('${escapeHtml(v)}')">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+    </button>` : "";
+  return `<td class="${cls}"><span class="ipx">${escapeHtml(v)}${btn}</span></td>`;
 }
 
 // renderBanners 渲染顶部的全局告警。
@@ -3151,7 +3228,7 @@ function detTable(name, nodes) {
     return `<tr>
       <td class="d-rk">${i + 1}</td>
       <td class="d-loc"><b>${place}</b>${code}</td>
-      <td class="d-ip">${escapeHtml(node.ip || "")}</td>
+      ${ipCell(node.ip, "d-ip")}
       <td class="d-num">${spd}</td>
       <td class="d-num">${lat}</td>
     </tr>`;

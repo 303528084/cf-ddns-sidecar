@@ -138,6 +138,10 @@ type Server struct {
 	v6ProbeNodes   []config.NodeStat
 	v6ProbeAt      time.Time
 	v6ProbeErr     string
+	// lastV6IPs 是上一轮写进 AAAA 的那批 v6（排好序）。和 v6ProbeNodes 分开：
+	// 探测只测不写，这里必须是「这一轮真写下去的」，否则概览页那行显示的地址
+	// 和域名解析里的对不上。
+	lastV6IPs []string
 	// v6CandText / v6CandStaged 和主测速的 candText 是同一个套路：
 	// 用户在探测卡片里填的链接必须在**开跑前**下载解析一次，不能等引擎
 	// 来拉候选时再下，引擎会重试、可能请求多次，每来一次就重新下载
@@ -649,6 +653,11 @@ type statusResp struct {
 	// 也让用户在改条数之前就能看到有哪些备选。
 	LastIPs []string `json:"last_ips"`
 
+	// 上一轮测出来的 IPv6（同样排好序）。只用于概览页「当前最优 IP」那一格多显示
+	// 一行 v6 地址——没有 v6 的机器上这一行不出现。只存内存：v6 结果本来就不落配置，
+	// 重启后要等下一轮才回来，那时显示「只有 IPv4」也不算错。
+	LastV6IPs []string `json:"last_v6_ips"`
+
 	// Nodes 与 last_ips 一一对应，多带速度、延迟、机房。
 	// 以前界面只有一个光秃秃的 IP，用户看不出「为什么这条排第一」，
 	// 也没法判断换个 IP 是不是更好，这三个数就是答案。
@@ -681,6 +690,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastOK:          s.lastOK,
 		FailCount:       s.failCount,
 		LastIPs:         append([]string{}, cfg.LastIPs...),
+		LastV6IPs:       append([]string{}, s.lastV6IPs...),
 		Nodes:           append([]config.NodeStat{}, cfg.LastNodes...),
 		LastDurationSec: s.lastDurSec,
 	}
@@ -1614,11 +1624,19 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 				v6RoundIPs = ips
 				s.mu.Lock()
 				v6Nodes = append([]config.NodeStat(nil), s.v6ProbeNodes...)
+				// 概览页「当前最优 IP」下面那一行读的就是这份：必须是这一轮真写下去的，
+				// 不能拿探测结果顶（探测只测不写，可能一个地址都没进 AAAA）。
+				s.lastV6IPs = append([]string(nil), ips...)
 				s.mu.Unlock()
 			}
 		} else {
 			s.appendLog("v6 探测正在手动进行中，这一轮跳过 v6 优选")
 		}
+	} else {
+		// v6 关掉之后卡片上不该还挂着上一次的地址。
+		s.mu.Lock()
+		s.lastV6IPs = nil
+		s.mu.Unlock()
 	}
 
 	// v4 关掉之后 v6 就是这一轮唯一的腿。它没测出地址等于这一轮什么都没测到，
