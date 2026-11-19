@@ -393,15 +393,17 @@
   .kpi .v .miss{color:var(--dim)}
   .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  /* 「当前最优 IP」的第二行（IPv6）。地址 39 个字符，在 260px 宽的卡里一行放不下，
+  /* 「当前最优 IP」下面那行 IPv6。地址 39 个字符，260px 宽的卡里一行放不下，
      只能在冒号处折断（见 loadStatus 里的 wbr），不截断——截成「2408:8207:…」
-     等于没显示。 */
+     等于没显示。上面一道极淡的分隔线：这行说的是另一族，和上面那几行不是
+     一件事，不加线会读成「172.64.x.x 下面挂着个 v6」。 */
   .kpi .v6row{
-    display:flex;align-items:flex-start;gap:5px;margin-top:4px;
+    display:flex;align-items:center;gap:5px;margin-top:7px;padding-top:7px;
+    border-top:1px solid var(--line2);
     font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.45;
   }
   .kpi .v6row .t6{
-    flex:none;font-size:9.5px;letter-spacing:.2px;padding:1px 4px;margin-top:2px;
+    flex:none;font-size:9.5px;letter-spacing:.2px;padding:1px 4px;
     color:var(--accent);background:var(--accent-soft);border-radius:3px;
   }
   .kpi .v6row #s-ip6{min-width:0}
@@ -573,8 +575,13 @@
   .v6-sec{border-top:1px solid var(--line2);margin-top:14px}
   .v6-sec-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px 0}
   .v6-sec-h b{font-size:13px;color:var(--text);margin-right:auto}
-  .v6-sec-note{font-size:12px;color:var(--dim);line-height:1.6;padding:8px 16px 10px}
+  /* 这行只在「正在测」「失败了」「一条没测出来」的时候才有字，测出结果时是空的。
+     空着还占着上下 padding，就会在标题和表格之间留一段说不出所以然的空白，
+     所以空了不占位，间距交给下面表格自己的 margin-top。 */
+  .v6-sec-note{font-size:12px;color:var(--dim);line-height:1.6;padding:8px 16px 0}
+  .v6-sec-note:empty{display:none}
   .v6-sec-note b{color:var(--text)}
+  .v6-sec .card-b{margin-top:8px}
   /* 国家代码多选下拉：kind=countries 的四项专用，不让人手填两字母代码。
      面板挂在按钮下方、浮在内容之上，不能把下面的保存按钮挤走。 */
   .cs-wrap{position:relative;width:152px}
@@ -943,7 +950,10 @@
           <div class="v mono"><span id="s-ip">—</span><button class="copy-mini" title="复制 IP" onclick="copyIP($('s-ip').textContent)">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
           </button></div>
-          <!-- IPv6 那一行：测出来才出现，没测出来这格就只有上面一行 -->
+          <!-- IPv6 那一行：测出来才出现，没测出来这格就只有上面一行。
+               放在「位置 · 条数」之后：那行说的是 IPv4 的最优，挨着 v6 地址
+               读起来会以为在说 v6。 -->
+          <div class="s"><span id="s-place">还没测过</span><span id="s-iphint"></span></div>
           <div class="v6row hidden" id="s-ip6-row">
             <span class="t6">IPv6</span>
             <span id="s-ip6">—</span>
@@ -951,7 +961,6 @@
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
             </button>
           </div>
-          <div class="s"><span id="s-place">还没测过</span><span id="s-iphint"></span></div>
         </div>
 
         <div class="kpi">
@@ -2259,15 +2268,13 @@ function renderV6ProbeResult(j, note, list) {
       + `<tr><td class="empty" colspan="6">这一轮没有测出节点</td></tr></tbody></table>`;
     return;
   }
-  const best = nodes[0];
   // 「保留候选 IP 数」决定前几条标「已选用」，和上面 v4 那张表同一个来源。
   const want = parseInt($("dd-count").value || "1", 10) || 1;
   const n = Math.min(nodes.length, want);
-  note.innerHTML = `<b>测出 ${nodes.length} 个 IPv6 节点。</b>最快的排最前：` +
-    `<b>${escapeHtml(best.ip || "")}</b>${best.speed > 0 ? "，" + best.speed.toFixed(2) + " Mbps" : ""}` +
-    `${best.delay > 0 ? "，" + best.delay.toFixed(2) + " ms" : ""}。` +
-    `标「已选用」的是这一批里选中的 ${n} 条；这里<b>只测不写</b>，写进 AAAA 要等` +
-    `「立即测速」或定时那一轮。`;
+  // 这里原来有一整行说明：测出几个、最快的是谁、哪几条已选用、只测不写。
+  // 五件事全都能从表格本身看出来，代价是标题和表格之间多两行灰字。
+  // 其中的「只测不写」挪到状态标签的悬停提示上，看的时候不占地方。
+  note.innerHTML = "";
   // 列跟上面「本次测速结果」逐列对齐，状态列也一样：前「保留候选 IP 数」条标
   // 「已选用」，其余「备选」。不写「已写入」是因为探测只测不写——地址要等
   // 「立即测速」或定时那一轮才进 AAAA。地址列保留 c-v6，39 个字符必须能折行。
@@ -2299,7 +2306,7 @@ function renderV6ProbeResult(j, note, list) {
         ${ipCell(node.ip, "c-v6")}
         <td class="c-spd">${spd}</td>
         <td class="c-lat">${lat}</td>
-        <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}">${write ? "已选用" : "备选"}</span></td>
+        <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}" title="${write ? "这一轮要写进 AAAA 的就是它们" : "这一轮不会写，留作备选"}">${write ? "已选用" : "备选"}</span></td>
       </tr>`;
     }).join("")}</tbody></table>`;
 }

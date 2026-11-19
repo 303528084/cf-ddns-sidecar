@@ -138,9 +138,12 @@ type Server struct {
 	v6ProbeNodes   []config.NodeStat
 	v6ProbeAt      time.Time
 	v6ProbeErr     string
-	// lastV6IPs 是上一轮写进 AAAA 的那批 v6（排好序）。和 v6ProbeNodes 分开：
-	// 探测只测不写，这里必须是「这一轮真写下去的」，否则概览页那行显示的地址
-	// 和域名解析里的对不上。
+	// lastV6IPs 是最近一次 v6 探测出来的那批地址（排好序），概览页「当前最优 IP」
+	// 下面那一行读它。它必须和 v6ProbeNodes 同源，所以只在 runIPv6Probe 里赋值
+	// 一处：以前整轮测速那边也赋一次，而手动点「开始探测」只更新 v6ProbeNodes，
+	// 于是卡片停在旧地址、下面表格却是新测的，两个 v6 不一样，用户只能猜哪个是真的。
+	// 取「最近测出来的」而不是「写进 AAAA 的」：v4 那格显示的是 cfg.LastIP，
+	// 同样只是最近一次测出的最优，并不保证已经写进域名。两格要对得上。
 	lastV6IPs []string
 	// v6CandText / v6CandStaged 和主测速的 candText 是同一个套路：
 	// 用户在探测卡片里填的链接必须在**开跑前**下载解析一次，不能等引擎
@@ -182,6 +185,12 @@ func New(cfg *config.Config, configPath, enginePath, workDir string, auth Auth, 
 	}
 	// 历史也是同理：重启一次就清空的话，「昨天凌晨那轮为什么失败」永远查不到。
 	s.loadHistory()
+	// 概览页那行 v6 从盘上那份接着来，不然重启之后卡片上的 v6 消失、而下面的
+	// 表格还在（那张表有空就回落配置）。v6 关掉时不接：那时 cfg 里这份是关掉
+	// 之前的旧地址，接着显示等于说「你还有 v6」，与开关状态对着干。
+	if len(cfg.IPv6Sources()) > 0 {
+		s.lastV6IPs = append(make([]string, 0, len(cfg.LastIPv6IPs)), cfg.LastIPv6IPs...)
+	}
 	return s
 }
 
@@ -1647,9 +1656,8 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 				v6RoundIPs = ips
 				s.mu.Lock()
 				v6Nodes = append([]config.NodeStat(nil), s.v6ProbeNodes...)
-				// 概览页「当前最优 IP」下面那一行读的就是这份：必须是这一轮真写下去的，
-				// 不能拿探测结果顶（探测只测不写，可能一个地址都没进 AAAA）。
-				s.lastV6IPs = append([]string(nil), ips...)
+				// 概览页那行 v6 不在这里赋：runIPv6Probe 里已经跟着 v6ProbeNodes
+				// 一起更新了。两处各赋一次，定时跑和手动探测会走出两个不同的地址。
 				s.mu.Unlock()
 			}
 		} else {

@@ -269,6 +269,9 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	s.mu.Lock()
 	s.v6ProbeErr = ""
 	s.v6ProbeNodes = stats
+	// 概览页「当前最优 IP」下面那行 v6 就读这一份。和上面那行必须一起更新，
+	// 否则手动探测之后卡片还是旧地址，而下面的表格已经换成新测的了。
+	s.lastV6IPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
 	s.v6ProbeAt = time.Now()
 	s.cfg.LastIPv6 = res.Best()
 	s.cfg.LastIPv6IPs = append(make([]string, 0, len(res.IPs)), res.IPs...)
