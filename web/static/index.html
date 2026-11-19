@@ -1226,7 +1226,7 @@
           </div>
 
           <div class="field">
-            <label>优选 IP 段</label>
+            <label>IPv4 IP 段设置</label>
             <select id="sp-src-mode" onchange="renderSourceMode()">
               <option value="builtin">内置</option>
               <option value="custom">自定义</option>
@@ -1239,11 +1239,11 @@
             </div>
           </div>
 
-          <!-- IPv6 段的来源。和上面那个「优选 IP 段」是**两件独立的事**：
+          <!-- IPv6 段的来源。和上面那个「IPv4 IP 段设置」是**两件独立的事**：
                上面管 IPv4 候选，这里管 IPv6 候选，各自存各自的字段和模式。
                两栏都可以单独关掉，两族都关就等于整轮不测速。 -->
           <div class="field">
-            <label>IPv6 段链接</label>
+            <label>IPv6 IP 段设置</label>
             <select id="sp-v6-mode" onchange="renderSourceMode()">
               <option value="builtin">内置</option>
               <option value="custom">自定义</option>
@@ -1900,14 +1900,14 @@ function renderSourceMode() {
   $("sp-src-hint").textContent =
     v4 === "builtin" ? "用程序内置的来源，地址不显示。"
       : v4 === "custom" ? "只用你填的这些，不叠加内置来源。"
-        : "这一族不测速。两族都关闭时整轮不测速。";
+        : "不测 IPv4。已经写进 AdGuard 的 IPv4 记录会收回，域名的 A 记录保持原样。两族都关闭时整轮不测速。";
 
   const v6 = $("sp-v6-mode").value;
   $("sp-v6-box").classList.toggle("hidden", v6 !== "custom");
   $("sp-v6-hint").textContent =
     v6 === "builtin" ? "用程序内置的来源，地址不显示。"
       : v6 === "custom" ? "只跑你填的这几条链接。"
-        : "不跑 IPv6 测速，AAAA 记录保持原样。";
+        : "不跑 IPv6 测速。已经写进 AdGuard 的 IPv6 记录会收回，域名的 AAAA 记录保持原样。";
 }
 
 // ---- 加载 ----
@@ -1924,7 +1924,7 @@ async function loadConfig() {
   $("sp-bw").value = c.bandwidth_candidates || 100;
   $("sp-sources").value = (c.extra_sources || []).join("\n");
   $("sp-src-mode").value = c.source_mode || "builtin";
-  // v6 段链接现在只有一个入口（测速设置页），和「优选 IP 段」并排。
+  // v6 的 IP 段现在只有一个入口（测速设置页），和「IPv4 IP 段设置」并排。
   // 后端存的是一个多行字符串，直接原样回填——别按行重排，用户的空行会变。
   $("sp-v6-src").value = c.ipv6_probe_url || "";
   $("sp-v6-mode").value = c.ipv6_source_mode || "off";
@@ -2236,7 +2236,7 @@ function resetAdvanced() {
 }
 
 // === CF v6 节点探测（只测不写）===
-// v6 段链接**不在这里存**：它和「优选 IP 段」一样是测速设置页里的一个字段，
+// v6 的 IP 段**不在这里存**：它和「IPv4 IP 段设置」一样是测速设置页里的一个字段，
 // 跟「保存全部设置」一起提交。这样两个族各一栏、长得一样、存法也一样，
 // 用户不用记「这一项要单独点保存」这种例外的规矩。
 
@@ -2831,7 +2831,7 @@ function renderImportResult(restored, kept, warns) {
 async function importConfig(input) {
   const f = input.files && input.files[0];
   if (!f) return;
-  const ok = confirm("恢复会用文件里的内容覆盖当前全部设置：AdGuard 地址与账号、要加速的域名（含「包含子域」）、测速参数、IPv6 段链接、DDNS 服务商与记录类型、密钥。\n\n如果文件里没有某一项（老版本导出的备份），那一项会保持现在的值——恢复完会告诉你具体是哪几项。后台登录密码不受影响。确定继续吗？");
+  const ok = confirm("恢复会用文件里的内容覆盖当前全部设置：AdGuard 地址与账号、要加速的域名（含「包含子域」）、测速参数、IPv6 IP 段设置、DDNS 服务商与记录类型、密钥。\n\n如果文件里没有某一项（老版本导出的备份），那一项会保持现在的值——恢复完会告诉你具体是哪几项。后台登录密码不受影响。确定继续吗？");
   if (!ok) { input.value = ""; return; }
 
   try {
