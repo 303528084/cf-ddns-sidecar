@@ -12,5 +12,5 @@ ctl_stop=true
 service_port=8080
 checkport=false
 os_min_version=1.2.0
-changelog=这一版改了两处：测速设置里两栏来源改名为「IPv4 IP 段设置」和「IPv6 IP 段设置」；把其中一栏设为「关闭」并保存后，已经写进 AdGuard Home 的那一族记录会当场收回，不再等下一轮测速。域名解析里的 A / AAAA 记录不受影响。设置项的位置、字段、默认值没变，升级后不用重填。
+changelog=概览页的「已写入 / 已选用」现在按实际写入的条数显示。设了多条解析但最低下载速度只放过其中一部分时，只有达标的地址标为已写入，其余显示备选及未写入原因。测速结果、写入动作和设置项都没变。
 disable_authorization_path=true
