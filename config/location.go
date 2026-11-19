@@ -32,8 +32,8 @@ type LocationStatus struct {
 	Time       string // 脚本写下这份账本的时刻
 	VolumeRoot string // 探测到的存储卷根，例如 /vol1；空表示没探到
 
-	DataHost  string // 宿主机上的数据目录路径（容器里 /app/data 就是挂的它）
-	DataKind  string // 恒为 "real"。v1.6.4 删掉建软链的代码后不再可能出现 "symlink"；
+	DataHost string // 宿主机上的数据目录路径（容器里 /app/data 就是挂的它）
+	DataKind string // 恒为 "real"。v1.6.4 删掉建软链的代码后不再可能出现 "symlink"；
 	// 字段保留只为兼容旧账本（v1.3.2～v1.4.1 写的文件里可能是 symlink）
 	DataReal  string // 解析软链之后的真实路径；没软链时等于 DataHost
 	DataError string // 非空 = 数据目录建不出来 / 容器用户写不进去（含原始错误）
