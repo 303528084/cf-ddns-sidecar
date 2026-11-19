@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -124,8 +125,12 @@ func TestHandlePasswordSuccess(t *testing.T) {
 		t.Fatalf("密码文件内容不对: %q", got)
 	}
 	// 权限要和生命周期脚本写出来的一致，否则另一身份的进程读不到。
-	if st, serr := os.Stat(passFile); serr == nil && st.Mode().Perm() != 0o644 {
-		t.Fatalf("密码文件权限应为 0644，实际 %v", st.Mode().Perm())
+	// Windows 上 chmod 只切只读属性，Mode().Perm() 恒为 0666，这条在那边没法成立；
+	// 产品只跑在飞牛的 Linux 容器里，断言保留在非 Windows 上。
+	if runtime.GOOS != "windows" {
+		if st, serr := os.Stat(passFile); serr == nil && st.Mode().Perm() != 0o644 {
+			t.Fatalf("密码文件权限应为 0644，实际 %v", st.Mode().Perm())
+		}
 	}
 
 	newToken := extractToken(t, rec.Body.String())

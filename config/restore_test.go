@@ -80,13 +80,7 @@ func TestRestoreFromUpgradeBackup(t *testing.T) {
 	}
 
 	// config.json 里有 AdGuard 密码和各家密钥，不能比 Save() 写的更宽松。
-	st, err := os.Stat(filepath.Join(dataDir, "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := st.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("恢复出来的 config.json 权限应为 0600，实际 %o", perm)
-	}
+	checkPerm(t, "恢复出来的 config.json", filepath.Join(dataDir, "config.json"), 0o600)
 
 	// 标记必须落盘：程序可能马上因为改端口重启一次，只在内存里会丢。
 	if !restoredFromUpgradeBackup() {

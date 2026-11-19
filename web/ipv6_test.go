@@ -4,28 +4,35 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
 )
 
 // handleIPv6 只读，不碰 Server 的任何字段——所以零值 Server 就能测。
-// 这组测试在 Linux 容器里跑（本机 CI 也是），/proc/net/if_inet6 一定存在，
-// 因此预期是 200 + ok:true；具体有没有 v6 地址取决于运行容器，不做断言。
+// 它读的是 /proc/net/if_inet6，只有 Linux 有；Windows/macOS 上没有这个文件，
+// 那边期望的是 503 + ok:false（界面据此提示要去 NAS 上跑）。两条路都算真实行为，分开断言。
 func TestHandleIPv6(t *testing.T) {
 	s := &Server{}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/ipv6", nil)
 	s.handleIPv6(rec, req)
 
+	if runtime.GOOS != "linux" {
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("非 Linux 上状态码 = %d，期望 503；body=%s", rec.Code, rec.Body.String())
+		}
+		return
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d，期望 200；body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
 		OK     bool `json:"ok"`
 		Report struct {
-			Available  bool `json:"available"`
-			Total      int  `json:"total"`
+			Available  bool   `json:"available"`
+			Total      int    `json:"total"`
 			Source     string `json:"source"`
 			Candidates []struct {
 				Address  string `json:"address"`

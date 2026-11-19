@@ -3,10 +3,28 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// checkPerm 校验文件权限。Windows 上 chmod 只切只读属性，Mode().Perm() 恒为 0666，
+// 0600 这条永远不过；而产品只跑在飞牛的 Linux 容器里，权限这一条在那边才算数。
+// 所以按平台跳过断言，而不是把断言删掉——删了 Linux 上就没人守了。
+func checkPerm(t *testing.T, label, path string, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != want {
+		t.Fatalf("%s 权限应为 %o，实际 %o", label, want, perm)
+	}
+}
 
 // 这一组测试守的是 2026-11-17 第三次「升级后配置空了」的修复。
 //
@@ -87,13 +105,7 @@ func TestSaveWritesSnapshot(t *testing.T) {
 	}
 
 	// 和 Save() 保持一致：这一份里有 AdGuard 密码，不能写成同机人人可读。
-	st, err := os.Stat(filepath.Join(snap, "config.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := st.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("备份里的 config.json 权限应为 0600，实际 %o", perm)
-	}
+	checkPerm(t, "备份里的 config.json", filepath.Join(snap, "config.json"), 0o600)
 
 	// 模拟真机上发生的事情：整个数据目录被删掉，然后容器重建。
 	// 这一步是整条链路的意义所在——备份必须能把它救回来。
