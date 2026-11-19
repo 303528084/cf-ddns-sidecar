@@ -36,7 +36,7 @@ var cloudflareIPv4 = []string{
 
 // cloudflareIPv6 是 Cloudflare 官方公布的 IPv6 段。官方只公布一条 /32，和 IPv4 那 15 条
 // 完全不同：v6 是 Anycast，采样再广也很可能落在同一批边缘设备上，所以 v6 优选有没有
-// 意义要靠真机测（见 docs/IPv6方案.md 第八节）。
+// 意义只能实测——本地试过，拿不到 v6 出口的机器上这一族整个跑不起来。
 var cloudflareIPv6 = []string{
 	"2606:4700::/32",
 }
