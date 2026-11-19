@@ -377,7 +377,12 @@
   /* ---------- 概览页：四张独立指标卡 ----------
      数值全部来自 --accent/--ok/--line 这一套既有令牌，所以浅色和深色
      两套主题都不用另写一份配色。 */
-  .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
+  /* 第一格要放下一条完整地址加复制按钮，后三格只有一行数字加一行说明，
+     四格等宽必然一边挤一边空。1.6 是量出来的：1100px 宽的窗口下第一格
+     278px，v6 地址正好不折行；后三格 174px，说明文字仍然完整。
+     1080px 以下这条被媒体查询改成两列，不影响手机。 */
+  .kpis{display:grid;grid-template-columns:minmax(0,1.6fr) repeat(3,minmax(0,1fr));
+    gap:10px;margin-bottom:12px}
   .kpi{
     background:var(--card);border:1px solid var(--line);border-radius:8px;
     padding:12px 14px;position:relative;min-width:0;
