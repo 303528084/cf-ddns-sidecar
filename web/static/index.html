@@ -2291,15 +2291,17 @@ function renderV6ProbeResult(j, note, list) {
       + `<tr><td class="empty" colspan="6">这一轮没有测出节点</td></tr></tbody></table>`;
     return;
   }
-  // 「保留候选 IP 数」决定前几条标「已选用」，和上面 v4 那张表同一个来源。
+  // 和 v4 那张表一样：标的是后端按门槛筛过、真要写的那几条，
+  // 不是按「同步几条」把排名截一段。门槛刷掉的地址在这里也只是备选。
+  const will = new Set(Array.isArray(j.will_write_ips) ? j.will_write_ips : []);
+  const noteText = j.min_speed_note || "";
   const want = parseInt($("dd-count").value || "1", 10) || 1;
-  const n = Math.min(nodes.length, want);
   // 这里原来有一整行说明：测出几个、最快的是谁、哪几条已选用、只测不写。
   // 五件事全都能从表格本身看出来，代价是标题和表格之间多两行灰字。
   // 其中的「只测不写」挪到状态标签的悬停提示上，看的时候不占地方。
   note.innerHTML = "";
-  // 列跟上面「本次测速结果」逐列对齐，状态列也一样：前「保留候选 IP 数」条标
-  // 「已选用」，其余「备选」。不写「已写入」是因为探测只测不写——地址要等
+  // 列跟上面「本次测速结果」逐列对齐，状态列也一样：够门槛的标「已选用」，
+  // 其余「备选」。不写「已写入」是因为探测只测不写——地址要等
   // 「立即测速」或定时那一轮才进 AAAA。地址列保留 c-v6，39 个字符必须能折行。
   // 机房位置同样是穿过那个地址问 Cloudflare 得来的，不是按 IP 段猜的。
   // 速度条也照主表画：满格取这一批最快的。只给数字的话，两张表上下并排
@@ -2321,15 +2323,15 @@ function renderV6ProbeResult(j, note, list) {
         ? `<span class="num">${fmt2(node.delay)} ms</span>`
         : `<span class="num dim">—</span>`;
       const { place, full, code } = placeParts(node);
-      // 前 n 条就是这一轮选中的，和 v4 那张表一个判法。
-      const write = i < n;
+      const write = will.has(node.ip);
+      const why = !write && i < want && noteText ? "没到最低下载速度或没测出速度：" + noteText : "这一轮不写，留作备选";
       return `<tr class="${i === 0 ? "best" : ""}">
         <td class="c-rk"><span class="rk">${i + 1}</span></td>
         <td class="c-loc"><b title="${full}">${place}</b>${code}</td>
         ${ipCell(node.ip, "c-v6")}
         <td class="c-spd">${spd}</td>
         <td class="c-lat">${lat}</td>
-        <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}" title="${write ? "这一轮要写进 AAAA 的就是它们" : "这一轮不会写，留作备选"}">${write ? "已选用" : "备选"}</span></td>
+        <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}" title="${write ? "这一轮要写进 AAAA 的就是它们" : escapeHtml(why)}">${write ? "已选用" : "备选"}</span></td>
       </tr>`;
     }).join("")}</tbody></table>`;
 }
@@ -2524,14 +2526,18 @@ function renderIPList(s) {
     return [];
   }
 
+  // 状态列认后端算好的写入名单：门槛刷掉的地址即使排在前面也不能标「已写入」。
+  // 名单为空就是一条都没写（比如全都没到门槛），不能拿配置条数补。
+  const will = new Set(Array.isArray(s.will_write_ips) ? s.will_write_ips : []);
+  const note = s.min_speed_note || "";
   const want = parseInt($("dd-count").value || "1", 10) || 1;
-  const n = Math.min(nodes.length, want);
   // 速度条满格取「本批最快那条」。用固定刻度的话，一批 10Mbps 的节点
   // 会全变成看不见的短条，反而看不出彼此差距。
   const fastest = nodes.reduce((m, x) => Math.max(m, x.speed || 0), 0);
 
   tbody.innerHTML = nodes.map((node, i) => {
-    const write = i < n;
+    const write = will.has(node.ip);
+    const why = !write && i < want && note ? "没到最低下载速度或没测出速度：" + note : "这一轮不写，留作备选";
     const best = i === 0;
     const speed = node.speed || 0;
     const delay = node.delay || 0;
@@ -2553,7 +2559,7 @@ function renderIPList(s) {
       ${ipCell(node.ip, "c-ip")}
       <td class="c-spd">${spd}</td>
       <td class="c-lat">${lat}</td>
-      <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}">${write ? "已写入" : "备选"}</span></td>
+      <td class="c-wr"><span class="pill ${write ? "ok" : "mut"}" title="${write ? "这一轮会写进 A 记录的就是它们" : escapeHtml(why)}">${write ? "已写入" : "备选"}</span></td>
     </tr>`;
   }).join("");
 

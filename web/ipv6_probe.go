@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
+	"github.com/303528084/cf-ddns-sidecar/ddns"
 	"github.com/303528084/cf-ddns-sidecar/engine"
 )
 
@@ -301,6 +302,12 @@ func (s *Server) handleIPv6ProbeResult(w http.ResponseWriter, r *http.Request) {
 	nodes := append([]config.NodeStat(nil), s.v6ProbeNodes...)
 	at := s.v6ProbeAt
 	errMsg := s.v6ProbeErr
+	// 和 v4 同一条规矩：状态列读真正会写进 AAAA 的那几条，
+	// 不是按「同步几条」把排名截一段就算数。
+	willWrite, minSpeedNote := []string{}, ""
+	if s.cfg != nil {
+		_, willWrite, minSpeedNote = writePlanFor(s.cfg, ddns.TypeAAAA)
+	}
 	if len(nodes) == 0 && s.cfg != nil && len(s.cfg.LastIPv6Nodes) > 0 {
 		// 直接给落盘那份的副本：它本来就带 colo/place，不用再从 engine.Node
 		// 拼一遍，v1.7.2 之前这里是把 NodeStat 拆回 engine.Node，机房位置
@@ -315,10 +322,12 @@ func (s *Server) handleIPv6ProbeResult(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"running": running,
-		"nodes":   nodes,
-		"at":      at,
-		"error":   errMsg,
+		"ok":             true,
+		"running":        running,
+		"nodes":          nodes,
+		"at":             at,
+		"error":          errMsg,
+		"will_write_ips": willWrite,
+		"min_speed_note": minSpeedNote,
 	})
 }

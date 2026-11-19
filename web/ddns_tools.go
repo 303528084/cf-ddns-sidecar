@@ -212,21 +212,7 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		s.mu.Lock()
-		bestIP, rank, nodeStats := lastRankForType(s.cfg, family)
-		pick := pickForWrite(rank, nodeStats, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
-		s.mu.Unlock()
-		allIPs := pick.IPs
-		// 老配置里只有 last_ip（升级前存的），没有列表，退回那一条。
-		// 但门槛把候选全刷掉的时候不能这么退：那等于绕过用户刚设的标准，
-		// 把他最不想要的那条地址写上去，而且界面上还会显示「将写入」。
-		if len(allIPs) == 0 && bestIP != "" && pick.dropped() == 0 {
-			allIPs = []string{bestIP}
-		}
-		note := ""
-		if pick.dropped() > 0 {
-			note = pick.skipReason(cfg.DDNS.MinSpeedMbps)
-		}
+		bestIP, allIPs, note := writePlanFor(&cfg, family)
 
 		if state.Found {
 			s.appendLog(fmt.Sprintf("域名解析密钥可用：%s 现在指向 %s（共 %d 条 %s 记录）",
@@ -299,6 +285,24 @@ func lastRankForType(c *config.Config, rtype string) (best string, rank []string
 	return c.LastIP, append([]string(nil), c.LastIPs...), append([]config.NodeStat(nil), c.LastNodes...)
 }
 
+// writePlanFor 算「按现在的设置，这一族会写哪几条」，同时给出少写了几条。
+// 概览页两处状态徽章也读这里：界面按配置条数截、推送按门槛筛的话，
+// 用户会看到 5 条「已写入」而实际只写了 1 条。
+func writePlanFor(cfg *config.Config, rtype string) (string, []string, string) {
+	best, rank, nodes := lastRankForType(cfg, rtype)
+	pick := pickForWrite(rank, nodes, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
+	ips := pick.IPs
+	// 只有老配置里没有列表时才退回 last_ip；门槛刷空时不退，理由见 handleDDNSUpdate。
+	if len(ips) == 0 && best != "" && pick.dropped() == 0 {
+		ips = []string{best}
+	}
+	note := ""
+	if pick.dropped() > 0 {
+		note = pick.skipReason(cfg.DDNS.MinSpeedMbps)
+	}
+	return best, ips, note
+}
+
 // handleDDNSUpdate 立刻把当前最优 IP 推一次，不用等下一个测速周期。
 func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -311,31 +315,18 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先把每一族该写什么算出来，再决定动作。算 IP 只读配置，放在锁里一次拿完。
+	// 先把每一族该写什么算出来，再决定动作。算 IP 只读配置快照，不碰 server 状态。
 	mode := cfg.DDNS.EffectiveRecordMode()
 	families := ddns.FamiliesOf(mode)
 
 	s.mu.Lock()
 	busy := s.running
+	s.mu.Unlock()
 	planned := make([]ddnsFamilyResult, 0, len(families))
 	for _, family := range families {
-		lastIP, stored, nodeStats := lastRankForType(s.cfg, family)
-		// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速，
-		// 直接从这一份里截前 5 条就行。
-		pick := pickForWrite(stored, nodeStats, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
-		ips := pick.IPs
-		// 只有「排名列表本身就没有」才退回单条 lastIP（升级前存的配置只有一条）。
-		// 门槛把候选全刷掉时不退：那等于绕过用户设的标准把最慢的一条写上去。
-		if len(ips) == 0 && lastIP != "" && pick.dropped() == 0 {
-			ips = []string{lastIP}
-		}
-		res := ddnsFamilyResult{Type: family, IPs: ips}
-		if pick.dropped() > 0 {
-			res.MinSpeedNote = pick.skipReason(cfg.DDNS.MinSpeedMbps)
-		}
-		planned = append(planned, res)
+		_, ips, note := writePlanFor(&cfg, family)
+		planned = append(planned, ddnsFamilyResult{Type: family, IPs: ips, MinSpeedNote: note})
 	}
-	s.mu.Unlock()
 
 	// 测速进行中不推：那一轮自己会推，两边同时写同一条记录只会打架。
 	if busy {

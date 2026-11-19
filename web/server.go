@@ -658,9 +658,14 @@ type statusResp struct {
 	LastOK       bool   `json:"last_ok"`
 	FailCount    int    `json:"fail_count"`
 
-	// 上次测速排好序的完整 IP 列表。界面用它显示「已写入前 N 条」，
-	// 也让用户在改条数之前就能看到有哪些备选。
+	// 上次测速排好序的完整 IP 列表。界面显示候选，状态列另读 will_write_ips，
+	// 不能拿配置条数冒充实际写入条数。
 	LastIPs []string `json:"last_ips"`
+
+	// WillWriteIPs 是这一族现在真会写进解析的地址（已过速度门槛）。
+	// 空列表表示一条都没写；MinSpeedNote 说清少写了几条、为什么。
+	WillWriteIPs []string `json:"will_write_ips"`
+	MinSpeedNote string   `json:"min_speed_note,omitempty"`
 
 	// 上一轮测出来的 IPv6（同样排好序）。只用于概览页「当前最优 IP」那一格多显示
 	// 一行 v6 地址——没有 v6 的机器上这一行不出现。重启后由 New 从配置里回填，
@@ -718,6 +723,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Nodes:           append([]config.NodeStat{}, cfg.LastNodes...),
 		LastDurationSec: s.lastDurSec,
 	}
+	// 徽章读的是「按当前设置真会写哪几条」，不是把名单按 ip_count 截一段。
+	// 这张表是 v4 的，只算 A 那一族；v6 探测表自己算 AAAA。
+	_, resp.WillWriteIPs, resp.MinSpeedNote = writePlanFor(&cfg, ddns.TypeA)
 	s.mu.Unlock()
 
 	if cfg.DDNS.Enabled && cfg.DDNS.Provider != "" {

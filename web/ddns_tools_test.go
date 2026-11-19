@@ -469,6 +469,82 @@ func TestPickForWriteWithRealRound(t *testing.T) {
 	}
 }
 
+// TestStatusWritePlanIsFiltered 锁住概览页状态列的数据源：
+// 设 5 条、门槛 13 Mbps、只有 1 条够快时，接口只能报 1 条可写地址，
+// 不能把排名前 5 条原样交出去让前端自己截。
+func TestStatusWritePlanIsFiltered(t *testing.T) {
+	cfg := config.Default()
+	cfg.DDNS.Enabled = true
+	cfg.DDNS.Provider = "cloudflare"
+	cfg.DDNS.Domain = "cf.example.com"
+	cfg.DDNS.IPCount = 5
+	cfg.DDNS.MinSpeedMbps = 13
+	cfg.LastIP = "172.64.229.11"
+	cfg.LastIPs = []string{
+		"172.64.229.11", "190.93.248.225", "172.64.168.12", "172.64.143.28", "172.64.195.9",
+	}
+	cfg.LastNodes = []config.NodeStat{
+		{IP: "172.64.229.11", Speed: 20},
+		{IP: "190.93.248.225", Speed: 9},
+		{IP: "172.64.168.12", Speed: 8},
+		{IP: "172.64.143.28", Speed: 7},
+		{IP: "172.64.195.9", Speed: 6},
+	}
+	s := New(cfg, filepath.Join(t.TempDir(), "config.json"), "", t.TempDir(), Auth{}, "", nil)
+
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	var got struct {
+		WillWriteIPs []string `json:"will_write_ips"`
+		MinSpeedNote string   `json:"min_speed_note"`
+		LastIPs      []string `json:"last_ips"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if len(got.LastIPs) != 5 {
+		t.Fatalf("排名列表该是完整的 5 条，实际 %d", len(got.LastIPs))
+	}
+	if strings.Join(got.WillWriteIPs, ",") != "172.64.229.11" {
+		t.Fatalf("可写地址应只有 1 条，实际 %#v", got.WillWriteIPs)
+	}
+	if got.MinSpeedNote != "4 条低于 13 Mbps" {
+		t.Fatalf("少写原因不对: %q", got.MinSpeedNote)
+	}
+}
+
+// TestProbeWritePlanIsFiltered v6 探测卡片的状态列走同一套规矩：
+// 门槛刷掉的地址不能因为排在前面就被标成「已选用」。
+func TestProbeWritePlanIsFiltered(t *testing.T) {
+	cfg := config.Default()
+	cfg.DDNS.IPCount = 2
+	cfg.DDNS.MinSpeedMbps = 13
+	cfg.IPv6SourceMode = config.SourceBuiltin
+	cfg.LastIPv6 = "2606:4700::1"
+	cfg.LastIPv6IPs = []string{"2606:4700::1", "2606:4700::2"}
+	cfg.LastIPv6Nodes = []config.NodeStat{
+		{IP: "2606:4700::1", Speed: 20},
+		{IP: "2606:4700::2", Speed: 9},
+	}
+	s := New(cfg, filepath.Join(t.TempDir(), "config.json"), "", t.TempDir(), Auth{}, "", nil)
+
+	rec := httptest.NewRecorder()
+	s.handleIPv6ProbeResult(rec, httptest.NewRequest(http.MethodGet, "/api/ipv6/probe/result", nil))
+	var got struct {
+		WillWriteIPs []string `json:"will_write_ips"`
+		MinSpeedNote string   `json:"min_speed_note"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if strings.Join(got.WillWriteIPs, ",") != "2606:4700::1" {
+		t.Fatalf("可写地址应只有 1 条，实际 %#v", got.WillWriteIPs)
+	}
+	if got.MinSpeedNote != "1 条低于 13 Mbps" {
+		t.Fatalf("少写原因不对: %q", got.MinSpeedNote)
+	}
+}
+
 // TestDDNSUpdateAllBelowMinSpeed 全部低于门槛时，一条都不能写。
 //
 // 这里防的是两件事：① 退回 lastIP 把最慢的那条悄悄写上去（那等于绕过用户
