@@ -160,8 +160,8 @@ func (s *Server) handleIPv6Probe(w http.ResponseWriter, r *http.Request) {
 // v6TopN 返回 v6 那一轮要保留多少条结果，和 IPv4 共用「保留候选 IP 数」。
 //
 // 为什么要共用：那一栏的语义是「这批候选留几条给我选」，IPv4 和 IPv6 是
-// 同一个问题的两个族，各留一个数只会让人困惑（用户原话：「设置时显示 10 个，
-// 就是显示 10 个；设置 5 个，就是显示 5 个」）。概览页两张表的行数也因此一致。
+// 同一个问题的两个族，各留一个数只会让人困惑——设 10 个就该是 10 个，设 5 个
+// 就该是 5 个，别多也别少。概览页两张表的行数也因此一致。
 func (s *Server) v6TopN() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

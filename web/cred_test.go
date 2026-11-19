@@ -116,8 +116,8 @@ func TestSaveCredentialsRejectsUnknownKey(t *testing.T) {
 // TestSaveCredentialsKeepsEnvComments 保存密钥不能冲掉 ddns.env 里用户自己
 // 写的注释和被注释掉的备用密钥。
 //
-// 原来是整份重写（SaveEnvFile），一保存就只剩一行固定注释 + 各家密钥。
-// UpdateEnvFile 顶部那段注释写的正是这件事，只是保存密钥这条路径没走它。
+// 原来是整份重写，一保存就只剩一行固定注释 + 各家密钥。UpdateEnvFile 顶部
+// 那段注释写的正是这件事，只是保存密钥这条路径当时没走它。
 func TestSaveCredentialsKeepsEnvComments(t *testing.T) {
 	s, _ := newPasswordTestServer(t, "")
 	tok := s.signToken()

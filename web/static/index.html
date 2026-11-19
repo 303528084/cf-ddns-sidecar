@@ -152,9 +152,8 @@
   .btn:disabled{opacity:.55;cursor:default;transform:none}
   .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
   .btn.primary:hover{filter:brightness(1.08);border-color:var(--accent)}
-  /* 「添加」在检测通过之前必须是**灰的**——用户原话就是「没检测之前，这个
-     添加按钮是灰的，不能点」。只把不透明度降到 .6 还是蓝的，看着像「能点，
-     只是淡了一点」，得换成中性的灰底灰字才一眼看出点不动。 */
+  /* 「添加」在检测通过之前必须是**灰的**。只把不透明度降到 .6 还是蓝的，
+     看着像「能点，只是淡了一点」；换成中性的灰底灰字才一眼看出点不动。 */
   .btn.primary:disabled{
     background:var(--line2);border-color:var(--line);color:var(--dim);
   }
@@ -178,7 +177,6 @@
   .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);display:inline-block;flex:none}
   .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.14)}
   .dot.busy{background:var(--warn);box-shadow:0 0 0 3px rgba(199,119,0,.16);animation:pulse 1.4s infinite}
-  .dot.idle{background:var(--dim)}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 
   /* ---------- 卡片 ---------- */
@@ -195,7 +193,6 @@
 
   /* 测速状态那一句：「空闲 · 成功 · 用时 38 秒」 */
   .runmeta{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);flex-wrap:wrap}
-  .runmeta .sep{color:var(--line)}
 
   /* ---------- 表单 ---------- */
   /* 用 minmax(0,1fr) 而不是 1fr：1fr 的最小宽度是内容宽度，

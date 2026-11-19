@@ -317,9 +317,10 @@ func TestHostsWantForOffMeansClear(t *testing.T) {
 
 // TestEnableHostsNowWritesImmediately 锁住「打开开关当刻就写进 AdGuard」。
 //
-// 用户原话：「开启的时候没再同步一次，应该是开启后马上同步一次 host，
-// 后面再随着测速定时同步才对。」这条用例盯的就是这一下：一个假 hosts 源
-// 加一个假 AdGuard，打开开关后重写表里必须已经有清单里那些域名。
+// 打开开关之后要立刻同步一次，后面再随测速轮走：不然用户看到的是「开关开了、
+// AdGuard 里还是空的」，要等下一轮测速（默认一小时）才有反应，合理的判断就是
+// 「开关没生效」。这条用例盯的就是这一下：一个假 hosts 源加一个假 AdGuard，
+// 打开开关后重写表里必须已经有清单里那些域名。
 func TestEnableHostsNowWritesImmediately(t *testing.T) {
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("1.1.1.1 a.example.com\n2.2.2.2 b.example.com\n"))
