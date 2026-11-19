@@ -182,6 +182,28 @@ func (d *dnspod) EnsureRecords(domain string, ips []string, opt RecordOptions) e
 	return nil
 }
 
+// ClearRecords 删掉这个域名下 rtype 那一族的全部记录。
+// queryRecords 把 Subdomain 和 RecordType 都当服务端过滤条件，返回的就是这一条
+// 子域名的这一族记录，逐条删即可。
+func (d *dnspod) ClearRecords(domain string, rtype string) (int, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return 0, err
+	}
+	recs, err := d.queryRecords(domain, rtype)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range recs {
+		if err := d.deleteRecord(r.RecordId); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (d *dnspod) modifyRecord(rec tcRecord) error {
 	var st tcStatusResp
 	if err := d.request("ModifyRecord", rec, &st); err != nil {

@@ -119,6 +119,13 @@ type Provider interface {
 	//  2. 先补齐、再删多余。反过来先删的话中间有一小段时间这域名一条记录都没有。
 	//  3. 只认和处理 opt.Type 那一族记录，另一族既不查也不删。
 	EnsureRecords(domain string, ips []string, opt RecordOptions) error
+	// ClearRecords 删掉 domain 下 rtype 这一族的全部记录，返回删掉几条。
+	//
+	// 只有用户选了单族模式（只写 A / 只写 AAAA）才该被调用：那时另一族留着就是错的，
+	// 客户端会继续拿着上一次写进去的旧地址去连，看起来像「改了设置没生效」。
+	// 这件事不能塞进 EnsureRecords：它的契约是「只动 opt.Type 那一族」，一旦它也会删
+	// 另一族，「这一轮 v6 没测出结果」这类分支就分不清该跳过还是该清空了。
+	ClearRecords(domain string, rtype string) (int, error)
 	// Verify 只读校验：确认密钥有效、能查到该域名，并返回 rtype 那类记录的当前值。
 	// 绝不写任何东西，用户点「测试密钥」时不该改到线上解析。
 	// rtype 传空按 A 处理；传 AAAA 就只看 AAAA，这样才能如实回答「v6 那条写进去没有」。

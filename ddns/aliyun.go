@@ -150,6 +150,27 @@ func (a *aliyun) EnsureRecords(domain string, ips []string, opt RecordOptions) e
 	return nil
 }
 
+// ClearRecords 删掉这个域名下 rtype 那一族的全部记录。
+// Type 是服务端过滤条件（查 AAAA 只回 AAAA），所以逐条删也删不到另一族。
+func (a *aliyun) ClearRecords(domain string, rtype string) (int, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return 0, err
+	}
+	recs, err := a.queryRecords(domain, rtype)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range recs {
+		if err := a.deleteRecord(r.RecordID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (a *aliyun) addRecord(domain, rtype, ip string, ttl int) error {
 	q := url.Values{}
 	q.Set("Action", "AddDomainRecord")

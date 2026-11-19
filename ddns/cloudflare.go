@@ -162,6 +162,31 @@ func (c *cloudflare) EnsureRecords(domain string, ips []string, opt RecordOption
 	return nil
 }
 
+// ClearRecords 删掉这个域名下 rtype 那一族的全部记录。
+// 服务端已按 name + type 过滤，这里再判一次 Name 与 Type 是为了不依赖对端行为：
+// 万一哪天接口忽略了 type 参数，越过这一行的就是「删 A 的时候把 AAAA 顺手删了」。
+func (c *cloudflare) ClearRecords(domain string, rtype string) (int, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return 0, err
+	}
+	list, err := c.cfRecords(domain, rtype)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, rec := range list {
+		if !strings.EqualFold(rec.Name, domain) || rec.Type != rtype {
+			continue
+		}
+		if err := c.deleteRecord(rec.ID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (c *cloudflare) putRecord(rec cfRecord) error {
 	var wr cfWriteResp
 	if err := c.do(http.MethodPut,

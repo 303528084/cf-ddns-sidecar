@@ -133,6 +133,28 @@ func (h *huawei) EnsureRecords(domain string, ips []string, opt RecordOptions) e
 	return h.request(http.MethodPost, u, nil, body, &out)
 }
 
+// ClearRecords 删掉这个域名下 rtype 那一族的记录集。
+// 华为云一个记录集就是一整族，删掉它这一族就一条不剩。返回集里的地址条数而不是 1，
+// 这样四家返回值的含义一致（都表示「几条地址没了」），日志不用按服务商改写。
+func (h *huawei) ClearRecords(domain string, rtype string) (int, error) {
+	rtype, err := NormalizeRecordType(rtype)
+	if err != nil {
+		return 0, err
+	}
+	rec, found, err := h.queryRecords(domain, rtype)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	u := fmt.Sprintf("%s/v2.1/zones/%s/recordsets/%s", huaweiAPIBase, rec.ZoneID, rec.ID)
+	if err := h.request(http.MethodDelete, u, nil, nil, nil); err != nil {
+		return 0, err
+	}
+	return len(rec.Records), nil
+}
+
 func (h *huawei) request(method, urlStr string, query url.Values, body any, result any) error {
 	var reader io.Reader
 	if body != nil {

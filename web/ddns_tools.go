@@ -19,6 +19,33 @@ import (
 	"github.com/303528084/cf-ddns-sidecar/dns"
 )
 
+// pruneOtherFamily 在单族模式下把另一族记录清掉。
+//
+// 只在 written 不为空时被调用，也就是这一轮那一族确实写成功了。写失败却先把另一族
+// 删掉，一旦服务商那头还有别的问题，域名会两头都空，访问直接断。
+//
+// 清失败只记日志不算整轮失败：这一族已经写进去了，另一族没清干净下一轮还会再来一次，
+// 没必要因为这个让整轮测速显示成失败。返回 true 表示这一轮把另一族对齐了。
+func (s *Server) pruneOtherFamily(p ddns.Provider, domain, written string) bool {
+	if written == "" {
+		return false
+	}
+	other := ddns.TypeAAAA
+	if written == ddns.TypeAAAA {
+		other = ddns.TypeA
+	}
+	n, err := p.ClearRecords(domain, other)
+	if err != nil {
+		s.appendLog(fmt.Sprintf("域名解析：按「只写 %s」清理 %s 记录失败: %s（下一轮会再试）",
+			written, other, err.Error()))
+		return false
+	}
+	if n > 0 {
+		s.appendLog(fmt.Sprintf("域名解析：按「只写 %s」清掉了 %d 条旧的 %s 记录", written, n, other))
+	}
+	return true
+}
+
 // currentDDNS 取出当前 DDNS 配置并造好服务商客户端。
 // 不可用时 provider 为 nil，msg 是一句能直接显示给用户看的话。
 func (s *Server) currentDDNS() (ddns.Provider, config.Config, string) {
@@ -371,6 +398,12 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 400, map[string]string{"error": msg})
 		return
+	}
+
+	// 单族模式下手动推一次也顺手清另一族：用户点了「立即推送」就是想马上看到结果，
+	// 只写 A 却还留着旧的 AAAA，看起来就像没生效。写失败时上面已经返回了，走不到这里。
+	if len(families) == 1 {
+		s.pruneOtherFamily(p, cfg.DDNS.Domain, families[0])
 	}
 
 	writeJSON(w, 200, map[string]any{

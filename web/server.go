@@ -1788,9 +1788,13 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 	// 两张表，一次只能动一张，所以按族循环。某一族这轮没结果就只跳过那一族，
 	// 绝不能拿 v4 地址去顶 AAAA（ddns 包的族校验会拦，这里先说明白更好读）。
 	ddnsMode := cfg.DDNS.EffectiveRecordMode()
+	families := ddns.FamiliesOf(ddnsMode)
 	// ddnsWritten 是这一轮真的推上去的记录条数，只有历史那张表用。
 	// 按族累加：A 和 AAAA 是两条记录集，各算各的。
 	ddnsWritten := 0
+	// writtenFamily 记这一轮真的写成功的是哪一族。单族模式靠它决定要不要清另一族：
+	// 一族都没写上去时不能清，否则服务商那头一坏，域名会两头都空。
+	writtenFamily := ""
 	switch {
 	case cfg.DDNS.Enabled && cfg.DDNS.Provider != "" && cfg.DDNS.Domain != "":
 		missing := config.MissingCredentials(cfg.DDNS.Provider)
@@ -1804,7 +1808,7 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 			s.appendLog("域名解析配置有误: " + derr.Error())
 			break
 		}
-		for _, family := range ddns.FamiliesOf(ddnsMode) {
+		for _, family := range families {
 			source, familyNodes := res.IPs, nodes
 			if family == ddns.TypeAAAA {
 				source, familyNodes = v6RoundIPs, v6Nodes
@@ -1838,6 +1842,12 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 			}
 			s.appendLog(msg)
 			ddnsWritten += len(pushIPs)
+			writtenFamily = family
+		}
+		// 单族模式要和用户的选择对齐：选了「只写 IPv4」，这个域名下就不该再留着 AAAA。
+		// 放在写成功之后，理由见上面 writtenFamily 那段。
+		if len(families) == 1 {
+			s.pruneOtherFamily(p, cfg.DDNS.Domain, writtenFamily)
 		}
 	case len(res.IPs) == 0 && len(v6RoundIPs) == 0:
 		s.appendLog("域名解析未推送：本次没有可用的 IP")
