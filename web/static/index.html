@@ -419,7 +419,7 @@
   td.c-ip{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap}
   td.c-loc{font-size:12.5px;color:var(--muted)}
   td.c-loc b{color:var(--text);font-weight:600}
-  td.c-loc .code{color:var(--dim);font-family:var(--mono);font-size:11px;margin-left:4px}
+  td.c-loc .code, table.det .d-loc .code{color:var(--dim);font-family:var(--mono);font-size:11px;margin-left:4px}
   /* 速度条按列宽铺开（上限 160px）：固定 88px 的话，「速度」这一列
      右边会留一大片空白，看着像数字和条不是一组的。 */
   .bar{height:5px;border-radius:3px;background:var(--line2);overflow:hidden;
@@ -431,13 +431,19 @@
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap;display:inline-block}
   .pill.ok{background:var(--ok-soft);color:var(--ok);border-color:#c9ecd8}
   .pill.mut{background:var(--line2);color:var(--muted);border-color:var(--line)}
+  /* 历史表里「失败」那一格。红底不深，因为它是二十行里偶尔出现的一种状态，
+     不是错误提示——整行变红就太吵了。 */
+  .pill.bad{background:rgba(217,45,32,.08);color:var(--err);border-color:rgba(217,45,32,.22)}
 
   @media (prefers-color-scheme: dark){
     table.nodes thead th{background:#1b212b}
     table.nodes tbody tr:hover{background:#1b212b}
     table.v6t thead th{background:#1b212b}
     table.v6t tbody tr:hover{background:#1b212b}
+    table.hist thead th{background:#1b212b}
+    table.hist tbody tr:hover{background:#1b212b}
     .pill.ok{border-color:#1f4430}
+    .pill.bad{background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.28)}
   }
   /* ---------- 高级设置（引擎参数） ----------
      四十来个开关不能平铺：一屏塞不下，而且「不确定就别动」这句话必须
@@ -588,6 +594,84 @@
   .imp-box .ok{color:var(--ok)}
   .imp-box .gap{color:var(--warn)}
   .imp-box .kv{color:var(--muted);word-break:break-word}
+  /* ---------- 历史测速 ----------
+     一行一轮，点开看这一轮的节点。列比上面几张表多（还带触发来源和耗时），
+     所以单独一套列宽，不和「本次测速结果」那张共用：那张锁的是六列，
+     硬套会把某一列挤成零宽。 */
+  table.hist{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12.5px}
+  table.hist thead th{
+    text-align:left;font-weight:500;color:var(--dim);font-size:11.5px;letter-spacing:.3px;
+    padding:9px 16px;border-bottom:1px solid var(--line);background:#fafbfd;white-space:nowrap;
+  }
+  table.hist tbody td{padding:10px 16px;border-bottom:1px solid var(--line2);vertical-align:middle}
+  table.hist tbody tr{cursor:pointer}
+  table.hist tbody tr:hover{background:#fafbfd}
+  table.hist tbody tr:last-child td{border-bottom:none}
+  table.hist td.h-time{font-family:var(--mono);font-size:12px;white-space:nowrap}
+  /* 触发来源：手动/定时/开机三个词，不是数字，跟着正文走，只是弱一点。 */
+  table.hist td.h-trg{color:var(--muted);white-space:nowrap}
+  /* 地址可能很长（v6 写进 AAAA 的轮次也会落在这张表里），列宽固定后得自己收尾。 */
+  table.hist td.h-ip{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  table.hist td.h-lat, table.hist td.h-spd, table.hist td.h-wr, table.hist td.h-dur{
+    font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap}
+  table.hist td.empty{text-align:center;color:var(--dim);padding:22px 16px}
+  /* 列宽写在表头上：八列交给 auto 分，IP 那列会随地址长短抖，上下两轮对不齐。
+     这几个百分比是按「每列最长的那句话要放得下」倒算的（时间 75px、IP 100px、
+     「23.24 ms」60px、「139 秒」44px，再加两侧内边距），不是均分：均分到
+     1080px 宽的时候「139 秒」会顶到格子的边。 */
+  table.hist thead th:nth-child(1){width:17%}
+  table.hist thead th:nth-child(2){width:7%}
+  table.hist thead th:nth-child(3){width:22%}
+  table.hist thead th:nth-child(4){width:11%}
+  table.hist thead th:nth-child(5){width:12%}
+  table.hist thead th:nth-child(6){width:9%}
+  table.hist thead th:nth-child(7){width:9%}
+  table.hist thead th:nth-child(8){width:9%}
+  .hist-foot{padding:11px 16px 13px;border-top:1px solid var(--line2);font-size:11.5px;color:var(--dim);line-height:1.7}
+  /* 900px 以下先收掉三列。八列在这个宽度放得下但每列只剩几十像素，
+     「139 秒」会贴着格子边。藏起来的触发、写入、耗时在明细弹窗里都有，
+     点一行就看得到，不是丢了信息。 */
+  @media(max-width:900px){
+    table.hist thead th:nth-child(2), table.hist tbody td:nth-child(2),
+    table.hist thead th:nth-child(6), table.hist tbody td:nth-child(6),
+    table.hist thead th:nth-child(7), table.hist tbody td:nth-child(7){display:none}
+    table.hist thead th:nth-child(1){width:19%}
+    table.hist thead th:nth-child(3){width:27%}
+    table.hist thead th:nth-child(4){width:16%}
+    table.hist thead th:nth-child(5){width:16%}
+    table.hist thead th:nth-child(8){width:22%}
+  }
+
+  /* ---------- 详情弹窗 ----------
+     只在历史页用，所以不单独抽组件：桌面居中，手机铺满，
+     点遮罩或 Esc 关掉。 */
+  .modal{position:fixed;inset:0;z-index:150;display:none;align-items:center;justify-content:center;
+    padding:24px;background:rgba(16,24,40,.42)}
+  .modal.on{display:flex}
+  .modal-box{background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-pop);
+    width:100%;max-width:780px;max-height:82vh;display:flex;flex-direction:column}
+  .modal-h{display:flex;align-items:flex-start;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line2)}
+  .modal-h b{font-size:13.5px}
+  .modal-h .sub{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.6;word-break:break-word}
+  .modal-h .right{margin-left:auto}
+  .modal-b{overflow:auto;padding:6px 0 10px}
+  .det-h{padding:10px 18px 4px;font-size:12px;color:var(--muted)}
+  table.det{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+  table.det thead th{text-align:left;font-weight:500;color:var(--dim);font-size:11.5px;padding:7px 12px;
+    border-bottom:1px solid var(--line2);white-space:nowrap}
+  table.det tbody td{padding:8px 12px;border-bottom:1px solid var(--line2);vertical-align:middle}
+  table.det tbody tr:last-child td{border-bottom:none}
+  table.det .d-rk{width:34px}
+  /* 列宽写成百分比而不是让它自动分：内容长短在十几行里差得不多，自动分的结果
+     是每次打开弹窗列的位置都略有不同，看着像没对齐。 */
+  table.det .d-loc{width:26%}
+  /* 地名用 600 而不是标题级的 700：和主表 td.c-loc b 一致，两处并排看才像同一套。 */
+  table.det .d-loc b{font-weight:600}
+  table.det .d-ip{font-family:var(--mono);font-size:12px;word-break:break-all}
+  table.det .d-num{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap;width:19%}
+  .det-empty{padding:18px;font-size:12.5px;color:var(--dim);line-height:1.7}
+  .dimtx{color:var(--dim)}
+
   /* ---------- 窄屏 ---------- */
   @media(max-width:1080px){
     .shell{flex-direction:column}
@@ -674,6 +758,44 @@
        那种断法比换行难看得多，也容易看错数字）。 */
     .rw-item{flex-wrap:wrap;row-gap:2px}
     .rw-item .mark{margin-left:auto}
+
+    /* 历史表：八列在 390px 下每列只剩三十几个像素，时间和 IP 都会断成
+       两行。只留「时间 / 最快 IP / 状态」三列，被藏起来的四项（触发、
+       延迟、速度、写入）点一行在明细里都能看到，不是丢了。
+       注意 nth-child 算的是元素在 DOM 里的位置，所以藏掉的 th 仍然占号，
+       后面三个宽度必须按原来的序号写（1/3/8），不能按「第几个可见列」。 */
+    table.hist thead th:nth-child(2), table.hist tbody td:nth-child(2),
+    table.hist thead th:nth-child(4), table.hist tbody td:nth-child(4),
+    table.hist thead th:nth-child(5), table.hist tbody td:nth-child(5),
+    table.hist thead th:nth-child(6), table.hist tbody td:nth-child(6),
+    table.hist thead th:nth-child(7), table.hist tbody td:nth-child(7){display:none}
+    table.hist thead th:nth-child(1){width:40%}
+    table.hist thead th:nth-child(3){width:38%}
+    table.hist thead th:nth-child(8){width:22%;text-align:right}
+    table.hist tbody td:nth-child(8){text-align:right}
+    table.hist thead th, table.hist tbody td{padding:9px 11px}
+    table.hist td.h-time, table.hist td.h-ip{font-size:11.5px}
+
+    /* 明细弹窗在手机上占满一屏：82vh 的固定高度会让最后几条节点被切掉，
+       而这里本来就是「滚动看全部」的内容。 */
+    .modal{padding:10px}
+    .modal-box{max-height:92vh}
+    .modal-h{padding:12px 13px}
+    .modal-b{padding:4px 0 8px}
+    /* 明细表五列挤在 370px 里，「8.65 Mbps」会被折成两行、39 个字符的 v6 地址
+       干脆横出去。改成一条两行：上面序号 + 位置 + 速度 + 延迟，下面整行给 IP。
+       和「本次测速结果」那张表的窄屏折法一致（v6 地址也独占一行）。 */
+    table.det thead{display:none}
+    table.det, table.det tbody{display:block}
+    table.det tr{display:grid;grid-template-columns:24px 1fr auto auto;column-gap:9px;
+      padding:9px 12px;border-bottom:1px solid var(--line2)}
+    table.det tr:last-child{border-bottom:none}
+    table.det tbody td{padding:0;border:none}
+    table.det .d-rk{grid-area:1/1/2/2;width:auto}
+    table.det .d-loc{grid-area:1/2/2/3;width:auto;min-width:0}
+    table.det td:nth-child(4){grid-area:1/3/2/4;width:auto}
+    table.det td:nth-child(5){grid-area:1/4/2/5;width:auto}
+    table.det .d-ip{grid-area:2/2/3/5;padding-top:3px}
   }
 
 </style>
@@ -736,6 +858,10 @@
       <a data-page="page-speed" onclick="goPage(this)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M13 2.5 4.5 14h5.7l-1 7.5L18.5 10h-5.8l.3-7.5Z"/></svg>
         测速设置
+      </a>
+      <a data-page="page-history" onclick="goPage(this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.3V12l3.4 2"/></svg>
+        历史测速
       </a>
       <a data-page="page-backup" onclick="goPage(this)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20.5 12a8.5 8.5 0 1 1-2.8-6.3"/><path d="M20.5 3.5v5h-5"/></svg>
@@ -1063,6 +1189,31 @@
         </div>
       </div>
     </section>
+    <!-- ========== 历史测速 ========== -->
+    <section class="page" id="page-history">
+      <div class="card">
+        <div class="card-h">
+          <h2>最近 20 轮</h2>
+          <div class="right">
+            <button class="btn sm flat" onclick="loadHistory()">刷新</button>
+          </div>
+        </div>
+        <table class="hist">
+          <thead><tr>
+            <th>时间</th><th>触发</th><th>最快的 IP</th><th>延迟</th>
+            <th>速度</th><th>写入</th><th>耗时</th><th>状态</th>
+          </tr></thead>
+          <tbody id="hist-list">
+            <tr><td class="empty" colspan="8">正在读取…</td></tr>
+          </tbody>
+        </table>
+        <div class="hist-foot">
+          每轮测速结束记一行，只留最近 20 轮，重启不丢。<b>点一行</b>看当时测出来的节点。<br>
+          「写入」只算推到域名解析的记录条数；AdGuard 重写不算在内。
+        </div>
+      </div>
+    </section>
+
     <!-- ========== 备份 ========== -->
     <section class="page" id="page-backup">
       <div class="card">
@@ -1106,6 +1257,22 @@
         </div>
       </div>
     </section>
+  </div>
+</div>
+
+<!-- 历史明细：点历史表里的一行弹出来。v4 / v6 各一段，失败那轮直接说原因 -->
+<div class="modal" id="round-modal" onclick="if (event.target === this) closeRoundModal()">
+  <div class="modal-box">
+    <div class="modal-h">
+      <div>
+        <b id="rm-title">这一轮的节点</b>
+        <div class="sub" id="rm-sub"></div>
+      </div>
+      <div class="right">
+        <button class="btn sm flat" onclick="closeRoundModal()">关闭</button>
+      </div>
+    </div>
+    <div class="modal-b" id="rm-body"></div>
   </div>
 </div>
 
@@ -1165,6 +1332,7 @@ const PAGE_META = {
   "page-adguard":  ["AdGuard Home", "这台机器上的 DNS 重写表，交给它来写。"],
   "page-ddns":     ["域名解析（DDNS）", "把最优 IP 写到你的域名上。"],
   "page-speed":    ["测速设置", "多久跑一次、跑多少候选、从哪些来源取 IP。"],
+  "page-history":  ["历史测速", "最近 20 轮跑成什么样，点一行看当时的节点。"],
   "page-backup":   ["备份与恢复", "重装、换机器、数据目录被清空时用得上。"],
   "page-password": ["登录密码", "改完立即生效，不用重启。"]
 };
@@ -1200,6 +1368,9 @@ function goPage(el) {
   $("page-title").textContent = meta[0];
   $("page-sub").textContent = meta[1];
   window.scrollTo({ top: 0, behavior: "instant" });
+  // 历史页每次进来重拉一次：定时那一轮跑完的时候人可能正停在别的分页上，
+  // 切过来还看着一轮之前的列表会很怪。这一下只有几 KB。
+  if (id === "page-history") loadHistory();
 }
 
 function toggleDrawer() {
@@ -2179,6 +2350,12 @@ async function loadStatus() {
   // 只换文字那一半：按钮里还有个小闪电图标，直接写 textContent 会把图标一起抹掉。
   $("btn-run-label").textContent = s.running ? "测速中…" : "立即测速";
 
+  // 「刚在跑、现在不跑了」= 有一轮刚结束，去把历史重拉一次。
+  // 定时触发的那一轮没有任何别的通知界面，只有这个跳变能抓到。
+  // 放在这里而不是测速按钮的回调里：手动和定时两条路都得覆盖。
+  if (wasRunning && !s.running) loadHistory();
+  wasRunning = !!s.running;
+
   renderLogs(s.logs);
 
   let err = $("s-err");
@@ -2905,6 +3082,123 @@ async function doRun() {
   } catch (e) { toast(e.message); }
 }
 
+// ---- 历史测速 ----
+// 后端每轮测速结束往 history.json 记一行，这里只负责画。
+// rounds 是最新在前的数组，明细节点跟着列表一起下发（二十轮几十 KB），
+// 所以点一行不用再请求一次，也不会有「点开发现那条已经没了」。
+let histRounds = [];
+// wasRunning 只为一件事存在：轮询里看到「刚才在跑、现在不跑了」，
+// 那一轮就是刚结束的，立刻重拉一次历史。定时触发的那一轮没有别的信号
+// 能通知界面，只有这个跳变。
+let wasRunning = false;
+
+async function loadHistory() {
+  const tbody = $("hist-list");
+  try {
+    const j = await api("/api/history");
+    histRounds = Array.isArray(j.rounds) ? j.rounds : [];
+    renderHistory();
+  } catch (e) {
+    if (e.message === "未登录") return;
+    // 历史读不出来不该把整页弄白：这张表本来就是附加信息。
+    if (tbody) tbody.innerHTML = `<tr><td class="empty" colspan="8">读取失败：${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderHistory() {
+  const tbody = $("hist-list");
+  if (!tbody) return;
+  if (!histRounds.length) {
+    tbody.innerHTML = `<tr><td class="empty" colspan="8">还没有记录。跑一轮之后这里会出现一行。</td></tr>`;
+    return;
+  }
+  const dash = `<span class="dimtx">—</span>`;
+  tbody.innerHTML = histRounds.map((r, i) => {
+    const ok = !!r.ok;
+    // 失败那轮 speed/delay/best 都是空的，别补 0：那会让人以为测到了 0 Mbps。
+    const ip = r.best ? escapeHtml(r.best) : dash;
+    const lat = r.delay > 0 ? fmt2(r.delay) + " ms" : dash;
+    const spd = r.speed > 0 ? fmt2(r.speed) + " Mbps" : dash;
+    const wr = r.written > 0 ? `<b>${r.written}</b> 条` : `<span class="dimtx">0 条</span>`;
+    const dur = r.dur > 0 ? r.dur + " 秒" : dash;
+    const pill = ok ? `<span class="pill ok">成功</span>` : `<span class="pill bad">失败</span>`;
+    return `<tr onclick="openRoundDetail(${i})" title="点开看这一轮的节点">
+      <td class="h-time">${escapeHtml(shortTime(r.at))}</td>
+      <td class="h-trg">${escapeHtml(r.trigger || "")}</td>
+      <td class="h-ip">${ip}</td>
+      <td class="h-lat">${lat}</td>
+      <td class="h-spd">${spd}</td>
+      <td class="h-wr">${wr}</td>
+      <td class="h-dur">${dur}</td>
+      <td>${pill}</td>
+    </tr>`;
+  }).join("");
+}
+
+// detTable 画明细里的一段（v4 或 v6）。列和上面主表同源：
+// 序号 / 机房位置 / IP / 速度 / 延迟，机房位置用同一个 placeParts，
+// 所以弹窗里的「日本·东京 NRT」和主表长得一模一样。
+function detTable(name, nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (!list.length) {
+    return `<div class="det-h">${name}</div>
+      <div class="det-empty">这一轮没有 ${name} 节点。</div>`;
+  }
+  const rows = list.map((node, i) => {
+    const { place, code } = placeParts(node);
+    const spd = node.speed > 0 ? fmt2(node.speed) + " Mbps" : `<span class="dimtx">—</span>`;
+    const lat = node.delay > 0 ? fmt2(node.delay) + " ms" : `<span class="dimtx">—</span>`;
+    return `<tr>
+      <td class="d-rk">${i + 1}</td>
+      <td class="d-loc"><b>${place}</b>${code}</td>
+      <td class="d-ip">${escapeHtml(node.ip || "")}</td>
+      <td class="d-num">${spd}</td>
+      <td class="d-num">${lat}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="det-h">${name} · ${list.length} 个节点</div>
+    <table class="det">
+      <thead><tr>
+        <th class="d-rk">#</th><th>机房位置</th><th>IP 地址</th>
+        <th class="d-num">速度</th><th class="d-num">延迟</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function openRoundDetail(idx) {
+  const r = histRounds[idx];
+  if (!r) return;
+
+  const bits = [];
+  if (r.ok) {
+    if (r.best) bits.push("最快 " + r.best);
+    if (r.speed > 0) bits.push(fmt2(r.speed) + " Mbps");
+    if (r.delay > 0) bits.push(fmt2(r.delay) + " ms");
+    bits.push("写入 " + (r.written || 0) + " 条");
+  }
+  if (r.dur > 0) bits.push("用时 " + r.dur + " 秒");
+
+  // 标题写完整时刻（列表里是「今天 11:45」，明细要能对着日志查）。
+  $("rm-title").textContent = (r.at || "—") + (r.trigger ? " · " + r.trigger : "");
+  $("rm-sub").textContent = bits.join(" · ");
+
+  let html = "";
+  if (!r.ok) {
+    html += `<div class="det-empty"><b>这一轮没成功。</b>${escapeHtml(r.err || "没有留下原因，去运行日志里看那几分钟。")}</div>`;
+  }
+  // 成功那轮两段都画；v6 关着的时候第二段会显示「没有 IPv6 节点」，
+  // 这比整段消失更好——至少能确认「这一轮确实没测 v6」。
+  html += detTable("IPv4", r.nodes);
+  html += detTable("IPv6", r.v6_nodes);
+  $("rm-body").innerHTML = html;
+  $("round-modal").classList.add("on");
+}
+
+function closeRoundModal() {
+  $("round-modal").classList.remove("on");
+}
+
 async function boot() {
   // 手里已经有令牌就别先摆登录页：先按「已登录」展示，后面的请求真被
   // 401 拒绝时 api() 会把遮罩放回来。这样刷新一下就直接回到后台，
@@ -2926,9 +3220,16 @@ async function boot() {
   pollTimer = setInterval(loadStatus, 3000);
   // 上一次的 v6 结果：进后台拉一次即可，不进上面的 3 秒轮询（v6 一轮要 1~2 分钟）。
   loadV6ProbeResult();
+  // 历史同理：进来拉一次，之后靠「跑完那一跳」和切页刷新。
+  loadHistory();
 }
 
 document.addEventListener("keydown", e => {
+  // 明细弹窗开着时 Esc 直接关。遮罩能点、按钮能点，键盘也得能。
+  if (e.key === "Escape" && $("round-modal") && $("round-modal").classList.contains("on")) {
+    closeRoundModal();
+    return;
+  }
   if (e.key === "Enter" && !$("login").classList.contains("hidden")) doLogin();
 });
 
