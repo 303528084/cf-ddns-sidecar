@@ -1212,9 +1212,9 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// 用 UpdateEnvFile 而不是 SaveEnvFile：后者是整份重写，会把 ddns.env
-		// 里用户自己写的注释、以及被注释掉的备用密钥（`#CF_API_TOKEN=旧的`）
-		// 一起冲掉，这正是 UpdateEnvFile 顶部那段注释在防的事。
+		// 只改传上来的这几个 key，不整份重写：ddns.env 里还可能有用户自己写的
+		// 注释、被注释掉的备用密钥（`#CF_API_TOKEN=旧的`），整份重写会一起冲掉。
+		// 其余规矩见 UpdateEnvFile 顶部那段注释。
 		if err := config.UpdateEnvFile(config.EnvFilePath(), kv); err != nil {
 			writeJSON(w, 500, map[string]string{"error": "保存密钥失败: " + friendlyErr(err)})
 			return

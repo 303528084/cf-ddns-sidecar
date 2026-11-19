@@ -33,13 +33,6 @@ type hwListResp struct {
 	Recordsets []hwRecordset `json:"recordsets"`
 }
 
-type hwZonesResp struct {
-	Zones []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"zones"`
-}
-
 func newHuawei(domain string, creds map[string]string) (Provider, error) {
 	ak := strings.TrimSpace(creds["HUAWEI_AK"])
 	sk := strings.TrimSpace(creds["HUAWEI_SK"])

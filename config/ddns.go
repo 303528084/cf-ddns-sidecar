@@ -42,39 +42,13 @@ func LoadEnvFile(path string) map[string]string {
 	return kv
 }
 
-// SaveEnvFile 把 map 写回 KEY=VALUE 文件（按 key 排序，覆盖写）。
-// 只用于程序内部更新密钥：值来自界面输入，写入前已做换行清理。
-func SaveEnvFile(path string, kv map[string]string) error {
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	b.WriteString("# 本文件由应用自动维护，也可以在文本编辑器里直接修改\n")
-	for _, k := range keys {
-		v := strings.ReplaceAll(kv[k], "\n", "")
-		v = strings.ReplaceAll(v, "\r", "")
-		b.WriteString(k + "=" + v + "\n")
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	// 0644 而不是 0600：这个文件有两个不同用户在读写。
-	// 程序以 app 用户跑，飞牛生命周期脚本以 docker-<appname> 用户跑。
-	// 用 0600 的话脚本读不到内容，它的 set_kv 会「读了个空」然后把整个文件
-	// 重写成只剩它要写的那一项，用户填的所有密钥会被静默冲掉。
-	return os.WriteFile(path, []byte(b.String()), 0o644)
-}
-
 // UpdateEnvFile 只改指定 key 的行，其余内容（注释、顺序、其他 key）原样保留。
 // 唯一的例外是空行：首尾的空行会被去掉、连续空行会并成一个（老版本每保存
 // 一次末尾就多一个空行，攒下来会让文件读不下去）。
 //
-// 为什么不用 SaveEnvFile 整体重写：ddns.env 里可能有用户自己写的注释和
-// 被注释掉的备用密钥，整体重写会把它们冲掉。
+// 为什么不整份重写：ddns.env 里可能有用户自己写的注释和被注释掉的备用密钥，
+// 整体重写会把它们冲掉。（早期就是这么写的，一次保存把文件里除了密钥之外的
+// 东西全冲没了。）
 //
 // 替换落在哪一行，有两条必须守住的规矩（都是 2026-11-18 修备份那次连出来的）：
 //  1. **只改未注释的行**。`#CF_API_TOKEN=旧的` 是用户自己留的备份，`LoadEnvFile`
@@ -164,7 +138,9 @@ func UpdateEnvFile(path string, kv map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	// 0644 的理由同 SaveEnvFile：生命周期脚本是另一个用户，必须能读。
+	// 0644 而不是 0600：这个文件有两个不同用户在读写。程序以 app 用户跑，
+	// 飞牛生命周期脚本以 docker-<appname> 用户跑；用 0600 的话脚本读不到内容，
+	// 它的 set_kv 会「读了个空」然后把整个文件重写成只剩它要写的那一项。
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
