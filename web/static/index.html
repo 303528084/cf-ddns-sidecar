@@ -392,31 +392,30 @@
     font-size:19px;font-weight:600;letter-spacing:.2px;line-height:1.25;
     font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   }
-  .kpi .v.mono{font-family:var(--mono);font-size:16px;display:flex;align-items:center}
   .kpi .v.sm{font-size:16px}
   .kpi .v .unit{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
   .kpi .v .miss{color:var(--dim)}
   .kpi .s{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.5;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  /* 「当前最优 IP」下面那行 IPv6。地址 39 个字符，260px 宽的卡里一行放不下，
-     只能在冒号处折断（见 loadStatus 里的 wbr），不截断——截成「2408:8207:…」
-     等于没显示。上面一道极淡的分隔线：这行说的是另一族，和上面那几行不是
-     一件事，不加线会读成「172.64.x.x 下面挂着个 v6」。 */
-  .kpi .v6row{
-    margin-top:7px;padding-top:7px;border-top:1px solid var(--line2);
+  /* 「当前最优 IP」这一格里两族各一行（IPv4、IPv6），格式完全一致：
+     小徽标 + 国家 + 地址 + 复制按钮，同一套字号和字体。以前 v4 是 16px 粗体、
+     v6 是 11.5px 细体，同一格里两种规格，看着像两个控件拼在一起。
+     地址 39 个字符放不下一行时只在冒号处折（见 loadStatus 里的 wbr），不截断。
+     v6 那行上面一道极淡的分隔线：不加线会读成「172.64.x.x 下面挂着个 v6」。 */
+  .kpi .irow{
+    display:flex;flex-wrap:wrap;align-items:center;gap:5px;
     font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.45;
   }
-  /* 地址那一行：放得下就并排，放不下让「地址 + 复制」整组换到第二行，
-     而不是把地址折一半留在第一行。复制按钮和地址绑在一组里，不会单独掉行。 */
-  .kpi .v6line{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
-  .kpi .v6addr{display:flex;align-items:center;gap:5px;min-width:0}
-  .kpi .v6row .t6{
+  /* 徽标后面那段是国家名，和地址同字号同颜色，只换字体：中文用正文字体更清楚。 */
+  .kpi .irow .place{font-family:var(--font)}
+  .kpi .irow .tag{
     flex:none;font-size:9.5px;letter-spacing:.2px;padding:1px 4px;
     color:var(--accent);background:var(--accent-soft);border-radius:3px;
   }
-  .kpi .v6row #s-ip6{min-width:0}
-  /* 国家和地址同字号、同颜色，只换字体（中文用正文字体更清楚）。 */
-  .kpi .v6row .p6{font-family:var(--font)}
+  /* 「地址 + 复制」绑成一组：换行时整组一起走，复制按钮不会单独掉到一行。 */
+  .kpi .irow .addr{display:flex;align-items:center;gap:5px;min-width:0}
+  .kpi .irow .addr>span{min-width:0}
+  .kpi .v6row{margin-top:7px;padding-top:7px;border-top:1px solid var(--line2)}
   /* 第一张（最优 IP）是这一屏的重点：只加一道左侧竖线，不加渐变底色、
      不做右上角光斑。用 inset 阴影画这道线而不是 border-left，是为了不
      把这格的内容推到旁边一格错开 1px。 */
@@ -753,7 +752,6 @@
     .kpis{grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
     .kpi{padding:12px 13px}
     .kpi .v{font-size:17px}
-    .kpi .v.mono{font-size:13.5px}
     .kpi .v.sm{font-size:14.5px}
     .kpi .s{font-size:11px}
 
@@ -808,10 +806,10 @@
     .rw-item{flex-wrap:wrap;row-gap:2px}
     .rw-item .mark{margin-left:auto}
 
-    /* 窄屏的指标卡只有约 185px 宽，IPv6 那一行连标签一起放会把地址折成四行。
-       把标签让给地址：两行就够，而「2408:」开头本身就说明了这是 v6。 */
-    .kpi .v6row .t6{display:none}
-    .kpi .v6row{font-size:11px}
+    /* 窄屏的指标卡只有约 185px 宽，两行都带上「IPv4/IPv6」徽标会把地址折成
+       三四行。徽标让给地址：两行就够，而「172.」/「2408:」开头本身就说明了是哪一族。 */
+    .kpi .irow .tag{display:none}
+    .kpi .irow{font-size:11px}
 
     /* 历史表：八列在 390px 下每列只剩三十几个像素，时间和 IP 都会断成
        两行。只留「时间 / 最快 IP / 状态」三列，被藏起来的四项（触发、
@@ -957,21 +955,26 @@
       <div class="kpis">
         <div class="kpi hl">
           <div class="k">当前最优 IP</div>
-          <div class="v mono"><span id="s-ip">—</span><button class="copy-mini" title="复制 IP" onclick="copyIP($('s-ip').textContent)">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
-          </button></div>
-          <!-- IPv6 那一行：测出来才出现，没测出来这格就只有上面一行。
-               放在「位置 · 条数」之后：那行说的是 IPv4 的最优，挨着 v6 地址
-               读起来会以为在说 v6。 -->
-          <div class="s"><span id="s-place">还没测过</span></div>
+          <!-- 两族各一行，格式一模一样：小徽标 + 国家 + 地址 + 复制。
+               IPv6 那行测出来才出现，没测出来这格就只有 IPv4 一行。 -->
+          <div class="irow">
+            <span class="tag">IPv4</span>
+            <span class="place" id="s-place">还没测过</span>
+            <span class="addr">
+              <span id="s-ip">—</span>
+              <button class="copy-mini" title="复制 IPv4 地址" onclick="copyIP($('s-ip').textContent)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+              </button>
+            </span>
+          </div>
           <div class="v6row hidden" id="s-ip6-row">
-            <div class="v6line">
-              <span class="t6">IPv6</span>
+            <div class="irow">
+              <span class="tag">IPv6</span>
               <!-- 国家排在地址前面：先知道是哪个国家，再看具体地址。
-                   一行放不下时它自己挪到地址上面那一行（.v6line 允许换行），
-                   窄屏例外——那里不让换行，否则复制按钮会掉到自己一行去。 -->
-              <span class="p6" id="s-ip6-place"></span>
-              <span class="v6addr">
+                   一行放不下时它自己挪到地址上面那一行（.irow 允许换行），
+                   地址和复制按钮是一组，换行时一起走。 -->
+              <span class="place" id="s-ip6-place"></span>
+              <span class="addr">
                 <span id="s-ip6">—</span>
                 <button class="copy-mini" title="复制 IPv6 地址" onclick="copyIP($('s-ip6').textContent)">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
