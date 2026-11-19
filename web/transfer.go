@@ -91,10 +91,11 @@ type bundleConfig struct {
 	DDNSDomain   string            `json:"ddns_domain"`
 	// 下面四项全是「0 / false 也是用户真切能选的值」（TTL 0 = 用各家默认、
 	// 橙云关掉 = 谁都看得见的选项）。所以必须用指针，不能用零值代表缺失。
-	DDNSTTL        *int    `json:"ddns_ttl,omitempty"`
-	DDNSProxied    *bool   `json:"ddns_proxied,omitempty"`
-	DDNSIPCount    *int    `json:"ddns_ip_count,omitempty"`
-	DDNSRecordType *string `json:"ddns_record_type,omitempty"`
+	DDNSTTL        *int     `json:"ddns_ttl,omitempty"`
+	DDNSProxied    *bool    `json:"ddns_proxied,omitempty"`
+	DDNSIPCount    *int     `json:"ddns_ip_count,omitempty"`
+	DDNSMinSpeed   *float64 `json:"ddns_min_speed,omitempty"`
+	DDNSRecordType *string  `json:"ddns_record_type,omitempty"`
 	// RewrittenDomains 是「本工具在 AdGuard 上认领过哪些域名」的账本。
 	//
 	// 它严格说是运行状态，按上面那条原则（不把 last_ip 这类东西带出去）本可以
@@ -161,6 +162,7 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 	ttl := cfg.DDNS.TTL
 	proxied := cfg.DDNS.Proxied
 	ipCount := cfg.DDNS.IPCount
+	minSpeed := cfg.DDNS.MinSpeedMbps
 	recordType := cfg.DDNS.RecordType
 	v6 := cfg.IPv6ProbeURL
 	// 导出实际生效的模式，不是裸字段：老配置里没有这一项，导出去应该是
@@ -209,6 +211,7 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 			DDNSTTL:          &ttl,
 			DDNSProxied:      &proxied,
 			DDNSIPCount:      &ipCount,
+			DDNSMinSpeed:     &minSpeed,
 			DDNSRecordType:   &recordType,
 			RewrittenDomains: append([]string{}, cfg.RewrittenDomains...),
 		},
@@ -323,6 +326,13 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 			warns = append(warns, fmt.Sprintf(
 				"「同步几条 IP」填的是 %d，只接受 1~20，这一项已忽略（保持当前设置）", v))
 			b.Config.DDNSIPCount = nil
+		}
+	}
+	if b.Config.DDNSMinSpeed != nil {
+		if v := *b.Config.DDNSMinSpeed; v < 0 || v > 1000 {
+			warns = append(warns, fmt.Sprintf(
+				"「最低下载速度」填的是 %v Mbps，只接受 0（不限）到 1000，这一项已忽略（保持当前设置）", v))
+			b.Config.DDNSMinSpeed = nil
 		}
 	}
 	if b.Config.DDNSRecordType != nil {
@@ -588,6 +598,10 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		cfg.DDNS.IPCount = *b.Config.DDNSIPCount
 	}
 	note("同步几条 IP", b.Config.DDNSIPCount != nil)
+	if b.Config.DDNSMinSpeed != nil {
+		cfg.DDNS.MinSpeedMbps = *b.Config.DDNSMinSpeed
+	}
+	note("最低下载速度", b.Config.DDNSMinSpeed != nil)
 	if b.Config.DDNSRecordType != nil {
 		cfg.DDNS.RecordType = *b.Config.DDNSRecordType
 	}

@@ -389,10 +389,9 @@ func TestImportRestoresEverySetting(t *testing.T) {
 // 用户 2026-11-18 导出的那份 1.7.3 备份正是这个形状。若不这样处理，一次
 // 「恢复备份」会把记录类型拨回 A、v6 段链接清空——界面只说「已恢复」。
 //
-// 八项而不是六项：v1.7.6 加了 hosts 源那一块（开关 + 链接），老文件里同样
-// 没有它，所以「文件里没有、保持原值」的清单跟着变成 8 项。v1.7.10 又加了两栏的
-// 来源方式（内置 / 自定义 / 关闭），变成 10 项。这个数字每加一个用户能设的项
-// 就会变——它变了不是坏事，说明清单确实在跟着配置走。
+// 那个数字每加一个用户能设的项就会变，不是坏事，说明清单确实在跟着配置走：
+// v1.7.6 加 hosts 源（开关 + 链接）→ 8 项；v1.7.10 加两栏的来源方式 → 10 项；
+// v1.7.12 加「最低下载速度」→ 11 项。
 func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s, _ := newPasswordTestServer(t, "")
 	token := s.signToken()
@@ -408,6 +407,7 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s.cfg.DDNS.TTL = 3600
 	s.cfg.DDNS.Proxied = true
 	s.cfg.DDNS.IPCount = 5
+	s.cfg.DDNS.MinSpeedMbps = 8
 	s.cfg.DDNS.RecordType = ddns.TypeAAAA
 	s.mu.Unlock()
 
@@ -440,8 +440,8 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("响应解析失败: %s", rec.Body.String())
 	}
-	if len(resp.Kept) != 10 {
-		t.Errorf("应明确列出 10 项「文件里没有、保持原值」，实际 %v", resp.Kept)
+	if len(resp.Kept) != 11 {
+		t.Errorf("应明确列出 11 项「文件里没有、保持原值」，实际 %v", resp.Kept)
 	}
 
 	s.mu.Lock()
@@ -462,6 +462,11 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	if got.DDNS.TTL != 3600 || !got.DDNS.Proxied || got.DDNS.IPCount != 5 {
 		t.Errorf("DDNS 三项被改掉了: TTL=%d proxied=%v 条数=%d",
 			got.DDNS.TTL, got.DDNS.Proxied, got.DDNS.IPCount)
+	}
+	// 门槛被清零的后果特别隐蔽：它一清就开始写低速地址，而界面上只是
+	// 一格数字变回 0，没人会注意到「恢复备份」是那个元凶。
+	if got.DDNS.MinSpeedMbps != 8 {
+		t.Errorf("最低下载速度被老备份清掉了: %v", got.DDNS.MinSpeedMbps)
 	}
 	// hosts 那一块：老文件里没有它，所以「开着」和「填了链接」都得留着。
 	// 关掉等于用户下次测速时 AdGuard 上那几十条被整份清掉，而界面写着「已恢复」。

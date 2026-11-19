@@ -1138,6 +1138,12 @@
             <div class="field">
               <label>同步几条 IP（A + AAAA 时两族各这么多）</label>
               <input type="number" id="dd-count" min="1" max="20" step="1" placeholder="1">
+              <div class="hint">最多只能写「测速设置」里「保留候选 IP 数」那么多条（默认 5）。填多了不会有第 6 条冒出来，因为测速那一步只留那么多。</div>
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label>最低下载速度（Mbps，0 或留空 = 不限）</label>
+              <input type="number" id="dd-min-speed" min="0" max="1000" step="0.1" placeholder="0">
+              <div class="hint">低于这个速度的节点不写进解析。要 5 条、其中 1 条不到门槛，就只写 4 条，不会拿更慢的来凑数。没测出速度的节点也算不达标。</div>
             </div>
             <div class="field" style="grid-column:1/-1">
               <label>记录缓存时间 TTL（秒，0 = 各家默认）</label>
@@ -1898,6 +1904,9 @@ async function loadConfig() {
   $("dd-domain").value = c.ddns_domain || "";
   $("dd-ttl").value = c.ddns_ttl || "";
   $("dd-count").value = c.ddns_ip_count || 1;
+  // 0 是「不限」，要回填成 0 而不是空。空着和 0 在界面上看着一样，
+  // 但前者会让用户以为这一项没生效。
+  $("dd-min-speed").value = c.ddns_min_speed || 0;
   // 直接改 select 的 value 不会触发 onchange，说明文字得手动刷一次，
   // 否则打开页面时下拉显示 AAAA、下面的说明却还写着 A。
   $("dd-record-type").value = normalizeRecordMode(c.ddns_record_type);
@@ -2831,6 +2840,11 @@ function ddFamilyRow(f, multi) {
   if (f.best_ip) out += ddLine("最优 IP", escapeHtml(f.best_ip));
   if (will.length) {
     out += ddLine("点「立即更新」会写入", `<b>${will.length} 条</b>：` + escapeHtml(will.join("、")));
+    // 写 4 条而用户设的是 5 条，这里不说一句，他会以为程序又少写了一条。
+    if (f.min_speed_note) out += ddLine("没到门槛没写", escapeHtml(f.min_speed_note));
+  } else if (f.min_speed_note) {
+    out += ddLine("点「立即更新」会写入",
+      `<span style="color:var(--warn)">一条也不会写：${escapeHtml(f.min_speed_note)}</span>`);
   } else {
     out += ddLine("点「立即更新」会写入",
       `<span style="color:var(--warn)">这一轮没有可用的 ${fam} 地址，这一族会跳过</span>`);
@@ -2844,6 +2858,12 @@ function ddFamilyVerdict(f, t) {
   const cur = Array.isArray(f.current_ips) ? f.current_ips : (f.current_ip ? [f.current_ip] : []);
   const will = Array.isArray(f.will_write) ? f.will_write : [];
   if (!will.length) {
+    // 「测出来但全没到门槛」和「压根没测出节点」的下一步动作完全不同，
+    // 前者该去调门槛，后者该去重跑测速。混着说会让人白等一轮。
+    if (f.min_speed_note) {
+      return `这一轮测出来的地址都没到「最低下载速度」（${f.min_speed_note}），${t} 这次不会动，现有记录保持原样。`
+        + "要放宽就去下面把「最低下载速度」调小或填 0。";
+    }
     return t === "AAAA"
       ? "这一轮还没有测出可用的 IPv6 节点，AAAA 这次不会动（现有记录保持原样）。先去探测卡片跑一次 v6 探测。"
       : "这一轮还没有测出可用 IPv4 地址，A 这次不会动。回去点「立即测速」。";
@@ -2923,27 +2943,43 @@ async function pushDDNS() {
     let rows = ddLine("域名", escapeHtml(r.domain)) + ddLine("记录类型", escapeHtml(modeText(mode2)));
     const done = [];
     const skipped = [];
+    // 因「没到最低下载速度」而跳过的族要单独记：它们的补救办法是调门槛，
+    // 不是去重跑测速或 v6 探测，混进 skipped 会把人引到错误的方向。
+    const lowSpeedTypes = [];
+    const lowSpeedNotes = [];
     results.forEach(res => {
       const t = res.type === "AAAA" ? "AAAA" : "A";
       const ips = Array.isArray(res.ips) ? res.ips : [];
       if (res.skipped || !ips.length) {
         skipped.push(t);
+        if (res.min_speed_note) {
+          lowSpeedTypes.push(t);
+          lowSpeedNotes.push(`${t} ${res.min_speed_note}`);
+        }
         rows += ddLine(`${t} 记录`, `<span style="color:var(--warn)">跳过：${escapeHtml(res.skipped || "没有可用地址")}</span>`);
       } else {
         done.push(`${t} ${ips.length} 条`);
         rows += ddLine(`${t} 记录（${ips.length} 条）`, escapeHtml(ips.join("、")));
+        // 写成了但不是全部：用户设 5 条、实际 4 条，得当场说清第 5 条去哪儿了。
+        if (res.min_speed_note) rows += ddLine(`${t} 没到门槛没写`, escapeHtml(res.min_speed_note));
       }
     });
     const title = done.length ? "已更新：" + done.join("，") : "什么都没写成";
     // 被跳过的族一定要说清「旧记录没被删」——后端算不出地址时压根没调
     // EnsureRecords，所以那一族的记录原样留着，用户不需要去手工补救。
-    let hint = "服务商那边生效通常要几秒到几分钟（看 TTL）。";
-    if (skipped.length) {
-      hint = `这次 ${skipped.join("、")} 没有写入（原因在表里），那一族的记录原样没动。`
-        + (mode2 === "A+AAAA" && skipped.indexOf("AAAA") >= 0
-          ? "AAAA 想更新得先去探测卡片把 v6 跑通。" : "")
-        + "<br>" + hint;
+    const hints = [];
+    if (lowSpeedNotes.length) {
+      hints.push(`有地址没到「最低下载速度」（${lowSpeedNotes.join("；")}），所以那几族一条都没写，记录原样没动。`
+        + "要放宽就把下面「最低下载速度」调小或填 0。");
     }
+    const plainSkip = skipped.filter(t => lowSpeedTypes.indexOf(t) < 0);
+    if (plainSkip.length) {
+      hints.push(`这次 ${plainSkip.join("、")} 没有写入（原因在表里），那一族的记录原样没动。`
+        + (mode2 === "A+AAAA" && plainSkip.indexOf("AAAA") >= 0
+          ? "AAAA 想更新得先去探测卡片把 v6 跑通。" : ""));
+    }
+    hints.push("服务商那边生效通常要几秒到几分钟（看 TTL）。");
+    const hint = hints.join("<br>");
     box.innerHTML = `<div class="banner" ${DD_OK_STYLE}><b>${escapeHtml(title)}</b></div>`
       + `<div class="kv">${rows}</div>`
       + `<div class="hint">${hint}</div>`;
@@ -3111,6 +3147,10 @@ async function saveAll() {
         ddns_ttl: parseInt($("dd-ttl").value || "0", 10) || 0,
         // 空着或填 0 都按 1 条交上去，和以前的行为一致。
         ddns_ip_count: parseInt($("dd-count").value || "1", 10) || 1,
+        // 空着按 0 交 = 不限。不能用 parseInt 的写法（那是整数），门槛要收
+        // 小数（0.5 Mbps 也有人在用）；也不能传 NaN，JSON 里会变 null，
+        // 后端收到 null 当成「没传这个字段」保留原值，看起来就是保存没生效。
+        ddns_min_speed: parseFloat($("dd-min-speed").value || "0") || 0,
         // 这个字段后端是**用指针收**的：「没传」和「传了空串」意思不一样。
         // 我们这里永远传选择框里的实际值（A 或 AAAA），不传空。
         ddns_record_type: normalizeRecordMode($("dd-record-type").value),

@@ -736,6 +736,10 @@ type configResp struct {
 	DDNSTTL         int    `json:"ddns_ttl"`
 	DDNSProxied     bool   `json:"ddns_proxied"`
 	DDNSIPCount     int    `json:"ddns_ip_count"`
+	// DDNSMinSpeed 是写解析的最低下载速度（Mbps），0 表示不限。
+	// 报原值而不是「实际生效值」：这里没有「0 按 1 处理」那种折算，
+	// 0 就是用户选的「不限」，界面上要照原样回填。
+	DDNSMinSpeed float64 `json:"ddns_min_speed"`
 	// DDNSRecordType 是要写的记录类型：A（IPv4）或 AAAA（IPv6）。
 	// 和上面的开关不同，它有两个合法值，所以用「空 = A」没法表达「用户主动选了 A」；
 	// 真要区分得用指针。这里取值受限、且老界面不会传，用字符串足够：
@@ -782,6 +786,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSTTL:         c.DDNS.TTL,
 			DDNSProxied:     c.DDNS.Proxied,
 			DDNSIPCount:     c.DDNS.EffectiveIPCount(),
+			DDNSMinSpeed:    c.DDNS.MinSpeedMbps,
 			DDNSRecordType:  c.DDNS.EffectiveRecordMode(),
 			EngineGroups:    engine.Groups,
 			EngineOptions:   engine.Schema,
@@ -863,6 +868,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		DDNSTTL      int     `json:"ddns_ttl"`
 		DDNSProxied  bool    `json:"ddns_proxied"`
 		DDNSIPCount  int     `json:"ddns_ip_count"`
+		// 用指针：0 = 不限，本身就是用户能选的值，不能用零值代表「没传」。
+		// 旧界面不传这个字段时保持原样，否则一次「只改域名」的保存就把门槛清了，
+		// 而它一清就会开始写低速地址，界面上又看不出门槛被改过。
+		DDNSMinSpeed *float64 `json:"ddns_min_speed"`
 		// 用指针：「没传」和「传了空串」要区分开。空串归一成 A 是合法的主动选择，
 		// 而旧客户端/老的导入文件里根本没有这个字段，那时必须保持原样不动，
 		// 否则一次「只改域名」的保存就会把用户选的 AAAA 悄悄改回 A。
@@ -891,6 +900,17 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 			"error": "「同步几条 IP」请填 1 到 20 之间的整数",
 		})
 		return
+	}
+	// 上限 1000：不为限制谁的家宽，只为拦住手滑多打几个 0。门槛填成 10000
+	// 的效果是「一条都不写」，而界面上它看起来只是个数字，用户不会立刻想到
+	// 解析停更是因为它。
+	if body.DDNSMinSpeed != nil {
+		if v := *body.DDNSMinSpeed; v < 0 || v > 1000 {
+			writeJSON(w, 400, map[string]string{
+				"error": "「最低下载速度」请填 0（不限）到 1000 之间的数，单位是 Mbps",
+			})
+			return
+		}
 	}
 	// 记录类型 / 同步模式：只认 A / AAAA / A+AAAA。写错的值**当场退回**，
 	// 不回落成 A，用户以为在写 v6、实际写了 v4 的话，任何日志都不会提示，
@@ -1040,6 +1060,9 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.DDNS.TTL = body.DDNSTTL
 	cfg.DDNS.Proxied = body.DDNSProxied
 	cfg.DDNS.IPCount = body.DDNSIPCount
+	if body.DDNSMinSpeed != nil {
+		cfg.DDNS.MinSpeedMbps = *body.DDNSMinSpeed
+	}
 	if body.DDNSRecordType != nil {
 		rt, _ := ddns.NormalizeRecordMode(*body.DDNSRecordType) // 上面已校验过
 		cfg.DDNS.RecordType = rt
@@ -1759,16 +1782,24 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 			break
 		}
 		for _, family := range ddns.FamiliesOf(ddnsMode) {
-			source := res.IPs
+			source, familyNodes := res.IPs, nodes
 			if family == ddns.TypeAAAA {
-				source = v6RoundIPs
+				source, familyNodes = v6RoundIPs, v6Nodes
 			}
-			pushIPs := pickIPs(source, cfg.DDNS.EffectiveIPCount())
+			pick := pickForWrite(source, familyNodes, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
+			pushIPs := pick.IPs
 			if len(pushIPs) == 0 {
 				// 绝不能拿空列表去「对齐」，ddns 包会把它当成「这次没结果，别动」，
 				// 但日志里得如实说一句，否则用户会以为这一类记录已经更新过了。
-				s.appendLog(fmt.Sprintf("域名解析未推送 %s：%s（现有 %s 记录保持不变）",
-					family, emptySourceReason(family), family))
+				// 「测出来但全没到门槛」和「压根没测出节点」要分开说：前者该去
+				// 改门槛，后者该去查测速，写成一句话会把人引到错误的方向。
+				if pick.dropped() > 0 {
+					s.appendLog(fmt.Sprintf("域名解析未推送 %s：%s，一条也没写（现有 %s 记录保持不变）",
+						family, pick.skipReason(cfg.DDNS.MinSpeedMbps), family))
+				} else {
+					s.appendLog(fmt.Sprintf("域名解析未推送 %s：%s（现有 %s 记录保持不变）",
+						family, emptySourceReason(family), family))
+				}
 				continue
 			}
 			if derr := p.EnsureRecords(cfg.DDNS.Domain, pushIPs, recordOptions(cfg.DDNS, family)); derr != nil {
@@ -1777,8 +1808,12 @@ func (s *Server) runOnce(cfg config.Config, trigger string) error {
 				s.appendLog(fmt.Sprintf("域名解析推送 %s 失败: %s", family, derr.Error()))
 				continue
 			}
-			s.appendLog(fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
-				cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), family))
+			msg := fmt.Sprintf("域名解析已更新：%s → %s（共 %d 条 %s 记录）",
+				cfg.DDNS.Domain, strings.Join(pushIPs, "、"), len(pushIPs), family)
+			if pick.dropped() > 0 {
+				msg += "；另有 " + pick.skipReason(cfg.DDNS.MinSpeedMbps) + " 未写"
+			}
+			s.appendLog(msg)
 			ddnsWritten += len(pushIPs)
 		}
 	case len(res.IPs) == 0 && len(v6RoundIPs) == 0:

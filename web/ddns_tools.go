@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/303528084/cf-ddns-sidecar/config"
@@ -88,6 +89,75 @@ func pickIPs(ips []string, n int) []string {
 	return out
 }
 
+// pickOutcome 是「这次挑出哪几条」以及「为什么比要的少」。
+//
+// 少了多少要分开算：低于门槛是用户自己设的标准把节点刷掉了，没有速度数据是
+// 测速那一步没量出来。两者的补救办法完全不同，日志里混成一句「2 条被排除」
+// 会让人去改门槛，而实际上该去看的是带宽测速有没有跑成。
+type pickOutcome struct {
+	IPs    []string
+	Low    int // 测出速度，但低于门槛
+	NoData int // 没有速度数据，当成不达标
+}
+
+// dropped 是「因为门槛而少写的条数」。
+func (o pickOutcome) dropped() int { return o.Low + o.NoData }
+
+// pickForWrite 挑出这次真正要写进解析的地址：先按排名截前 n 条，再按门槛筛。
+//
+// 门槛只在截出来的这 n 条里生效，**不从后面补位**。补位看起来更体贴，但它的
+// 前提是排名列表比 n 长，而「保留候选 IP 数」默认就是 5、同步条数也默认 1~5，
+// 想要 5 条时后面通常一条候选都不剩，补也补不出来。为一个大多数情况下不存在
+// 的空位准备一套逻辑，只会让「我设了 5 条，为什么写了 6 条」变成新的疑问。
+func pickForWrite(ips []string, nodes []config.NodeStat, minSpeed float64, n int) pickOutcome {
+	head := pickIPs(ips, n)
+	if minSpeed <= 0 {
+		return pickOutcome{IPs: head}
+	}
+
+	// 速度按 IP 查，不按下标取。nodes 和 ips 本该一一对应，但老配置、导入的
+	// 旧备份、手改过 config.json 都会让其中一份少几条，按下标取速度就会张冠李戴，
+	// 把慢的说成快的——这是这里最坏的一种错，宁可当成「没数据」剔掉。
+	speeds := make(map[string]float64, len(nodes))
+	for _, nd := range nodes {
+		if nd.Speed > 0 {
+			speeds[nd.IP] = nd.Speed
+		}
+	}
+
+	out := pickOutcome{IPs: make([]string, 0, len(head))}
+	for _, ip := range head {
+		speed, ok := speeds[ip]
+		switch {
+		case !ok:
+			out.NoData++
+		case speed < minSpeed:
+			out.Low++
+		default:
+			out.IPs = append(out.IPs, ip)
+		}
+	}
+	return out
+}
+
+// skipReason 把「少写了几条」说成人话，接在日志后面。
+func (o pickOutcome) skipReason(minSpeed float64) string {
+	var parts []string
+	if o.Low > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条低于 %s Mbps", o.Low, trimSpeed(minSpeed)))
+	}
+	if o.NoData > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条没测出速度", o.NoData))
+	}
+	return strings.Join(parts, "、")
+}
+
+// trimSpeed 去掉小数末尾多余的 0：5 显示成「5」而不是「5.00」。
+func trimSpeed(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0")
+}
+
 // handleDDNSCheck 只读校验密钥：确认能用、能查到这条域名，并报出当前指向。
 func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -116,12 +186,19 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.mu.Lock()
-		bestIP, rank := lastRankForType(s.cfg, family)
-		allIPs := pickIPs(rank, cfg.DDNS.EffectiveIPCount())
+		bestIP, rank, nodeStats := lastRankForType(s.cfg, family)
+		pick := pickForWrite(rank, nodeStats, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
 		s.mu.Unlock()
-		if len(allIPs) == 0 && bestIP != "" {
-			// 老配置里只有 last_ip（升级前存的），没有列表。
+		allIPs := pick.IPs
+		// 老配置里只有 last_ip（升级前存的），没有列表，退回那一条。
+		// 但门槛把候选全刷掉的时候不能这么退：那等于绕过用户刚设的标准，
+		// 把他最不想要的那条地址写上去，而且界面上还会显示「将写入」。
+		if len(allIPs) == 0 && bestIP != "" && pick.dropped() == 0 {
 			allIPs = []string{bestIP}
+		}
+		note := ""
+		if pick.dropped() > 0 {
+			note = pick.skipReason(cfg.DDNS.MinSpeedMbps)
 		}
 
 		if state.Found {
@@ -132,12 +209,13 @@ func (s *Server) handleDDNSCheck(w http.ResponseWriter, r *http.Request) {
 				cfg.DDNS.Domain, family))
 		}
 		views = append(views, ddnsFamilyView{
-			Type:       family,
-			Found:      state.Found,
-			CurrentIP:  state.CurrentIP,
-			CurrentIPs: state.CurrentIPs,
-			BestIP:     bestIP,
-			WillWrite:  allIPs,
+			Type:         family,
+			Found:        state.Found,
+			CurrentIP:    state.CurrentIP,
+			CurrentIPs:   state.CurrentIPs,
+			BestIP:       bestIP,
+			WillWrite:    allIPs,
+			MinSpeedNote: note,
 		})
 	}
 
@@ -161,6 +239,10 @@ type ddnsFamilyView struct {
 	CurrentIPs []string `json:"current_ips"`
 	BestIP     string   `json:"best_ip"`
 	WillWrite  []string `json:"will_write"`
+	// MinSpeedNote 说明「因为没到门槛少写了几条」。写成功的时候也可能有值，
+	// 前端要照它显示，否则用户看到「将写入 4 条」而自己设的是 5 条，
+	// 会以为程序又少写了一条。
+	MinSpeedNote string `json:"min_speed_note,omitempty"`
 }
 
 // ddnsFamilyResult 是「这一族这次写成功没有」。
@@ -168,22 +250,26 @@ type ddnsFamilyResult struct {
 	Type    string   `json:"type"`
 	IPs     []string `json:"ips"`
 	Skipped string   `json:"skipped,omitempty"`
+	// MinSpeedNote 说明「因为没到门槛少写了几条」。这一族写成了也可能有值：
+	// 用户设 5 条、实际写 4 条，得当场说清少的那条去哪儿了。
+	MinSpeedNote string `json:"min_speed_note,omitempty"`
 }
 
-// lastRankForType 返回「记录类型对应的上一次排名」和最优那一条。
+// lastRankForType 返回「记录类型对应的上一次排名」、最优那一条，以及跟着排名的
+// 节点明细（速度在里面，门槛要靠它判断）。
 //
-// A 用 v4 那组（LastIP / LastIPs），AAAA 用 v6 那组（LastIPv6 / LastIPv6IPs）。
-// 两族分开存的原因：一次测速会同时产出 v4 和 v6 两套排名，混在一起就分不清
-// 哪条地址该写进哪一种记录，把 v4 地址塞进 AAAA 是纯粹的坏记录。
+// A 用 v4 那组（LastIP / LastIPs / LastNodes），AAAA 用 v6 那组。两族分开存的
+// 原因：一次测速会同时产出 v4 和 v6 两套排名，混在一起就分不清哪条地址该写进
+// 哪一种记录，把 v4 地址塞进 AAAA 是纯粹的坏记录。
 // 返回值都是拷贝，调用方可以放心改。
-func lastRankForType(c *config.Config, rtype string) (best string, rank []string) {
+func lastRankForType(c *config.Config, rtype string) (best string, rank []string, nodes []config.NodeStat) {
 	if c == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	if rtype == ddns.TypeAAAA {
-		return c.LastIPv6, append([]string(nil), c.LastIPv6IPs...)
+		return c.LastIPv6, append([]string(nil), c.LastIPv6IPs...), append([]config.NodeStat(nil), c.LastIPv6Nodes...)
 	}
-	return c.LastIP, append([]string(nil), c.LastIPs...)
+	return c.LastIP, append([]string(nil), c.LastIPs...), append([]config.NodeStat(nil), c.LastNodes...)
 }
 
 // handleDDNSUpdate 立刻把当前最优 IP 推一次，不用等下一个测速周期。
@@ -206,14 +292,21 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	busy := s.running
 	planned := make([]ddnsFamilyResult, 0, len(families))
 	for _, family := range families {
-		lastIP, stored := lastRankForType(s.cfg, family)
+		lastIP, stored, nodeStats := lastRankForType(s.cfg, family)
 		// 存了完整排名，所以用户把「同步几个」从 1 改成 5 之后不用重新测速，
 		// 直接从这一份里截前 5 条就行。
-		ips := pickIPs(stored, cfg.DDNS.EffectiveIPCount())
-		if len(ips) == 0 && lastIP != "" {
-			ips = []string{lastIP} // 升级前存的配置只有单条
+		pick := pickForWrite(stored, nodeStats, cfg.DDNS.MinSpeedMbps, cfg.DDNS.EffectiveIPCount())
+		ips := pick.IPs
+		// 只有「排名列表本身就没有」才退回单条 lastIP（升级前存的配置只有一条）。
+		// 门槛把候选全刷掉时不退：那等于绕过用户设的标准把最慢的一条写上去。
+		if len(ips) == 0 && lastIP != "" && pick.dropped() == 0 {
+			ips = []string{lastIP}
 		}
-		planned = append(planned, ddnsFamilyResult{Type: family, IPs: ips})
+		res := ddnsFamilyResult{Type: family, IPs: ips}
+		if pick.dropped() > 0 {
+			res.MinSpeedNote = pick.skipReason(cfg.DDNS.MinSpeedMbps)
+		}
+		planned = append(planned, res)
 	}
 	s.mu.Unlock()
 
@@ -229,7 +322,13 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		if len(pl.IPs) == 0 {
 			// 这一族没结果就跳过，**不要**因此放弃另一族：v6 没测出节点
 			// 不该连累 A 记录也不更新。
-			pl.Skipped = "还没有测出可用的 " + familyLabel(pl.Type) + " 节点"
+			// 措辞要分辨：测速跑成了但全没到门槛，和压根没测出节点，
+			// 用户的下一步动作完全不同（一个去改门槛，一个去重跑测速）。
+			if pl.MinSpeedNote != "" {
+				pl.Skipped = "有结果，但都没到最低速度：" + pl.MinSpeedNote
+			} else {
+				pl.Skipped = "还没有测出可用的 " + familyLabel(pl.Type) + " 节点"
+			}
 			continue
 		}
 		if err := p.EnsureRecords(cfg.DDNS.Domain, pl.IPs, recordOptions(cfg.DDNS, pl.Type)); err != nil {
@@ -238,13 +337,31 @@ func (s *Server) handleDDNSUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		wrote++
-		s.appendLog(fmt.Sprintf("域名解析已手动更新：%s → %s（共 %d 条 %s 记录）",
-			cfg.DDNS.Domain, strings.Join(pl.IPs, "、"), len(pl.IPs), pl.Type))
+		msg := fmt.Sprintf("域名解析已手动更新：%s → %s（共 %d 条 %s 记录）",
+			cfg.DDNS.Domain, strings.Join(pl.IPs, "、"), len(pl.IPs), pl.Type)
+		if pl.MinSpeedNote != "" {
+			msg += "；" + pl.MinSpeedNote + " 未写"
+		}
+		s.appendLog(msg)
 	}
 
 	if wrote == 0 {
-		// 一族都没写成，按模式给一句最有用的指引，别只说「失败」，
-		// 三种模式的补救办法不一样。
+		// 一族都没写成。若全是「速度没到门槛」，就别让用户去重跑测速——
+		// 那是白等一轮，该改的是门槛本身。
+		lowOnly := true
+		for _, pl := range planned {
+			if len(pl.IPs) > 0 || pl.MinSpeedNote == "" {
+				lowOnly = false
+				break
+			}
+		}
+		if lowOnly {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf(
+				"测出来的节点都没到最低下载速度（%s），一条也没写。要放宽就把「最低下载速度」调小或清空",
+				trimSpeed(cfg.DDNS.MinSpeedMbps)+" Mbps")})
+			return
+		}
+		// 按模式给一句最有用的指引，别只说「失败」，三种模式的补救办法不一样。
 		msg := "还没有测出最优 IP。先点「立即测速」；只想验证密钥对不对，用「测试密钥」就够了"
 		switch mode {
 		case ddns.ModeBoth:

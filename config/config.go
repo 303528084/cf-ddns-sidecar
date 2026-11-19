@@ -105,6 +105,12 @@ type DDNSConfig struct {
 	// 0 表示 1 条，老配置没有这个字段，行为必须和以前一模一样。
 	IPCount int `json:"ip_count,omitempty"`
 
+	// MinSpeedMbps 是写进解析的门槛：速度低于它的那条不写，0 表示不限。
+	// 只在这一步生效——测速、排序、界面上的节点列表都不受影响。门槛回答的是
+	// 「这个地址配不配写进域名」，不是「它该排第几」；拿它去改排序会让用户
+	// 每次调门槛都得重跑一轮测速，只是在惩罚自己。
+	MinSpeedMbps float64 `json:"min_speed_mbps,omitempty"`
+
 	// RecordType 是要写的记录类型：空 / "A" 只写 A，"AAAA" 只写 AAAA，
 	// "A+AAAA" 两族都写（2026-11-18 新增）。老配置读进来是空串，效果等同于 A。
 	// JSON key 保持 record_type 不变：改名会让已存下来的配置升级后读不出自己选过

@@ -48,31 +48,42 @@ func TestRewriteAnswersSkipEmptyStrings(t *testing.T) {
 	}
 }
 
-// 手动推送 / 测试密钥时，按类型取对应的上一次排名。
+// 手动推送 / 测试密钥时，按类型取对应的上一次排名，连速度明细一起取。
+// 速度明细是「最低下载速度」门槛唯一的依据，取错了族就等于拿 v4 的速度
+// 去判 v6 的地址。
 func TestLastRankForType(t *testing.T) {
 	c := config.Default()
 	c.LastIP = "1.1.1.1"
 	c.LastIPs = []string{"1.1.1.1", "1.1.1.2"}
+	c.LastNodes = []config.NodeStat{{IP: "1.1.1.1", Speed: 20}, {IP: "1.1.1.2", Speed: 15}}
 	c.LastIPv6 = "2606:4700::1"
 	c.LastIPv6IPs = []string{"2606:4700::1", "2606:4700::2"}
+	c.LastIPv6Nodes = []config.NodeStat{{IP: "2606:4700::1", Speed: 30}}
 
-	best, rank := lastRankForType(c, ddns.TypeA)
+	best, rank, nodes := lastRankForType(c, ddns.TypeA)
 	if best != "1.1.1.1" || len(rank) != 2 || rank[1] != "1.1.1.2" {
 		t.Errorf("A 应取 v4 那组，实际 best=%q rank=%v", best, rank)
 	}
+	if len(nodes) != 2 || nodes[1].Speed != 15 {
+		t.Errorf("A 应带 v4 的速度明细，实际 %v", nodes)
+	}
 
-	best, rank = lastRankForType(c, ddns.TypeAAAA)
+	best, rank, nodes = lastRankForType(c, ddns.TypeAAAA)
 	if best != "2606:4700::1" || len(rank) != 2 || rank[1] != "2606:4700::2" {
 		t.Errorf("AAAA 应取 v6 那组，实际 best=%q rank=%v", best, rank)
+	}
+	if len(nodes) != 1 || nodes[0].Speed != 30 {
+		t.Errorf("AAAA 应带 v6 的速度明细，实际 %v", nodes)
 	}
 
 	// 返回的是拷贝：调用方改它不能影响配置。
 	rank[0] = "mutated"
-	if c.LastIPv6IPs[0] != "2606:4700::1" {
-		t.Error("rank 必须是拷贝，不能被调用方改到配置里")
+	nodes[0].Speed = 999
+	if c.LastIPv6IPs[0] != "2606:4700::1" || c.LastIPv6Nodes[0].Speed != 30 {
+		t.Error("rank / nodes 必须是拷贝，不能被调用方改到配置里")
 	}
 
-	if best, rank := lastRankForType(nil, ddns.TypeAAAA); best != "" || rank != nil {
-		t.Errorf("空配置应返回空值，实际 %q %v", best, rank)
+	if best, rank, nodes := lastRankForType(nil, ddns.TypeAAAA); best != "" || rank != nil || nodes != nil {
+		t.Errorf("空配置应返回空值，实际 %q %v %v", best, rank, nodes)
 	}
 }

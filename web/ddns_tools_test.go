@@ -346,3 +346,159 @@ func TestAdguardRewritesErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestPickForWrite 只锁一件事：门槛怎么筛，其中「不补位」和「速度不能张冠李戴」
+// 是两条最容易写错、写错了也不报错的规矩。
+func TestPickForWrite(t *testing.T) {
+	ips := []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"}
+	nodes := []config.NodeStat{
+		{IP: "1.1.1.1", Speed: 20},
+		{IP: "2.2.2.2", Speed: 4}, // 低于 10
+		{IP: "3.3.3.3", Speed: 0}, // 没测到
+		{IP: "4.4.4.4", Speed: 30},
+	}
+
+	t.Run("门槛为 0 时原样取前 n 条", func(t *testing.T) {
+		got := pickForWrite(ips, nodes, 0, 3)
+		if strings.Join(got.IPs, ",") != "1.1.1.1,2.2.2.2,3.3.3.3" {
+			t.Fatalf("门槛不限时应原样截前 3 条，实际 %#v", got.IPs)
+		}
+		if got.dropped() != 0 {
+			t.Fatalf("门槛不限时不该有剔除，实际 low=%d nodata=%d", got.Low, got.NoData)
+		}
+	})
+
+	t.Run("低于门槛和没测到的都剔掉", func(t *testing.T) {
+		got := pickForWrite(ips, nodes, 10, 3)
+		if strings.Join(got.IPs, ",") != "1.1.1.1" {
+			t.Fatalf("应只剩 1.1.1.1，实际 %#v", got.IPs)
+		}
+		if got.Low != 1 || got.NoData != 1 {
+			t.Fatalf("应记 1 条低速 1 条无数据，实际 low=%d nodata=%d", got.Low, got.NoData)
+		}
+	})
+
+	t.Run("不补位：第 n+1 条再快也不许顶上来", func(t *testing.T) {
+		// 4.4.4.4 有 30 Mbps，比谁都快，但它是第 4 条；只要前 3 条。
+		// 补位会让「设了 3 条」变成「写了 2 条还说不出为什么」，所以严禁。
+		got := pickForWrite(ips, nodes, 10, 3)
+		for _, ip := range got.IPs {
+			if ip == "4.4.4.4" {
+				t.Fatal("不允许从第 n+1 条补位")
+			}
+		}
+	})
+
+	t.Run("全部不达标时返回空", func(t *testing.T) {
+		got := pickForWrite(ips, nodes, 100, 4)
+		if len(got.IPs) != 0 {
+			t.Fatalf("全不达标应为空，实际 %#v", got.IPs)
+		}
+		if got.dropped() != 4 {
+			t.Fatalf("应记 4 条被剔除，实际 %d", got.dropped())
+		}
+	})
+
+	t.Run("速度按 IP 匹配，不能按下标顶上", func(t *testing.T) {
+		// 只有第 2 个 IP 有速度数据。按下标取的话，第 1 个会拿到 100 Mbps
+		// 被判成达标——把慢的说成快的，是这里最坏的一种错。
+		sparse := []config.NodeStat{{IP: "2.2.2.2", Speed: 100}}
+		got := pickForWrite(ips[:2], sparse, 10, 2)
+		if len(got.IPs) != 1 || got.IPs[0] != "2.2.2.2" {
+			t.Fatalf("只有 2.2.2.2 带自己的速度，应只剩它，实际 %#v", got.IPs)
+		}
+		if got.NoData != 1 {
+			t.Fatalf("1.1.1.1 没有自己的速度数据，应记 1 条无数据，实际 %d", got.NoData)
+		}
+	})
+
+	t.Run("排名为空时不炸", func(t *testing.T) {
+		got := pickForWrite(nil, nil, 10, 5)
+		if len(got.IPs) != 0 || got.dropped() != 0 {
+			t.Fatalf("空输入应返回空结果，实际 %#v", got)
+		}
+	})
+}
+
+// TestPickOutcomeSkipReason 日志里那句「为什么少写了几条」必须分得清，
+// 因为「低于门槛」要改门槛、「没测出速度」要查测速，动作完全不同。
+func TestPickOutcomeSkipReason(t *testing.T) {
+	if got := (pickOutcome{Low: 2}).skipReason(10); got != "2 条低于 10 Mbps" {
+		t.Fatalf("文案不对: %q", got)
+	}
+	if got := (pickOutcome{NoData: 3}).skipReason(10); got != "3 条没测出速度" {
+		t.Fatalf("文案不对: %q", got)
+	}
+	if got := (pickOutcome{Low: 1, NoData: 2}).skipReason(7.5); got != "1 条低于 7.5 Mbps、2 条没测出速度" {
+		t.Fatalf("文案不对: %q", got)
+	}
+	if got := (pickOutcome{}).skipReason(10); got != "" {
+		t.Fatalf("没剔除时不该有文案，实际 %q", got)
+	}
+}
+
+// TestPickForWriteWithRealRound 用 2026-11-19 那轮真机测速的实际结果锁行为：
+// 5 条候选、速度 8.65 / 8.17 / 8.14 / 7.79 / 7.61，从快到慢排好。
+// 门槛 8 时该写 3 条，门槛 8.5 时该只写 1 条——「设 5 条写了 3 条」正是
+// 用户要的那种结果，不是 bug。
+func TestPickForWriteWithRealRound(t *testing.T) {
+	ips := []string{"172.64.230.230", "190.93.248.225", "172.64.168.12", "172.64.143.28", "172.64.195.9"}
+	nodes := []config.NodeStat{
+		{IP: "172.64.230.230", Speed: 8.65, Delay: 23.24},
+		{IP: "190.93.248.225", Speed: 8.17, Delay: 26.46},
+		{IP: "172.64.168.12", Speed: 8.14, Delay: 20.51},
+		{IP: "172.64.143.28", Speed: 7.79, Delay: 23.72},
+		{IP: "172.64.195.9", Speed: 7.61, Delay: 19.73},
+	}
+
+	if got := pickForWrite(ips, nodes, 8, 5); len(got.IPs) != 3 || got.Low != 2 {
+		t.Fatalf("门槛 8 应写 3 条、剔 2 条，实际 %v（low=%d）", got.IPs, got.Low)
+	}
+	if got := pickForWrite(ips, nodes, 8.5, 5); len(got.IPs) != 1 {
+		t.Fatalf("门槛 8.5 应只写 1 条，实际 %v", got.IPs)
+	}
+	if got := pickForWrite(ips, nodes, 0, 5); len(got.IPs) != 5 {
+		t.Fatalf("门槛 0 应原样写 5 条，实际 %v", got.IPs)
+	}
+	// 门槛比最慢的那条还低一点，一条都不该被剔。
+	if got := pickForWrite(ips, nodes, 7.5, 5); len(got.IPs) != 5 {
+		t.Fatalf("门槛 7.5 应 5 条全留，实际 %v", got.IPs)
+	}
+}
+
+// TestDDNSUpdateAllBelowMinSpeed 全部低于门槛时，一条都不能写。
+//
+// 这里防的是两件事：① 退回 lastIP 把最慢的那条悄悄写上去（那等于绕过用户
+// 刚设的标准，而且他还要过半小时才发现）；② 提示成「还没有测出最优 IP」，
+// 让人去重跑一轮测速白等两分钟。测出来的地址是有的，只是都不够快。
+func TestDDNSUpdateAllBelowMinSpeed(t *testing.T) {
+	t.Setenv("CF_API_TOKEN", "dummy-token")
+	t.Setenv("CF_ZONE_ID", "dummy-zone")
+
+	s := newToolsTestServer(t, func(c *config.Config) {
+		c.DDNS.Enabled = true
+		c.DDNS.Provider = "cloudflare"
+		c.DDNS.Domain = "cf.example.com"
+		c.DDNS.IPCount = 2
+		c.DDNS.MinSpeedMbps = 50 // 远高于下面两条
+		c.LastIP = "1.1.1.1"
+		c.LastIPs = []string{"1.1.1.1", "1.1.1.2"}
+		c.LastNodes = []config.NodeStat{
+			{IP: "1.1.1.1", Speed: 8.65},
+			{IP: "1.1.1.2", Speed: 9.1},
+		}
+	})
+
+	// 门槛把两条都刷掉，所以根本走不到调服务商那一步，不需要真网络。
+	rec := call(s, http.MethodPost, "/api/ddns/update")
+	if rec.Code != 400 {
+		t.Fatalf("应返回 400，实际 %d，body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "最低下载速度") {
+		t.Fatalf("提示该说清是门槛的事，实际 %s", body)
+	}
+	if strings.Contains(body, "立即测速") {
+		t.Fatalf("不该让人去重跑测速——地址有，只是不够快，实际 %s", body)
+	}
+}
