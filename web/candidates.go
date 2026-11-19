@@ -401,10 +401,12 @@ func parseIPv6CIDRs(text string) (cidrs []string, skipped []string) {
 	return cidrs, skipped
 }
 
-// candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。三种情形，语义必须
-// 清楚区分：没设置自定义来源 → 内置官方段（升级前行为）；给了 IP 段/单 IP → 只从这些里
-// 采样；只给了链接 → 本地一个候选都不出，全交给引擎去拉。第三条最容易做错：这里偷偷
-// 回落到官方段，用户就会看到「我填了链接，测出来还是原来那些段」而程序看起来一切正常。
+// candidateList 返回用于测速的候选列表文本（每行 `ip:port#国家`）。
+//
+// 正常一轮测速不会走到这里：来源由 runIPv4Round 先解析好、筛选好再暂存，引擎来取
+// 候选时拿到的是那份暂存。这个函数只兜「引擎没拿到暂存还来要候选」的情况（手动调
+// 接口、上一轮崩在半路），此时按配置里的自定义来源算，空则退回官方 15 段——宁可按
+// 官方段跑一轮，也别返回空列表让整轮变成「测速失败」。
 func candidateList(cfg *config.Config, count int) string {
 	var ips []string
 

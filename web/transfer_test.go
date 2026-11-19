@@ -175,8 +175,11 @@ func fullConfig() config.Config {
 	c.Speed.TopN = 7
 	c.Speed.BandwidthCandidates = 80
 	c.Speed.ExtraSources = []string{"104.16.0.0/13", "https://example.com/ips.txt"}
+	// 来源模式取「自定义」而不是默认值：默认值是内置/关闭，漏导时肉眼看不出来。
+	c.Speed.SourceMode = config.SourceCustom
 	c.Speed.EngineOverrides = map[string]any{"IP_CALIBRATION_ENABLED": true}
 	c.IPv6ProbeURL = "https://example.com/v6.txt\n# 备用源\nhttps://example.com/v6-2.txt"
+	c.IPv6SourceMode = config.SourceCustom
 	// hosts 源那一块：开关必须开着（关着的值等于默认值，漏导也看不出来），
 	// 链接里也带一行注释，顺便验注释会不会被拆坏。
 	c.HostsEnabled = true
@@ -222,6 +225,7 @@ func TestBuildBundleCarriesEveryUserSetting(t *testing.T) {
 		"ipv6_probe_url", "ddns_ttl", "ddns_proxied", "ddns_ip_count",
 		"ddns_record_type", "domain_meta", "rewritten_domains",
 		"hosts_enabled", "hosts_source", "hosts_entries",
+		"source_mode", "ipv6_source_mode",
 	} {
 		if _, ok := c[k]; !ok {
 			t.Errorf("导出文件里少了 %q —— 恢复之后这一项会被静默重置：%s", k, raw)
@@ -246,6 +250,14 @@ func TestBuildBundleCarriesEveryUserSetting(t *testing.T) {
 	}
 	if got := c["ipv6_probe_url"]; got != in.IPv6ProbeURL {
 		t.Errorf("IPv6 段链接没原样带上: %q", got)
+	}
+	// 来源模式必须跟着文件走：丢了的话换机恢复会静默回到默认（v4 内置、v6 关闭），
+	// 用户设的是「只跑 v6」或「关闭 v4」都看不出来。
+	if got := c["source_mode"]; got != config.SourceCustom {
+		t.Errorf("v4 来源模式没带上: %v", got)
+	}
+	if got := c["ipv6_source_mode"]; got != config.SourceCustom {
+		t.Errorf("v6 来源模式没带上: %v", got)
 	}
 	if got := c["hosts_enabled"]; got != true {
 		t.Errorf("hosts 源开关没带上: %v —— 恢复后这一块会整块被跳过", got)
@@ -283,6 +295,8 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	s.cfg.Domains = []string{"other.example.com"}
 	s.cfg.DomainMeta = map[string]config.DomainMeta{"other.example.com": {Wildcard: true}}
 	s.cfg.IPv6ProbeURL = ""
+	s.cfg.IPv6SourceMode = config.SourceOff
+	s.cfg.Speed.SourceMode = config.SourceBuiltin
 	s.cfg.HostsEnabled = false
 	s.cfg.HostsSource = "https://other.example.com/hosts.txt"
 	s.cfg.HostsEntries = map[string]string{"other.example.com": "1.2.3.4"}
@@ -325,6 +339,10 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	if got.IPv6ProbeURL != want.IPv6ProbeURL {
 		t.Errorf("IPv6 段链接: %q ≠ %q", got.IPv6ProbeURL, want.IPv6ProbeURL)
 	}
+	// 模式不恢复的话，链接恢复了也不跑（v4 关闭 / v6 关闭），表现是「备份恢复了但不生效」。
+	if got.Speed.SourceMode != want.Speed.SourceMode || got.IPv6SourceMode != want.IPv6SourceMode {
+		t.Errorf("来源模式没恢复: v4=%q v6=%q", got.Speed.SourceMode, got.IPv6SourceMode)
+	}
 	// hosts 源：开关 + 链接 + 账本全都要回来。开关丢了会导致 AdGuard 上那几十条
 	// 在下一轮被整份清掉；账本丢了则相反——源里删掉的域名会永远留在 AdGuard 上。
 	if !got.HostsEnabled || got.HostsSource != want.HostsSource {
@@ -365,15 +383,16 @@ func TestImportRestoresEverySetting(t *testing.T) {
 	}
 }
 
-// TestImportOldBundleKeepsNewSettings 老备份（这八项之外的一切都有、这八项都没有）
-// 导入时，这八项必须保持当前值，而且要在响应里明说「没有恢复」。
+// TestImportOldBundleKeepsNewSettings 老备份（这十项之外的一切都有、这十项都没有）
+// 导入时，这十项必须保持当前值，而且要在响应里明说「没有恢复」。
 //
 // 用户 2026-11-18 导出的那份 1.7.3 备份正是这个形状。若不这样处理，一次
 // 「恢复备份」会把记录类型拨回 A、v6 段链接清空——界面只说「已恢复」。
 //
 // 八项而不是六项：v1.7.6 加了 hosts 源那一块（开关 + 链接），老文件里同样
-// 没有它，所以「文件里没有、保持原值」的清单跟着变成 8 项。这个数字每加一个
-// 用户能设的项就会变——它变了不是坏事，说明清单确实在跟着配置走。
+// 没有它，所以「文件里没有、保持原值」的清单跟着变成 8 项。v1.7.10 又加了两栏的
+// 来源方式（内置 / 自定义 / 关闭），变成 10 项。这个数字每加一个用户能设的项
+// 就会变——它变了不是坏事，说明清单确实在跟着配置走。
 func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s, _ := newPasswordTestServer(t, "")
 	token := s.signToken()
@@ -382,6 +401,8 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	s.cfg.Domains = []string{"keep.example.com"}
 	s.cfg.DomainMeta = map[string]config.DomainMeta{"keep.example.com": {Wildcard: true}}
 	s.cfg.IPv6ProbeURL = "https://example.com/keep-v6.txt"
+	s.cfg.IPv6SourceMode = config.SourceBuiltin
+	s.cfg.Speed.SourceMode = config.SourceOff
 	s.cfg.HostsEnabled = true
 	s.cfg.HostsSource = "https://hosts.example.com/hosts.txt"
 	s.cfg.DDNS.TTL = 3600
@@ -419,8 +440,8 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("响应解析失败: %s", rec.Body.String())
 	}
-	if len(resp.Kept) != 8 {
-		t.Errorf("应明确列出 8 项「文件里没有、保持原值」，实际 %v", resp.Kept)
+	if len(resp.Kept) != 10 {
+		t.Errorf("应明确列出 10 项「文件里没有、保持原值」，实际 %v", resp.Kept)
 	}
 
 	s.mu.Lock()
@@ -432,6 +453,11 @@ func TestImportOldBundleKeepsNewSettings(t *testing.T) {
 	}
 	if got.IPv6ProbeURL != "https://example.com/keep-v6.txt" {
 		t.Errorf("IPv6 段链接被清空了: %q", got.IPv6ProbeURL)
+	}
+	// 模式同理：老文件里没有它，导入后不能悄悄变成默认（v4 内置、v6 关闭），
+	// 那会让「v4 关掉只跑 v6」这种配置在恢复备份之后变成两族都跑/都不跑。
+	if got.Speed.SourceMode != config.SourceOff || got.IPv6SourceMode != config.SourceBuiltin {
+		t.Errorf("来源模式被老备份改掉了: v4=%q v6=%q", got.Speed.SourceMode, got.IPv6SourceMode)
 	}
 	if got.DDNS.TTL != 3600 || !got.DDNS.Proxied || got.DDNS.IPCount != 5 {
 		t.Errorf("DDNS 三项被改掉了: TTL=%d proxied=%v 条数=%d",

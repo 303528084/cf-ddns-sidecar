@@ -62,6 +62,12 @@ type bundleConfig struct {
 	// ExtraSources 以前漏了：用户辛苦填的「优选 IP 段」不在备份里，
 	// 换台机器恢复之后会悄悄退回官方段，而界面看起来「恢复成功」。
 	ExtraSources []string `json:"extra_sources,omitempty"`
+	// SourceMode / IPv6SourceMode 是两栏的「内置 / 自定义 / 关闭」。用指针：
+	// 关闭本身就是合法值，得和「老文件里没有这个字段」分开。不导出的话换台
+	// 机器恢复之后会静默回到默认（v4 内置、v6 关闭），用户设的模式被换掉，
+	// 而界面看起来「恢复成功」。
+	SourceMode     *string `json:"source_mode,omitempty"`
+	IPv6SourceMode *string `json:"ipv6_source_mode,omitempty"`
 	// EngineOverrides 是高级设置里改过的引擎参数。同样是「不存就丢」的东西，
 	// 而且丢了以后表现是「测速行为变了但界面全是默认值」，最难查。
 	EngineOverrides map[string]any `json:"engine_overrides,omitempty"`
@@ -157,6 +163,10 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 	ipCount := cfg.DDNS.IPCount
 	recordType := cfg.DDNS.RecordType
 	v6 := cfg.IPv6ProbeURL
+	// 导出实际生效的模式，不是裸字段：老配置里没有这一项，导出去应该是
+	// 「v4 内置 / v6 关闭」，而不是一个空串（导入侧会当成「不变」）。
+	srcMode := cfg.EffectiveSourceMode()
+	v6Mode := cfg.EffectiveIPv6SourceMode()
 	hostsOn := cfg.HostsEnabled
 	hostsSrc := cfg.HostsSource
 
@@ -186,8 +196,10 @@ func buildBundle(cfg config.Config, creds map[string]string, ver string, now tim
 			Candidates:       cfg.Speed.BandwidthCandidates,
 			IntervalMinutes:  cfg.Speed.IntervalMinutes,
 			ExtraSources:     append([]string{}, cfg.Speed.ExtraSources...),
+			SourceMode:       &srcMode,
 			EngineOverrides:  cfg.Speed.EngineOverrides,
 			IPv6ProbeURL:     &v6,
+			IPv6SourceMode:   &v6Mode,
 			HostsEnabled:     &hostsOn,
 			HostsSource:      &hostsSrc,
 			HostsEntries:     hostsBook,
@@ -333,6 +345,24 @@ func parseBundle(raw []byte) (bundle, []string, error) {
 		} else {
 			joined := strings.Join(lines, "\n")
 			b.Config.IPv6ProbeURL = &joined
+		}
+	}
+	// 来源模式：认不出来就整项忽略（保持当前设置），不按默认值写进去——
+	// 一个手改坏的值不该让用户的两栏来源悄悄换一种跑法。
+	if b.Config.SourceMode != nil {
+		if m, err := config.NormalizeSourceMode(*b.Config.SourceMode); err != nil {
+			warns = append(warns, err.Error()+"，这一项已忽略（保持当前设置）")
+			b.Config.SourceMode = nil
+		} else {
+			b.Config.SourceMode = &m
+		}
+	}
+	if b.Config.IPv6SourceMode != nil {
+		if m, err := config.NormalizeSourceMode(*b.Config.IPv6SourceMode); err != nil {
+			warns = append(warns, err.Error()+"，这一项已忽略（保持当前设置）")
+			b.Config.IPv6SourceMode = nil
+		} else {
+			b.Config.IPv6SourceMode = &m
 		}
 	}
 	if b.Config.HostsSource != nil {
@@ -509,6 +539,10 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		cfg.Speed.ExtraSources = b.Config.ExtraSources
 	}
 	note("优选 IP 段", b.Config.ExtraSources != nil)
+	if b.Config.SourceMode != nil {
+		cfg.Speed.SourceMode = *b.Config.SourceMode
+	}
+	note("优选 IP 段的来源方式", b.Config.SourceMode != nil)
 	if b.Config.EngineOverrides != nil {
 		cfg.Speed.EngineOverrides = engine.NormalizeOverrides(b.Config.EngineOverrides)
 	}
@@ -517,6 +551,10 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		cfg.IPv6ProbeURL = *b.Config.IPv6ProbeURL
 	}
 	note("IPv6 段链接", b.Config.IPv6ProbeURL != nil)
+	if b.Config.IPv6SourceMode != nil {
+		cfg.IPv6SourceMode = *b.Config.IPv6SourceMode
+	}
+	note("IPv6 段的来源方式", b.Config.IPv6SourceMode != nil)
 	// hosts 源那一块。用 nil 判断「文件里没有这一项」：老备份里没有它，此时
 	// 保持当前值，不能顺手把用户打开的开关关掉、把链接清空。
 	if b.Config.HostsEnabled != nil {

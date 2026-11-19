@@ -294,42 +294,6 @@ var Schema = []OptSpec{
 	},
 }
 
-// ExcludedOpt 是一个「不给开关」的参数，以及原因。
-type ExcludedOpt struct {
-	Key string `json:"key"`
-	Why string `json:"why"`
-}
-
-// excludedKeys 是「不给开关」的参数，以及为什么。
-//
-// 界面上会把这些理由原样显示出来，用户问「为什么这个没有」，答案必须
-// 在界面上看得到，而不是只存在于某次对话里。
-//
-// 覆盖情况（对着 cfnb 的 99 个默认参数数出来的）：24 个布尔开关里 18 个
-// 给了开关，剩下 6 个（CF_ENABLED / CF_PROXIED / ENABLE_WXPUSHER / AD_*3）
-// 在下面第 1、2、4 组里说明了原因；另外 57 个是超时、重试间隔、并发数这类
-// 数字，其中由程序自己管的在第 5 组、其余保持引擎默认值的在第 6 组。
-// 加新参数之前先确认它不属于这六类，否则用户会看到「日志里有、界面没有」。
-var excludedKeys = []ExcludedOpt{
-	{"CF_ENABLED / CF_API_TOKEN / CF_ZONE_ID / CF_DNS_RECORD_NAME / CF_TTL / CF_PROXIED",
-		"这是引擎自带的「更新 Cloudflare 解析记录」功能。本程序已经用自己的代码推 DDNS 了，" +
-			"两边同时写同一条记录会互相覆盖，解析结果会来回跳。所以这一组永久关闭。"},
-	{"ENABLE_WXPUSHER / WXPUSHER_APP_TOKEN / WXPUSHER_UIDS / WXPUSHER_API_URL",
-		"微信推送。需要另外申请 AppToken 和 UID，本程序没有接这套通知，开了也不会有任何反应。"},
-	{"GITHUB_SYNC_MAX_RETRIES / GITHUB_SYNC_RETRY_DELAY / GIT_SYNC_PROCESS_TIMEOUT",
-		"把结果同步到 GitHub 仓库。需要仓库地址和令牌，本程序没有接，开了也不会有反应。"},
-	{"AD_HEADER_ENABLED / AD_FOOTER_ENABLED / AD_PERLINE_ENABLED",
-		"往结果文件里插广告行。这是上游项目给自己用的，插进来会污染本程序的解析。"},
-	{"OUTPUT_FILE / LOG_FILE / USER_AGENT / ADDITIONAL_SOURCES / GLOBAL_TOP_N / BANDWIDTH_CANDIDATES / DNS_UPDATE_TARGET_COUNT",
-		"这几项由程序自己填：结果文件写在哪、去哪里拉候选、保留几个、要不要加内置聚合源，" +
-			"都是本程序根据你在界面上填的东西算出来的。改了会直接和界面对不上（比如结果文件换了名字，" +
-			"程序就找不到测速结果，页面一片空白）。"},
-	{"其余的超时 / 重试间隔 / 并发数（*_TIMEOUT、*_CONNECT_TIMEOUT、*_RETRY_DELAY、*_MAX_RETRIES、*_WORKERS、PROGRESS_PRINT_INTERVAL 等）",
-		"这些是引擎内部的节奏参数，我们保留了它的默认值。它们不改变「选哪些 IP」，只影响跑得多快、" +
-			"失败几次才放弃；调错的方向几乎都是「更慢或更容易失败」，而不是「更准」。真正需要调的" +
-			"那几项（总并发数、反代验证并发数、带宽测速并发数、各阶段超时）已经在上面「性能与超时」里给了开关。"},
-}
-
 // specByKey 是 Schema 的索引，查起来 O(1)。
 var specByKey = func() map[string]OptSpec {
 	m := make(map[string]OptSpec, len(Schema))
@@ -344,9 +308,6 @@ func Lookup(key string) (OptSpec, bool) {
 	s, ok := specByKey[key]
 	return s, ok
 }
-
-// ExcludedReasons 返回「哪些参数不给开关、为什么」，供界面展示。
-func ExcludedReasons() []ExcludedOpt { return excludedKeys }
 
 // NormalizeOverrides 把用户存的覆盖值整理成 cfnb 认识的样子。
 //

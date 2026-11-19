@@ -155,7 +155,7 @@ func TestResolveLinkSources(t *testing.T) {
 	s := New(cfg, "", "", t.TempDir(), Auth{}, "", nil)
 
 	src := extraSources{urls: []string{srv.URL + "/all.txt"}}
-	merged, unparsed := s.resolveLinkSources(context.Background(), src)
+	merged, unparsed := s.resolveLinkSources(context.Background(), src, config.SourceCustom)
 	if len(unparsed) != 0 {
 		t.Fatalf("正常链接不该落到兜底，实际 %v", unparsed)
 	}
@@ -204,7 +204,7 @@ func TestResolveLinkSourcesFailures(t *testing.T) {
 		defer srv.Close()
 		s := New(config.Default(), "", "", t.TempDir(), Auth{}, "", nil)
 		merged, unparsed := s.resolveLinkSources(context.Background(),
-			extraSources{urls: []string{srv.URL + "/x.txt"}})
+			extraSources{urls: []string{srv.URL + "/x.txt"}}, config.SourceCustom)
 		if len(unparsed) != 1 {
 			t.Fatalf("404 应当落到兜底，实际 %v", unparsed)
 		}
@@ -222,7 +222,7 @@ func TestResolveLinkSourcesFailures(t *testing.T) {
 		defer srv.Close()
 		s := New(config.Default(), "", "", t.TempDir(), Auth{}, "", nil)
 		_, unparsed := s.resolveLinkSources(context.Background(),
-			extraSources{urls: []string{srv.URL + "/x.txt"}})
+			extraSources{urls: []string{srv.URL + "/x.txt"}}, config.SourceCustom)
 		if len(unparsed) != 1 {
 			t.Fatalf("认不出内容时应当落到兜底，实际 %v", unparsed)
 		}

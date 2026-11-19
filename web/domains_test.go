@@ -42,6 +42,7 @@ type domainResp struct {
 	OK      bool        `json:"ok"`
 	Error   string      `json:"error"`
 	Note    string      `json:"note"`
+	Removed int         `json:"removed"`
 	Domains []domainRow `json:"domains"`
 }
 
@@ -256,6 +257,48 @@ func TestDomainDeleteUnknown404(t *testing.T) {
 	rec := call(s, http.MethodDelete, "/api/domains?domain=nope.test")
 	if rec.Code != 404 {
 		t.Fatalf("删不存在的域名应 404，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDomainClearAll 一次清空整个列表：域名和元信息都不许剩。
+//
+// 这条盯的是「全清之后再加回一个同名域名」：元信息若留着，新加的那个会直接
+// 继承上次的「包含子域」和添加时间，用户看到的是一进来就勾着子域的怪状态。
+func TestDomainClearAll(t *testing.T) {
+	stubCFLookup(t)
+	s := newToolsTestServer(t, nil)
+	sendJSON(t, s, http.MethodPost, "/api/domains", `{"domain":"ok.test","wildcard":true}`)
+	sendJSON(t, s, http.MethodPost, "/api/domains", `{"domain":"second.test"}`)
+
+	rec := call(s, http.MethodDelete, "/api/domains?all=1")
+	if rec.Code != 200 {
+		t.Fatalf("清空失败：%d %s", rec.Code, rec.Body.String())
+	}
+	if got := domainsOf(s); len(got) != 0 {
+		t.Fatalf("清空之后列表应为空，实际 %v", got)
+	}
+	s.mu.Lock()
+	meta := len(s.cfg.DomainMeta)
+	s.mu.Unlock()
+	if meta != 0 {
+		t.Errorf("清空之后元信息也要清掉，还剩 %d 条", meta)
+	}
+	r := decodeDomainResp(t, rec)
+	if r.Removed != 2 || len(r.Domains) != 0 {
+		t.Errorf("响应应报删了 2 条、列表为空，实际 removed=%d domains=%v", r.Removed, r.Domains)
+	}
+}
+
+// TestDomainClearAllOnEmpty 列表本来就空的时候点「全部删除」：200 加一句话，
+// 不能报错——界面上那个按钮在空列表时是藏着的，但接口不该因此变得脆弱。
+func TestDomainClearAllOnEmpty(t *testing.T) {
+	s := newToolsTestServer(t, nil)
+	rec := call(s, http.MethodDelete, "/api/domains?all=1")
+	if rec.Code != 200 {
+		t.Fatalf("空列表清空应 200，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+	if r := decodeDomainResp(t, rec); r.Removed != 0 {
+		t.Errorf("应报删了 0 条，实际 %d", r.Removed)
 	}
 }
 

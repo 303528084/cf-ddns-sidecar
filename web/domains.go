@@ -248,6 +248,12 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 清空整个列表。域名多了以后一个一个点太慢，而且每删一个都要同步一次
+	// AdGuard——二十个域名就是二十次网络往返，中途失败还会留下删了一半的状态。
+	if r.URL.Query().Get("all") == "1" {
+		s.clearAllDomains(w)
+		return
+	}
 	domain := config.NormalizeDomain(r.URL.Query().Get("domain"))
 	if domain == "" {
 		writeJSON(w, 400, map[string]string{"error": "没说是哪个域名"})
@@ -289,8 +295,46 @@ func (s *Server) handleDomainDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDomainWildcard 切换某个域名的「包含子域」。
+// clearAllDomains 是「全部删除」：一次清空列表，只同步一次 AdGuard。
 //
+// 作用和逐个删除一样：被清掉的域名下一轮同步时整条清掉（rewritePlan 给已失管
+// 的域名一个空答案集），不是「不管了、留在 AdGuard 里」。
+//
+// 单独一个函数而不是在 handleDomainDelete 里改一行：那里是「按域名删」，这里有
+// 「一个都不剩」，两者对 DomainMeta 的处理不一样（整表置空 vs 删一个键）。
+func (s *Server) clearAllDomains(w http.ResponseWriter) {
+	s.mu.Lock()
+	cfg := s.cfg.Clone()
+	n := len(cfg.Domains)
+	if n == 0 {
+		s.mu.Unlock()
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "removed": 0,
+			"note": "列表本来就是空的", "domains": domainRows(cfg),
+		})
+		return
+	}
+	// 空切片而不是 nil：一个个删到最后一个时存的也是 []，两种形状的同一个状态
+	// 迟早会有人拿 == nil 去判断「从没配过」。
+	cfg.Domains = []string{}
+	cfg.PruneDomainMeta()
+	s.cfg = &cfg
+	s.mu.Unlock()
+
+	if err := cfg.Save(); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "保存失败: " + friendlyErr(err)})
+		return
+	}
+	note := s.syncRewrites(cfg)
+	s.appendLog("已清空域名列表（" + strconv.Itoa(n) + " 个）：" + note)
+
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "removed": n,
+		"note": note, "domains": domainRows(cfg),
+	})
+}
+
+// handleDomainWildcard 切换某个域名的「包含子域」。
 // 只改这一项、立刻生效：勾上就多写一条 `*.域名`，取消就把它删掉。
 func (s *Server) handleDomainWildcard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {

@@ -6,6 +6,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -42,19 +43,39 @@ func (a AdGuardConfig) Instance() AdguardInstance {
 	}
 }
 
+// 来源模式：界面上下拉的三项。
+const (
+	SourceBuiltin = "builtin" // 用程序内置的链接，地址不出现在界面、配置、备份、日志里
+	SourceCustom  = "custom"  // 用用户自己填的那份
+	SourceOff     = "off"     // 这一族不测速
+)
+
+// 内置来源的链接。写死在程序里而不是放进配置：用户要的是「给这个应用装一个默认来源」，
+// 不是把地址贴到别人眼前，所以配置、备份、日志里都只有「内置」两个字。
+// 代价是换链接必须改这里重新发版。
+const (
+	BuiltinV4Source = "https://github.71557.qzz.io/https://raw.githubusercontent.com/303528084/cf-dns-select/refs/heads/main/ip.txt"
+	BuiltinV6Source = "https://github.71557.qzz.io/https://raw.githubusercontent.com/303528084/cf-dns-select/refs/heads/main/ipv6.txt"
+)
+
 // SpeedConfig 描述测速行为（映射到测速引擎 cfnb 的参数）。
 type SpeedConfig struct {
 	IntervalMinutes     int `json:"interval_minutes"`     // 自动测速间隔（分钟），0 表示不自动测
 	TopN                int `json:"top_n"`                // 最终保留的候选 IP 数量
 	BandwidthCandidates int `json:"bandwidth_candidates"` // 进入带宽测速的候选数
+	// SourceMode 决定「优选 IP 段」这一栏怎么生效，见上面的 SourceXxx。空值按
+	// builtin 读：升级前的配置里没有这个字段，按关闭读会让所有人升级后一轮都没有
+	// v4 候选，表现是解析记录停在原地不动。
+	// ExtraSources 无论哪种模式都留着：用户切到「自定义」时要能看见上次填的东西。
+	SourceMode string `json:"source_mode,omitempty"`
 	// ExtraSources 是用户自己指定的候选来源，一行一条，三种写法：
 	//   · IP 段   104.16.0.0/13  ：本地在这些段里随机采样
 	//   · 单 IP   104.16.1.1     ：直接进候选，不抽样
 	//   · 链接    https://...    ：不本地解析，原样交给测速引擎自己去拉
 	//
-	// 留空 = 用内置的 Cloudflare 官方 15 个段。非空 = 只用这些，既不叠加官方段，
-	// 也不再拉内置的两个外部聚合源：实测一个聚合源就能给 12757 个 IP，叠加等于
-	// 用户填的段被彻底淹没。
+	// 只在 SourceMode=custom 时生效。填了就只用这些，既不叠加官方段，也不再拉
+	// 内置的两个外部聚合源：实测一个聚合源就能给 12757 个 IP，叠加等于用户填的
+	// 段被彻底淹没。
 	ExtraSources []string `json:"extra_sources,omitempty"`
 
 	// EngineOverrides 是用户在「高级设置」里改过的测速引擎参数，键名与 engine.Schema
@@ -146,8 +167,11 @@ type Config struct {
 	// 用多行字符串而不是 []string：字段和 json 键都已写进用户的 config.json 和备份，
 	// 换类型等于所有老配置都要迁移。取列表用 IPv6SourceURLs()，别自己 split。
 	// 不塞进 Speed.ExtraSources：那里的解析器只认 IPv4（nodeTokenRe / To4），v6 段
-	// 混进去会被静默丢掉。空 = 自动测速不跑 v6，手动「开始探测」仍回退到内置 CF v6 段。
+	// 混进去会被静默丢掉。只在 IPv6SourceMode=custom 时生效。
 	IPv6ProbeURL string `json:"ipv6_probe_url,omitempty"`
+	// IPv6SourceMode 是 v6 那一栏的来源模式，取值同 SourceXxx。空值按 off 读：
+	// 升级前 v6 留空就是不跑 v6，默认打开等于替用户改了行为。
+	IPv6SourceMode string `json:"ipv6_source_mode,omitempty"`
 
 	// HostsEnabled / HostsSource / HostsEntries 是「GitHub Hosts 源」那一块：不测速，
 	// 把别人维护的 hosts 列表原样写进 AdGuard 重写表。开关、来源、结果各一套，不碰
@@ -376,6 +400,59 @@ func (c *Config) HostsSourceURLs() []string {
 		out = append(out, t)
 	}
 	return out
+}
+
+// NormalizeSourceMode 校验界面传上来的来源模式。写错的值当场退回、不回落成默认：
+// 静默改掉用户的选择（比如以为在测 v6、其实被关掉）只能等他自己发现记录不更新。
+func NormalizeSourceMode(s string) (string, error) {
+	switch s = strings.TrimSpace(s); s {
+	case SourceBuiltin, SourceCustom, SourceOff:
+		return s, nil
+	}
+	return "", fmt.Errorf("来源模式 %q 不认识，只有内置、自定义、关闭三种", s)
+}
+
+// EffectiveSourceMode 返回「优选 IP 段」实际生效的模式。缺字段按 builtin：
+// 见 SpeedConfig.SourceMode 的说明。
+func (c *Config) EffectiveSourceMode() string {
+	switch c.Speed.SourceMode {
+	case SourceCustom, SourceOff:
+		return c.Speed.SourceMode
+	}
+	return SourceBuiltin
+}
+
+// EffectiveIPv6SourceMode 返回 v6 那一栏实际生效的模式。缺字段按 off：
+// 见 IPv6SourceMode 的说明。
+func (c *Config) EffectiveIPv6SourceMode() string {
+	switch c.IPv6SourceMode {
+	case SourceBuiltin, SourceCustom:
+		return c.IPv6SourceMode
+	}
+	return SourceOff
+}
+
+// IPv4Sources 返回这一轮真正要用的 v4 来源原文（可能混着 IP 段 / 单 IP / 链接）。
+// 关闭时返回空——调用方据此判定「这一族不测」，不要自己看 ExtraSources 猜。
+func (c *Config) IPv4Sources() []string {
+	switch c.EffectiveSourceMode() {
+	case SourceBuiltin:
+		return []string{BuiltinV4Source}
+	case SourceCustom:
+		return c.Speed.ExtraSources
+	}
+	return nil
+}
+
+// IPv6Sources 返回这一轮真正要用的 v6 链接。
+func (c *Config) IPv6Sources() []string {
+	switch c.EffectiveIPv6SourceMode() {
+	case SourceBuiltin:
+		return []string{BuiltinV6Source}
+	case SourceCustom:
+		return c.IPv6SourceURLs()
+	}
+	return nil
 }
 
 // Save 原子写回磁盘。

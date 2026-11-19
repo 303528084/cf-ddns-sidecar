@@ -69,7 +69,8 @@ func candidatesTextFromIPv6(count int) string {
 //     日志；全部挂掉才报错，并把每条的原因都列出来。
 func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	s.mu.Lock()
-	urls := s.cfg.IPv6SourceURLs()
+	urls := s.cfg.IPv6Sources()
+	mode := s.cfg.EffectiveIPv6SourceMode()
 	s.mu.Unlock()
 	if len(urls) == 0 {
 		s.unstageIPv6Candidates() // 清掉上一次的暂存，避免"删了链接还在用旧段"
@@ -82,13 +83,13 @@ func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	for _, u := range urls {
 		text, err := fetchSourceText(ctx, u)
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s（拉取失败：%v）", u, err))
+			failed = append(failed, fmt.Sprintf("%s（拉取失败：%v）", sourceLabel(mode, u), err))
 			continue
 		}
 		cidrs, skipped := parseIPv6CIDRs(text)
 		if len(cidrs) == 0 {
 			failed = append(failed, fmt.Sprintf("%s（内容里一个合法的 IPv6 段都没有%s）",
-				u, sampleHint(skipped)))
+				sourceLabel(mode, u), sampleHint(skipped)))
 			continue
 		}
 		for _, c := range cidrs {

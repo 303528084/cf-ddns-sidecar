@@ -299,7 +299,17 @@ func (s *Server) unstageCandidates() {
 // 返回合并后的来源，以及「本地认不出、留给引擎再试一次」的链接。
 // 两种情况都必须打日志说明原因：链接是用户自己填的，出问题时他只能靠日志判断
 // 是「地址坏了」还是「内容格式不对」，而这两件事的处理方式完全不同。
-func (s *Server) resolveLinkSources(ctx context.Context, src extraSources) (extraSources, []string) {
+// sourceLabel 决定一条来源在日志里怎么写。内置来源是写死在程序里的链接，打出来等于
+// 把它暴露出去（用户要的就是不暴露），所以只写「内置来源」；自定义来源原样写，
+// 出问题时用户得能看出是哪一条挂了。
+func sourceLabel(mode, u string) string {
+	if mode == config.SourceBuiltin {
+		return "内置来源"
+	}
+	return u
+}
+
+func (s *Server) resolveLinkSources(ctx context.Context, src extraSources, mode string) (extraSources, []string) {
 	if len(src.urls) == 0 {
 		return src, nil
 	}
@@ -310,7 +320,7 @@ func (s *Server) resolveLinkSources(ctx context.Context, src extraSources) (extr
 	for _, u := range src.urls {
 		text, err := fetchSourceText(ctx, u)
 		if err != nil {
-			s.appendLog(fmt.Sprintf("来源链接拉取失败（%s）：%v", u, err))
+			s.appendLog(fmt.Sprintf("来源链接拉取失败（%s）：%v", sourceLabel(mode, u), err))
 			unparsed = append(unparsed, u)
 			continue
 		}
@@ -318,13 +328,13 @@ func (s *Server) resolveLinkSources(ctx context.Context, src extraSources) (extr
 		if got.isEmpty() {
 			s.appendLog(fmt.Sprintf(
 				"来源链接里没认出任何 IP（%s）：内容共 %d 条认不出%s",
-				u, st.skippedTotal, sampleHint(st.skipped)))
+				sourceLabel(mode, u), st.skippedTotal, sampleHint(st.skipped)))
 			unparsed = append(unparsed, u)
 			continue
 		}
 		s.appendLog(fmt.Sprintf(
 			"来源链接解析完成（%s）：单个 IP %d 个、带端口节点 %d 个、IP 段 %d 个%s",
-			u, st.ips, st.nodes, st.cidrs, sampleHint(st.skipped)))
+			sourceLabel(mode, u), st.ips, st.nodes, st.cidrs, sampleHint(st.skipped)))
 		mergeSources(&merged, got)
 	}
 	return merged, unparsed
@@ -695,7 +705,9 @@ type configResp struct {
 	Candidates      int         `json:"bandwidth_candidates"`
 	IntervalMinutes int         `json:"interval_minutes"`
 	ExtraSources    []string    `json:"extra_sources"`
+	SourceMode      string      `json:"source_mode"`
 	IPv6ProbeURL    string      `json:"ipv6_probe_url"`
+	IPv6SourceMode  string      `json:"ipv6_source_mode"`
 	// hosts 源那一块（GitHub hosts 清单写进 AdGuard 重写）。和上面那些设置
 	// 完全独立，见 web/hosts.go 顶部。
 	HostsEnabled    bool   `json:"hosts_enabled"`
@@ -714,14 +726,13 @@ type configResp struct {
 	// 前端始终会带上当前值，不存在「漏传就把用户的选择清掉」的问题。
 	DDNSRecordType string `json:"ddns_record_type"`
 
-	// 高级设置：引擎参数表 + 用户改过的值 + 没给开关的那些及原因。
+	// 高级设置：引擎参数表 + 用户改过的值。
 	//
 	// 表跟着配置一起发，不单开一个接口：它和「当前值」必须成对出现，
 	// 分成两个请求就有中间态，界面拿着旧表去渲染新值，那个参数会静默丢失。
-	EngineGroups    []engine.OptGroup    `json:"engine_groups"`
-	EngineOptions   []engine.OptSpec     `json:"engine_options"`
-	EngineExcluded  []engine.ExcludedOpt `json:"engine_excluded"`
-	EngineOverrides map[string]any       `json:"engine_overrides"`
+	EngineGroups    []engine.OptGroup `json:"engine_groups"`
+	EngineOptions   []engine.OptSpec  `json:"engine_options"`
+	EngineOverrides map[string]any    `json:"engine_overrides"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -740,7 +751,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			Candidates:      c.Speed.BandwidthCandidates,
 			IntervalMinutes: c.Speed.IntervalMinutes,
 			ExtraSources:    c.Speed.ExtraSources,
+			// 发的是实际生效的模式，不是裸字段：老配置里没有这项，前端要能拿到
+			// 下拉该显示的那一项（见 config.EffectiveSourceMode）。
+			SourceMode:      c.EffectiveSourceMode(),
 			IPv6ProbeURL:    c.IPv6ProbeURL,
+			IPv6SourceMode:  c.EffectiveIPv6SourceMode(),
 			HostsEnabled:    c.HostsEnabled,
 			HostsSource:     c.HostsSource,
 			HostsEntryCount: len(c.HostsEntries),
@@ -754,7 +769,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DDNSRecordType:  c.DDNS.EffectiveRecordMode(),
 			EngineGroups:    engine.Groups,
 			EngineOptions:   engine.Schema,
-			EngineExcluded:  engine.ExcludedReasons(),
 			EngineOverrides: c.Speed.EngineOverrides,
 		})
 	case http.MethodPost:
@@ -815,9 +829,13 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		//   传了 []      → 用户主动清空，恢复用内置官方段。
 		// 若用普通切片，这两种情况都是长度 0，清空就永远生效不了。
 		ExtraSources *[]string `json:"extra_sources"`
+		// 来源模式同样用指针：「没传」= 不动（老界面、老备份文件里没有这一项）。
+		// 传了只在 builtin / custom / off 三个值里认一个，别的当场退回。
+		SourceMode *string `json:"source_mode"`
 		// v6 段来源用指针，理由同上：没传 = 不动（旧客户端、老的导入文件），
 		// 传了空串 = 用户主动清空，要真的清掉。
-		IPv6ProbeURL *string `json:"ipv6_probe_url"`
+		IPv6ProbeURL   *string `json:"ipv6_probe_url"`
+		IPv6SourceMode *string `json:"ipv6_source_mode"`
 		// hosts 源那一块。开关和链接都用指针：没传 = 不动（老界面、老的导入
 		// 文件里没有这两项），传了空串 = 用户主动清空来源。用普通 bool 的话
 		// 「没传」和「关掉」都是 false，一次只改 AdGuard 地址的保存就会把它关掉。
@@ -907,6 +925,25 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		hostsLines = lines
 	}
 
+	// 来源模式：只认三个值，写错当场退回。
+	var srcMode, v6Mode string
+	if body.SourceMode != nil {
+		m, merr := config.NormalizeSourceMode(*body.SourceMode)
+		if merr != nil {
+			writeJSON(w, 400, map[string]string{"error": merr.Error()})
+			return
+		}
+		srcMode = m
+	}
+	if body.IPv6SourceMode != nil {
+		m, merr := config.NormalizeSourceMode(*body.IPv6SourceMode)
+		if merr != nil {
+			writeJSON(w, 400, map[string]string{"error": merr.Error()})
+			return
+		}
+		v6Mode = m
+	}
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	cfg.AdGuard.URL = strings.TrimSpace(body.AdGuardURL)
@@ -951,6 +988,28 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.HostsEnabled != nil {
 		cfg.HostsEnabled = *body.HostsEnabled
+	}
+	if srcMode != "" {
+		cfg.Speed.SourceMode = srcMode
+	}
+	if v6Mode != "" {
+		cfg.IPv6SourceMode = v6Mode
+	}
+	// 「自定义」但一条来源都没有 = 这一族实际上没东西可测。在这里退回，比等下一轮
+	// 测速报「来源里没解析出任何可用 IP」清楚得多——那时用户已经忘了自己改过什么。
+	if cfg.EffectiveSourceMode() == config.SourceCustom && len(cfg.Speed.ExtraSources) == 0 {
+		s.mu.Unlock()
+		writeJSON(w, 400, map[string]string{
+			"error": "「优选 IP 段」选的是「自定义」，但一条来源都没填",
+		})
+		return
+	}
+	if cfg.EffectiveIPv6SourceMode() == config.SourceCustom && len(cfg.IPv6SourceURLs()) == 0 {
+		s.mu.Unlock()
+		writeJSON(w, 400, map[string]string{
+			"error": "「IPv6 段链接」选的是「自定义」，但一条链接都没填",
+		})
+		return
 	}
 	// 引擎参数：同样「没传就不动」。NormalizeOverrides 会丢掉未知键、把
 	// 类型转成 cfnb 认识的（"443,8443" → []int{443,8443}）、把越界值钳住，
@@ -1314,25 +1373,21 @@ func (s *Server) rememberRewritten(domains []string) {
 	}
 }
 
-func (s *Server) runOnce(cfg config.Config) error {
-	startedAt := time.Now()
-	defer func() {
-		s.mu.Lock()
-		s.running = false
-		s.mu.Unlock()
-	}()
+// runIPv4Round 跑一轮 v4：解析来源 → 引擎（失败重试一次）→ 读出口机房 → 按国家筛。
+// 调用方已确认来源模式不是 off。返回的 colos 是每个 IP 的真实机房，界面和筛选都要用。
+//
+// 出错只返回错误，记账和打日志由 runOnce 统一做：这里再记一次，「连续失败 N 次」
+// 就会一次失败数成两次。
+func (s *Server) runIPv4Round(ctx context.Context, cfg config.Config) (*engine.Result, map[string]string, error) {
+	mode := cfg.EffectiveSourceMode()
 
-	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
-	defer cancel()
-
-	// 「优选 IP 段」：用户填的三类来源统一在本地解析，再由 /api/candidates 交给引擎。
+	// 「优选 IP 段」：三类来源统一在本地解析，再由 /api/candidates 交给引擎。
 	// 链接为什么也由我们下载：cfnb 的解析器只认单个 IP，遇到 104.16.0.0/13 这种段会
 	// 整条丢掉，拉到内容却解析出 0 节点。本地解析之后段能采样、单 IP 能直通、带端口的
 	// 节点能保住原端口，日志里也能说清认出了多少。实在解析不出的链接才回退给引擎。
-	extra, _ := parseExtraSources(cfg.Speed.ExtraSources)
-	custom := len(cfg.Speed.ExtraSources) > 0
+	extra, _ := parseExtraSources(cfg.IPv4Sources())
 	// 从配置里把链接原文单独留一份：resolveLinkSources 会把 extra.urls 清空（已被消费成
-	// IP 列表），但日志必须能原样复述用户填了什么。
+	// IP 列表），但日志得说清这一轮用的是哪几条来源。
 	configuredURLs := append([]string(nil), extra.urls...)
 
 	localCandidates := s.selfURL + "/api/candidates"
@@ -1345,77 +1400,76 @@ func (s *Server) runOnce(cfg config.Config) error {
 		s.appendLog("高级设置已生效：" + d)
 	}
 
-	if custom {
-		// 先交代「你配的是什么」，再交代「解析成了什么」。顺序不能反：
-		// 22:14 那次真机反馈就是「结果出来了，但日志里找不到我那条链接」，
-		// 解析细节写在前面几行，用户翻日志时往往只看得到后面。
-		if len(configuredURLs) > 0 {
+	// 先交代「这一轮用的是哪份来源」，再交代「解析成了什么」。顺序不能反：
+	// 22:14 那次真机反馈就是「结果出来了，但日志里找不到我那条链接」。
+	if len(configuredURLs) > 0 {
+		if mode == config.SourceBuiltin {
+			s.appendLog("候选来源：内置来源（地址不显示）")
+		} else {
 			s.appendLog(fmt.Sprintf("候选来源：从你填的 %d 条链接下载 —— %s",
 				len(configuredURLs), strings.Join(configuredURLs, "、")))
 		}
-		if len(extra.urls) > 0 {
-			extra, fallbackURLs = s.resolveLinkSources(ctx, extra)
-		}
-		staged := candidatesText(extra, candidateCount)
+	}
+	if len(extra.urls) > 0 {
+		extra, fallbackURLs = s.resolveLinkSources(ctx, extra, mode)
+	}
+	if mode == config.SourceBuiltin {
+		// 内置链接绝不能交给引擎去拉：cfnb 会把数据源地址原样打进日志
+		// （「拉取数据源 第 1/2 次（https://…）」），「不显示地址」就白做了。
+		// 本地拉不到就是这一轮没来源，报错也只说没拉到。
+		fallbackURLs = nil
+	}
+	staged := candidatesText(extra, candidateCount)
 
-		if extra.isEmpty() && len(fallbackURLs) == 0 {
-			return fmt.Errorf("你填的来源里没解析出任何可用 IP：请检查那几行有没有写错，" +
-				"链接能否打开（具体原因看上面几行日志）")
+	if extra.isEmpty() && len(fallbackURLs) == 0 {
+		if mode == config.SourceBuiltin {
+			return nil, nil, fmt.Errorf("内置来源这一轮没拉到可用 IP（原因见上面那行），" +
+				"隔一轮会自动再试")
 		}
-		// 本地一条候选都没有时不要把这个地址交给引擎：它会去拉一个空列表，
-		// 日志里留一行「0 节点」，而这一次纯粹是我们没东西给它。
-		if extra.isEmpty() {
-			localCandidates = ""
-		}
+		return nil, nil, fmt.Errorf("这一轮的 v4 来源里没解析出任何可用 IP：请检查「优选 IP 段」里那几行" +
+			"有没有写错、链接能否打开（具体原因看上面几行日志）")
+	}
+	// 本地一条候选都没有时不要把这个地址交给引擎：它会去拉一个空列表，
+	// 日志里留一行「0 节点」，而这一次纯粹是我们没东西给它。
+	if extra.isEmpty() {
+		localCandidates = ""
+	}
 
-		// 第二句：解析成了什么。前半句用「候选来源：」还是「解析结果：」
-		// 取决于上一句在不在，避免出现「解析结果」却不知道解析的是什么的怪句子。
-		planHead := "候选来源："
-		if len(configuredURLs) > 0 {
-			planHead = "解析结果："
-		}
-		s.appendLog(fmt.Sprintf("%s%s；只用你填的来源，不叠加官方内置源",
-			planHead, sourcePlanText(extra)))
-		// 这里只说「解析出多少条」，不说「交给引擎」，真正交出去的是
-		// 下面筛选之后的那一批，由 screenCandidates 自己报数。
-		if n := strings.Count(staged, "\n"); n > 0 {
-			s.appendLog(fmt.Sprintf(
-				"候选池：本地解析出 %d 条候选（每次最多 %d 条）", n, candidateCount))
-		}
-		if len(fallbackURLs) > 0 {
-			s.appendLog(fmt.Sprintf(
-				"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
-		}
+	// 第二句：解析成了什么。前半句用「候选来源：」还是「解析结果：」
+	// 取决于上一句在不在，避免出现「解析结果」却不知道解析的是什么的怪句子。
+	planHead := "候选来源："
+	if len(configuredURLs) > 0 {
+		planHead = "解析结果："
+	}
+	planTail := "；只用你填的来源，不叠加官方段和聚合源"
+	if mode == config.SourceBuiltin {
+		planTail = "；只用内置来源，不叠加官方段和聚合源"
+	}
+	s.appendLog(planHead + sourcePlanText(extra) + planTail)
+	// 这里只说「解析出多少条」，不说「交给引擎」，真正交出去的是
+	// 下面筛选之后的那一批，由 screenCandidates 自己报数。
+	if n := strings.Count(staged, "\n"); n > 0 {
+		s.appendLog(fmt.Sprintf(
+			"候选池：本地解析出 %d 条候选（每次最多 %d 条）", n, candidateCount))
+	}
+	if len(fallbackURLs) > 0 {
+		s.appendLog(fmt.Sprintf(
+			"其中 %d 个链接的内容本地没认出 IP，已交给引擎自己再试一次", len(fallbackURLs)))
+	}
 
-		// 两道筛选（官方段预筛 + 1034 实测）放在这里，也就是**引擎启动之前**。
-		//
-		// 顺序是硬要求，不是顺手：带宽测速跑一次要几十秒，而一个会返回
-		// 1034 的 IP 照样能测出速度，它在带宽那一轮是「合格」的，只有真去
-		// 访问用户域名时才露馅。所以必须在这之前把它剔掉，否则这一轮的
-		// 带宽测试就是白跑，最终还会把一个用户根本打不开的 IP 写进 AdGuard。
-		rawStaged := staged
-		staged = s.screenCandidates(ctx, &cfg, staged)
-		s.stageCandidates(staged)
-		defer s.unstageCandidates()
-		if staged == "" && strings.TrimSpace(rawStaged) != "" {
-			return s.failBeforeRun("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
-				"这一轮没有写入任何结果——换一批来源，或把「优选 IP 段」放宽些")
-		}
-	} else {
-		// 没设自定义来源：候选是内置官方段采样。以前这份列表由
-		// /api/candidates 在引擎来取时现算，现在提前生成并暂存，为的是让
-		// 同一套筛选也作用在它上面，官方段内仍然可能有被某个企业独占的
-		// 地址，段表里看不出来，只有真问一次才知道。
-		raw := candidateList(&cfg, candidateCount)
-		staged := s.screenCandidates(ctx, &cfg, raw)
-		if staged != "" {
-			s.stageCandidates(staged)
-			defer s.unstageCandidates()
-		}
-		if staged == "" && strings.TrimSpace(raw) != "" {
-			return s.failBeforeRun("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
-				"这一轮没有写入任何结果")
-		}
+	// 两道筛选（官方段预筛 + 1034 实测）放在这里，也就是**引擎启动之前**。
+	//
+	// 顺序是硬要求，不是顺手：带宽测速跑一次要几十秒，而一个会返回
+	// 1034 的 IP 照样能测出速度，它在带宽那一轮是「合格」的，只有真去
+	// 访问用户域名时才露馅。所以必须在这之前把它剔掉，否则这一轮的
+	// 带宽测试就是白跑，最终还会把一个用户根本打不开的 IP 写进 AdGuard。
+	rawStaged := staged
+	staged = s.screenCandidates(ctx, &cfg, staged)
+	s.stageCandidates(staged)
+	defer s.unstageCandidates()
+	if staged == "" && strings.TrimSpace(rawStaged) != "" {
+		return nil, nil, fmt.Errorf("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
+			"这一轮没有写入任何结果——换一批来源，或把「优选 IP 段」放宽些")
 	}
 
 	run := func() (*engine.Result, error) {
@@ -1424,7 +1478,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 			BandwidthCandidates: cfg.Speed.BandwidthCandidates,
 			CandidatesURL:       localCandidates,
 			ExtraURLs:           fallbackURLs,
-			UseBuiltinSources:   !custom,
+			// 内置和自定义都是「只用这一份」：内置那一条链接也是我们指定的来源，
+			// 再叠官方 15 段和两个聚合源等于把用户划定的范围淹掉。
+			UseBuiltinSources: false,
 			// 用户的高级设置照传，但「按国家筛」那 8 个键要摘掉：候选带的是
 			// 占位标签 `#US`，交给引擎等于按假数据筛（见 country_filter.go）。
 			// 真实位置只有测完才知道，所以筛选挪到下面 colos 之后。
@@ -1444,23 +1500,9 @@ func (s *Server) runOnce(cfg config.Config) error {
 			res, err = run()
 		}
 	}
-
 	if err != nil {
-		msg := friendlyErr(err)
-		s.mu.Lock()
-		s.lastErr = msg
-		s.lastOK = false
-		s.failCount++
-		s.mu.Unlock()
-		s.appendLog("测速失败: " + msg)
-		return err
+		return nil, nil, err
 	}
-
-	s.mu.Lock()
-	s.lastErr = ""
-	s.lastOK = true
-	s.failCount = 0
-	s.mu.Unlock()
 
 	// 上面那些 `1. x.x.x.x:443#US` 里的 `#US` **不是真实位置**，是为了满足引擎的
 	// 解析格式补的占位值（没国家标签的裸 IP 会被逐条探测，慢且探测失败即丢）。
@@ -1479,38 +1521,94 @@ func (s *Server) runOnce(cfg config.Config) error {
 	// 筛完一条不剩必须走失败分支：空列表会让后面把空结果写进 AdGuard / DDNS，
 	// 比直接报错更难查。
 	if res, err = s.refineResultByCountry(cfg, res, colos, "IPv4"); err != nil {
-		return s.failBeforeRun(err.Error())
+		return nil, nil, err
+	}
+	return res, colos, nil
+}
+
+func (s *Server) runOnce(cfg config.Config) error {
+	startedAt := time.Now()
+	defer func() {
+		s.mu.Lock()
+		s.running = false
+		s.mu.Unlock()
+	}()
+
+	v4Mode, v6Mode := cfg.EffectiveSourceMode(), cfg.EffectiveIPv6SourceMode()
+	// 两族都关：用户要的是「这一轮什么都不测」。不当失败（不刷连续失败次数），
+	// 也不当成功（last_ok 保持原样），界面上的「上次测速」停在真跑过的那一次。
+	if v4Mode == config.SourceOff && v6Mode == config.SourceOff {
+		s.appendLog("v4 和 v6 的来源都设成了「关闭」，这一轮不测速")
+		return nil
 	}
 
-	// 最优 IP 必须在筛完之后再取，否则被筛掉的那个会一路带到 AdGuard 和 DDNS，
-	// 日志上还写着「最优 IP: x」，用户看到的是他刚明确排除掉的机房。
+	ctx, cancel := context.WithTimeout(context.Background(), engine.DefaultTimeout())
+	defer cancel()
+
+	res := &engine.Result{}
+	var colos map[string]string
+	if v4Mode == config.SourceOff {
+		s.appendLog("v4 来源已关闭，这一轮只优选 v6")
+	} else {
+		var err error
+		res, colos, err = s.runIPv4Round(ctx, cfg)
+		if err != nil {
+			msg := friendlyErr(err)
+			s.mu.Lock()
+			s.lastErr = msg
+			s.lastOK = false
+			s.failCount++
+			s.mu.Unlock()
+			s.appendLog("测速失败: " + msg)
+			return err
+		}
+		// 最优 IP 必须在筛完之后再取，否则被筛掉的那个会一路带到 AdGuard 和 DDNS，
+		// 日志上还写着「最优 IP: x」，用户看到的是他刚明确排除掉的机房。
+		s.appendLog("测速完成，最优 IP: " + res.Best())
+	}
+
 	best := res.Best()
-	s.appendLog("测速完成，最优 IP: " + best)
+	s.mu.Lock()
+	s.lastErr = ""
+	s.lastOK = true
+	s.failCount = 0
+	s.mu.Unlock()
 
 	// 每个 IP 一行「质量数据」，界面直接渲染，不用再算。
 	nodes := buildNodeStats(res, colos)
 
-	// 0) v6 优选（可选，只有填了「v6 段链接」才跑）。排在写入之前，因为下一步
-	// 要按记录类型把 v6 写进 AAAA / AdGuard，那两处都要这一轮刚测出来的结果。
+	// 0) v6 优选（可选，来源是「内置」或「自定义」且有内容才跑）。排在写入之前，
+	// 因为下一步要按记录类型把 v6 写进 AAAA / AdGuard，那两处都要这一轮刚测出来的结果。
 	//
-	// 三条约定：没填链接就完全不跑；v6 跑空不牵连 v4（v4 照旧写）；手动探测正在
-	// 跑时跳过这一轮，两个一起跑会互相清掉对方的候选暂存，这里不阻塞等待。
+	// 三条约定：来源设成「关闭」就完全不跑；v6 跑空不牵连 v4（v4 照旧写）；手动探测
+	// 正在跑时跳过这一轮，两个一起跑会互相清掉对方的候选暂存，这里不阻塞等待。
 	//
 	// v6RoundIPs 是这一轮的结果，写 AdGuard / DDNS 都用它而不是 cfg.LastIPv6
 	// （那是上一次成功的，可能是上一个小时的，拿去写解析等于塞一个早就不通的地址）。
 	var v6RoundIPs []string
-	if len(cfg.IPv6SourceURLs()) > 0 {
+	if len(cfg.IPv6Sources()) > 0 {
 		if s.claimIPv6Probe() {
 			s.appendLog("开始 v6 优选…")
 			ips, verr := s.runIPv6Probe()
 			if verr != nil {
-				s.appendLog("v6 优选失败（不影响本次 v4 结果）: " + friendlyErr(verr))
+				// v4 关掉的时候不能再说「不影响 v4 结果」，这一轮压根没有 v4。
+				if v4Mode == config.SourceOff {
+					s.appendLog("v6 优选失败: " + friendlyErr(verr))
+				} else {
+					s.appendLog("v6 优选失败（不影响本次 v4 结果）: " + friendlyErr(verr))
+				}
 			} else {
 				v6RoundIPs = ips
 			}
 		} else {
 			s.appendLog("v6 探测正在手动进行中，这一轮跳过 v6 优选")
 		}
+	}
+
+	// v4 关掉之后 v6 就是这一轮唯一的腿。它没测出地址等于这一轮什么都没测到，
+	// 不能顺着往下把 last_ok 刷成「成功」——那会让界面显示一切正常，而记录一条没更新。
+	if v4Mode == config.SourceOff && len(v6RoundIPs) == 0 {
+		return s.failBeforeRun("v4 已关闭，这一轮 v6 也没测出可用地址（原因看上几行日志）")
 	}
 
 	// 时间戳放在 v6 之后取：v6 可能要跑 1~2 分钟，用开始时刻会让「上次测速」

@@ -20,7 +20,11 @@ func TestRunOnceRetriesExactlyOnce(t *testing.T) {
 	retryDelay = 0 // 别让测试真的等 10 秒
 	defer func() { retryDelay = old }()
 
-	s := newToolsTestServer(t, nil)
+	s := newToolsTestServer(t, func(c *config.Config) {
+		// 别让这一轮去拉内置链接：测试不联网。给一段官方段，解析和采样都在本地。
+		c.Speed.SourceMode = config.SourceCustom
+		c.Speed.ExtraSources = []string{"104.16.0.0/13"}
+	})
 	// 指向不存在的路径：引擎一定起不来
 	s.enginePath = filepath.Join(t.TempDir(), "no-such-main.py")
 
@@ -61,7 +65,10 @@ func TestFailCountAccumulates(t *testing.T) {
 	retryDelay = 0
 	defer func() { retryDelay = old }()
 
-	s := newToolsTestServer(t, nil)
+	s := newToolsTestServer(t, func(c *config.Config) {
+		c.Speed.SourceMode = config.SourceCustom
+		c.Speed.ExtraSources = []string{"104.16.0.0/13"}
+	})
 	s.enginePath = filepath.Join(t.TempDir(), "no-such-main.py")
 
 	_ = s.runOnce(s.cfg.Clone())

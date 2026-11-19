@@ -94,7 +94,12 @@
   }
 
   /* ---------- 布局 ---------- */
-  .shell{display:flex;min-height:100vh}
+  /* 整页限宽居中：不限的话窗口一拉宽，卡片就横着铺满，一行字能拉到上百个
+     字符，眼睛来回扫很累。1440 是量出来的——扣掉 200 的导航还剩 1240，
+     最宽那页（两列表单、六列表格）刚好，再窄两列表单就要挤成一行。
+     限在 .shell 而不是 .content 上：只限内容的话导航会孤零零贴在屏幕最左边，
+     中间空出一大片，看着比拉宽更难受。 */
+  .shell{display:flex;min-height:100vh;max-width:1440px;margin:0 auto}
 
   .side{
     width:200px;flex:none;background:var(--card);border-right:1px solid var(--line);
@@ -294,8 +299,11 @@
   .kv .k2{color:var(--dim);width:96px;flex:none}
   .kv .v2{word-break:break-all}
 
-  /* AdGuard 重写表 */
-  .rw-list{margin-top:10px;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+  /* AdGuard 重写表。
+     列表定高、内部滚动：hosts 源接进来之后这里动辄几十上百条，整块摊开会把
+     下面所有卡片顶到看不见的地方。360 大约是九行，够看清「哪几条会被改」。 */
+  .rw-list{margin-top:10px;border:1px solid var(--line2);border-radius:6px;
+    max-height:360px;overflow-y:auto}
   .rw-item{display:flex;align-items:center;gap:10px;padding:9px 13px;font-size:12.5px;
     border-bottom:1px solid var(--line2);background:var(--ok-soft)}
   .rw-item:last-child{border-bottom:none}
@@ -466,26 +474,6 @@
     box-shadow:var(--shadow-pop);color:var(--muted);font-size:11.5px;font-weight:400;
     line-height:1.7;text-align:left;white-space:normal}
   .q:hover .tip,.q:focus .tip{display:block}
-  /* 「不给开关」的说明：默认展开。收起时只剩一行灰字，看上去像无关紧要的
-     注脚，而它恰恰是用户最想问的「为什么 CF_API_TOKEN 没有」。所以给它做成
-     和分组一样的带边框折叠块，并且一进来就是展开的。 */
-  .adv-ex{margin-top:12px;border:1px solid var(--line2);border-radius:6px;
-    font-size:11.5px;color:var(--dim);line-height:1.75}
-  .adv-ex>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;
-    align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--muted);
-    background:var(--line2);border-radius:6px}
-  .adv-ex[open]>summary{border-radius:6px 6px 0 0}
-  .adv-ex>summary::-webkit-details-marker{display:none}
-  /* 三角用 border 拼，不用字符：字符在不同字体下宽窄不一，会把标题顶歪 */
-  .adv-ex>summary::before{content:"";flex:0 0 auto;width:0;height:0;
-    border-left:5px solid currentColor;border-top:4px solid transparent;
-    border-bottom:4px solid transparent;transition:transform .15s}
-  .adv-ex[open]>summary::before{transform:rotate(90deg)}
-  .adv-ex ul{margin:0;padding:11px 16px 12px 32px}
-  .adv-ex li{margin-bottom:7px}
-  .adv-ex li:last-child{margin-bottom:0}
-  .adv-ex code{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--line2);
-    border-radius:4px;padding:1px 4px}
   @media(max-width:700px){
     .adv-row{grid-template-columns:1fr;gap:8px}
     /* 单列之后复选框会被 grid 拉到中间（默认 stretch/居中），看着像没对齐；
@@ -849,7 +837,7 @@
         <div class="v6-sec">
           <div class="v6-sec-h">
             <b>IPv6 节点</b>
-            <button class="btn sm flat" id="btn-v6probe" onclick="probeIPv6()">开始探测</button>
+            <button class="btn sm" id="btn-v6probe" onclick="probeIPv6()">开始探测</button>
           </div>
           <div class="v6-sec-note" id="v6probe-note">还没有结果。点「开始探测」跑一次——只测速，不写解析。</div>
           <div class="card-b tight">
@@ -862,7 +850,12 @@
     <!-- ========== 域名 ========== -->
     <section class="page" id="page-domains">
       <div class="card">
-        <div class="card-h"><h2>域名列表</h2></div>
+        <div class="card-h">
+          <h2>域名列表</h2>
+          <div class="right">
+            <button class="btn sm hidden" id="dom-clear" onclick="clearDomains()">全部删除</button>
+          </div>
+        </div>
         <div class="card-b">
           <!-- 添加框：先检测，通过之后「添加」才亮 -->
           <div class="addbox">
@@ -987,17 +980,6 @@
             填到 5 条以上，大部分访问反而会落到不是最快的那些上面。
           </div>
 
-          <div class="field" id="dd-proxied-box">
-            <div class="switch">
-              <input type="checkbox" class="tgl" id="dd-proxied" onchange="onToggle('ddns_proxied',this.checked,this)">
-              <label for="dd-proxied">开启 Cloudflare 云朵（代理）</label>
-            </div>
-            <div class="hint">
-              <b style="color:var(--warn)">一般不要开。</b>开了会解析到 Cloudflare 节点、不再指向测出来的最优 IP，
-              DDNS 白做；只想藏源站时才开。
-            </div>
-          </div>
-
           <div class="act-row">
             <button class="btn sm" onclick="checkDDNS()">测试密钥</button>
             <button class="btn sm" onclick="pushDDNS()">立即更新一次</button>
@@ -1032,20 +1014,33 @@
           </div>
 
           <div class="field">
-            <label>优选 IP 段（留空 = 使用 Cloudflare 官方 15 个段）</label>
-            <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
-            <div class="hint">
-              每行一条，IP 段、单个 IP、链接三种写法都认。填了就<b>只用这些</b>，不再叠加官方 15 个段和内置聚合源；清空保存即恢复。
+            <label>优选 IP 段</label>
+            <select id="sp-src-mode" onchange="renderSourceMode()">
+              <option value="builtin">内置</option>
+              <option value="custom">自定义</option>
+              <option value="off">关闭</option>
+            </select>
+            <div class="hint" id="sp-src-hint"></div>
+            <div id="sp-src-box" class="hidden">
+              <textarea id="sp-sources" rows="4" placeholder="104.16.0.0/13&#10;172.64.0.0/13&#10;1.2.3.4&#10;https://example.com/ips.txt"></textarea>
+              <div class="hint">每行一条，IP 段、单个 IP、链接三种写法都认。</div>
             </div>
           </div>
 
           <!-- IPv6 段的来源。和上面那个「优选 IP 段」是**两件独立的事**：
-               上面管 IPv4 候选，这里管 IPv6 候选，各自存各自的字段。
-               但长得必须一模一样——都是「label + 长文本框 + 小字说明」，
-               都跟着「保存全部设置」一起提交，用户不用记两套规矩。 -->
+               上面管 IPv4 候选，这里管 IPv6 候选，各自存各自的字段和模式。
+               两栏都可以单独关掉，两族都关就等于整轮不测速。 -->
           <div class="field">
-            <label>IPv6 段链接（留空 = 自动测速不跑 IPv6）</label>
-            <textarea id="sp-v6-src" rows="3" placeholder="https://example.com/ipv6-cidr.txt&#10;https://example.com/another.txt"></textarea>
+            <label>IPv6 段链接</label>
+            <select id="sp-v6-mode" onchange="renderSourceMode()">
+              <option value="builtin">内置</option>
+              <option value="custom">自定义</option>
+              <option value="off">关闭</option>
+            </select>
+            <div class="hint" id="sp-v6-hint"></div>
+            <div id="sp-v6-box" class="hidden">
+              <textarea id="sp-v6-src" rows="3" placeholder="https://example.com/ipv6-cidr.txt&#10;https://example.com/another.txt"></textarea>
+            </div>
           </div>
         </div>
       </div>
@@ -1065,7 +1060,6 @@
             <b>不确定就别动</b>。改过之后下一轮测速的日志里会记一行，方便事后核对。
           </div>
           <div id="adv-panel"></div>
-          <div id="adv-excluded"></div>
         </div>
       </div>
     </section>
@@ -1176,6 +1170,11 @@ const PAGE_META = {
 };
 
 let credState = {};
+// ddProxied 是「Cloudflare 云朵」的当前值。界面上没有这个开关（开云朵会让域名
+// 解析到 CF 节点而不是测出来的最优 IP，DDNS 就白做了，留着只会误点），但功能
+// 和配置字段都保留：存下来、导出时带上、导入时恢复。所以它要跟着配置走一圈，
+// 不能因为界面上没这个框就在每次保存时被改写成 false。
+let ddProxied = false;
 let pollTimer = null;
 // 日志面板的两个缓存：logShown 是「当前显示顺序」（最新在上）的那一份，
 // logSig 是它的指纹。没有这两个，每次轮询都要不必要地重写 DOM，
@@ -1478,6 +1477,8 @@ function renderDomains(rows) {
   DOMS = rows || [];
   const box = $("dom-list");
   box.innerHTML = "";
+  // 一个域都没加的时候不显示「全部删除」：那个按钮按下去只会回一句「列表是空的」。
+  $("dom-clear").classList.toggle("hidden", DOMS.length === 0);
   // 空列表什么都不画：上面那句说明已经讲了怎么加，再摆一行「还没有域名」
   // 只是多一行灰字。
   DOMS.forEach(function (d) {
@@ -1549,14 +1550,31 @@ async function deleteDomain(domain) {
   } catch (e) { toast(e.message); }
 }
 
+// clearDomains 是「全部删除」。一次请求清空、只同步一次 AdGuard——
+// 前端循环调 N 次删除会走 N 次网络往返，中途断网就删一半、留下一堆残局。
+async function clearDomains() {
+  if (!DOMS.length) return;
+  if (!confirm("把列表里这 " + DOMS.length + " 个域名全部删掉？\n"
+    + "AdGuard 里它们的重写也会一起清掉。\n\n"
+    + "这个操作没法撤销，域名得重新一个一个加回来。")) return;
+  const btn = $("dom-clear");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/domains?all=1", { method: "DELETE" });
+    renderDomains(r && r.domains);
+    if (r && r.note) toast(r.note);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---- 服务商密钥渲染 ----
 function renderProvider() {
   const p = $("dd-provider").value;
   const box = $("cred-fields");
   box.innerHTML = "";
-  // 云朵只对 Cloudflare 有意义，换到别家就整块收起来——留着勾选框
-  // 等于给用户一个「勾了也不知道有没有用」的东西。
-  $("dd-proxied-box").classList.toggle("hidden", p !== "cloudflare");
   const def = PROVIDERS[p];
   if (!def) return;
   def.fields.forEach(f => {
@@ -1613,6 +1631,25 @@ function renderRecordType() {
   }
 }
 
+// renderSourceMode 管两栏来源下拉：只有「自定义」才展开文本框，说明文字跟着模式走。
+// 下拉的 onchange 和 loadConfig 都会调它——直接给 select 赋值不会触发 onchange，
+// 少了这一步会出现「下拉写着关闭、下面还摆着文本框」。
+function renderSourceMode() {
+  const v4 = $("sp-src-mode").value;
+  $("sp-src-box").classList.toggle("hidden", v4 !== "custom");
+  $("sp-src-hint").textContent =
+    v4 === "builtin" ? "用程序内置的来源，地址不显示。"
+      : v4 === "custom" ? "只用你填的这些，不叠加内置来源。"
+        : "这一族不测速。两族都关闭时整轮不测速。";
+
+  const v6 = $("sp-v6-mode").value;
+  $("sp-v6-box").classList.toggle("hidden", v6 !== "custom");
+  $("sp-v6-hint").textContent =
+    v6 === "builtin" ? "用程序内置的来源，地址不显示。"
+      : v6 === "custom" ? "只跑你填的这几条链接。"
+        : "不跑 IPv6 测速，AAAA 记录保持原样。";
+}
+
 // ---- 加载 ----
 async function loadConfig() {
   const c = await api("/api/config");
@@ -1626,9 +1663,12 @@ async function loadConfig() {
   $("sp-topn").value = c.top_n;
   $("sp-bw").value = c.bandwidth_candidates || 100;
   $("sp-sources").value = (c.extra_sources || []).join("\n");
+  $("sp-src-mode").value = c.source_mode || "builtin";
   // v6 段链接现在只有一个入口（测速设置页），和「优选 IP 段」并排。
   // 后端存的是一个多行字符串，直接原样回填——别按行重排，用户的空行会变。
   $("sp-v6-src").value = c.ipv6_probe_url || "";
+  $("sp-v6-mode").value = c.ipv6_source_mode || "off";
+  renderSourceMode();
   // hosts 源那一块（独立设置，和上面的域名/测速都不共用）
   $("hs-enabled").checked = !!c.hosts_enabled;
   $("hs-src").value = c.hosts_source || "";
@@ -1643,7 +1683,7 @@ async function loadConfig() {
   // 否则打开页面时下拉显示 AAAA、下面的说明却还写着 A。
   $("dd-record-type").value = normalizeRecordMode(c.ddns_record_type);
   renderRecordType();
-  $("dd-proxied").checked = !!c.ddns_proxied;
+  ddProxied = !!c.ddns_proxied;
   renderProvider();
 }
 
@@ -1880,17 +1920,6 @@ function renderAdvanced(c) {
     box.appendChild(body);
     panel.appendChild(box);
   });
-
-  const ex = $("adv-excluded");
-  const list = c.engine_excluded || [];
-  if (!list.length) { ex.innerHTML = ""; return; }
-  // open：默认展开。收起时这一块只有一行灰字，用户会以为「没什么可看的」，
-  // 而它回答的正是「我明明在日志里看到 CF_* 参数，界面为什么没有」。
-  ex.innerHTML = '<details class="adv-ex" open><summary>有 ' + list.length +
-    ' 组参数故意没给开关，为什么？</summary><ul>' +
-    list.map(function (e) {
-      return '<li><code>' + e.key + '</code><br>' + e.why + '</li>';
-    }).join("") + '</ul></details>';
 }
 
 // collectAdvanced 读回界面上所有值。
@@ -1954,10 +1983,9 @@ async function probeIPv6() {
   const btn = $("btn-v6probe"), note = $("v6probe-note"), list = $("v6probe-list");
   if (!btn || !note) return;
   btn.disabled = true;
-  const srcURL = ($("sp-v6-src") && $("sp-v6-src").value.trim()) || "";
-  note.innerHTML = srcURL
-    ? "正在从你设置的链接里挑 IPv6 段测速…（只测不写，通常 1 分钟内）"
-    : "正在从 Cloudflare 的 IPv6 段里挑节点测速…（只测不写，通常 1 分钟内）";
+  // 不说「从哪来的段」：来源有三种模式（内置/自定义/关闭），而探测读的是**已保存**的
+  // 配置，跟当前下拉未必一致，说了就容易说错。
+  note.innerHTML = "正在挑 IPv6 节点测速…（只测不写，通常 1 分钟内）";
   list.innerHTML = "";
   try {
     const start = await api("/api/ipv6/probe", {method: "POST"});
@@ -2737,7 +2765,7 @@ function toggleRewrites() {
 }
 
 // onToggle：开关点一下就单项保存。
-// key 两种：引擎参数名（高级设置里的开关）或 ddns_enabled / ddns_proxied。
+// key 两种：引擎参数名（高级设置里的开关）或 ddns_enabled。
 // 单项保存只改这一个字段，不碰界面上其他还没保存的输入框——这是「一点就生效」
 // 的前提：若走 saveAll 那套全量提交，会把别人改到一半的数字框一起存了。
 // 保存失败时把滑块拨回原样，避免"看着开了、其实没存上"。
@@ -2805,10 +2833,14 @@ async function saveAll() {
           .split("\n")
           .map(function (s) { return s.trim(); })
           .filter(function (s) { return s !== ""; }),
+        // 这一栏的来源方式。总是带上：后端用指针收，「没传」和「传了」含义不同。
+        // 切到内置/关闭时文本框里的内容照样交上去，用户切回自定义时还在。
+        source_mode: $("sp-src-mode").value,
         // v6 段同样**总是**带上（哪怕空串）：后端用指针收，「没传」和
         // 「传了空串」含义不同——后者是用户主动清空，得真的清掉。
         // 这里不按行拆成数组，原样交上去：后端按行解析、逐行报错时能报第几行。
         ipv6_probe_url: $("sp-v6-src").value,
+        ipv6_source_mode: $("sp-v6-mode").value,
         // hosts 源同样总是带上。开关是布尔，链接用指针收：「没传」和「传了
         // 空串」意思不一样，后者是用户主动清空，得真的清掉。
         hosts_enabled: $("hs-enabled").checked,
@@ -2824,9 +2856,9 @@ async function saveAll() {
         // 这个字段后端是**用指针收**的：「没传」和「传了空串」意思不一样。
         // 我们这里永远传选择框里的实际值（A 或 AAAA），不传空。
         ddns_record_type: normalizeRecordMode($("dd-record-type").value),
-        // 非 Cloudflare 时这个框是藏着的，读出来可能是勾着的旧值——
-        // 服务商不是 Cloudflare 就一定按 false 交，免得存进去一个用不上的标记。
-        ddns_proxied: $("dd-provider").value === "cloudflare" && $("dd-proxied").checked,
+        // 云朵的开关不在界面上，值只能原样带回去；写成 false 等于每保存一次
+        // 就把用户以前开着的云朵关掉（另外三家不认这个字段，传着无害）。
+        ddns_proxied: ddProxied,
         // 高级设置里所有开关的当前值。后端只保留「和默认值不同」的项，
         // 所以全默认时这里是个空对象，config.json 里不会多出一坨东西。
         engine_overrides: collectAdvanced()
@@ -2854,6 +2886,11 @@ async function saveAll() {
 }
 
 async function doRun() {
+  // 两族都关时后端什么都不做，这里先说清楚，别让人对着日志等一轮没有的测速。
+  if ($("sp-src-mode").value === "off" && $("sp-v6-mode").value === "off") {
+    toast("v4 和 v6 都关闭了，不测速");
+    return;
+  }
   try {
     await api("/api/run", { method: "POST" });
     toast("已开始测速，进度见右下角日志");
