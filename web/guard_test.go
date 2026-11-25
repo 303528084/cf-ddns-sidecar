@@ -1,12 +1,16 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/303528084/cf-ddns-sidecar/config"
 )
 
 func mkReq(method, target, remote string, headers map[string]string) *http.Request {
@@ -250,4 +254,124 @@ func TestLoginThrottleEndToEnd(t *testing.T) {
 	if rec.Code == 200 {
 		t.Fatal("锁定期间即使密码正确也不应放行")
 	}
+}
+
+// TestCandidatesGuardToken 验证候选接口不再「只要是本机就放行」。
+//
+// 背景：network_mode: host 下，NAS 上任何本地进程直连 127.0.0.1 都满足
+// isLocalRequest，以前那等于把这个接口的认证整个取消。现在除了来源，还必须对上
+// 这一轮测速现发的口令；口令随 unstage 失效，且 v4 / v6 各管各的入口。
+func TestCandidatesGuardToken(t *testing.T) {
+	newSrv := func(t *testing.T) *Server {
+		t.Helper()
+		return New(config.Default(), filepath.Join(t.TempDir(), "config.json"), "",
+			t.TempDir(), Auth{Fallback: "pw"}, "http://127.0.0.1:8080", nil)
+	}
+	get := func(t *testing.T, s *Server, target, remote string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.candidatesGuard(w, mkReq("GET", target, remote, headers))
+		return w
+	}
+
+	t.Run("没有正在进行的测速时本机也不放行", func(t *testing.T) {
+		s := newSrv(t)
+		if code := get(t, s, "/api/candidates", "127.0.0.1:5000", nil).Code; code != http.StatusForbidden {
+			t.Fatalf("期望 403，实际 %d", code)
+		}
+	})
+
+	t.Run("本机加正确口令放行", func(t *testing.T) {
+		s := newSrv(t)
+		token := s.stageCandidates("1.2.3.4:443#US\n")
+		w := get(t, s, "/api/candidates?token="+token, "127.0.0.1:5000", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("期望 200，实际 %d %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "1.2.3.4:443#US") {
+			t.Errorf("响应里没有暂存的候选：%q", w.Body.String())
+		}
+	})
+
+	t.Run("口令不对拒绝", func(t *testing.T) {
+		s := newSrv(t)
+		s.stageCandidates("1.2.3.4:443#US\n")
+		if code := get(t, s, "/api/candidates?token=deadbeef", "127.0.0.1:5000", nil).Code; code != http.StatusForbidden {
+			t.Fatalf("期望 403，实际 %d", code)
+		}
+	})
+
+	t.Run("口令对但请求来自局域网拒绝", func(t *testing.T) {
+		s := newSrv(t)
+		token := s.stageCandidates("1.2.3.4:443#US\n")
+		if code := get(t, s, "/api/candidates?token="+token, "192.168.1.5:5000", nil).Code; code != http.StatusForbidden {
+			t.Fatalf("期望 403，实际 %d", code)
+		}
+	})
+
+	t.Run("口令随 unstage 失效", func(t *testing.T) {
+		s := newSrv(t)
+		token := s.stageCandidates("1.2.3.4:443#US\n")
+		s.unstageCandidates()
+		if code := get(t, s, "/api/candidates?token="+token, "127.0.0.1:5000", nil).Code; code != http.StatusForbidden {
+			t.Fatalf("跑完这一轮之后旧口令必须失效，实际 %d", code)
+		}
+	})
+
+	t.Run("v4 口令开不了 v6 入口", func(t *testing.T) {
+		s := newSrv(t)
+		token := s.stageCandidates("1.2.3.4:443#US\n")
+		if code := get(t, s, "/api/ipv6/candidates?token="+token, "127.0.0.1:5000", nil).Code; code != http.StatusForbidden {
+			t.Fatalf("两族口令必须隔离，期望 403，实际 %d", code)
+		}
+	})
+
+	t.Run("v6 入口用自己的口令放行", func(t *testing.T) {
+		s := newSrv(t)
+		if err := s.stageIPv6Candidates(context.Background()); err != nil {
+			t.Fatalf("暂存 v6 候选失败: %v", err)
+		}
+		defer s.unstageIPv6Candidates()
+		token := s.v6CandToken
+		if token == "" {
+			t.Fatal("v6 暂存之后必须发出口令，否则引擎会被自己的 403 挡住")
+		}
+		if code := get(t, s, "/api/ipv6/candidates?token="+token, "127.0.0.1:5000", nil).Code; code != http.StatusOK {
+			t.Fatalf("期望 200，实际 %d", code)
+		}
+	})
+
+	// 这条盯的是「接线」而不是「校验」：真正交给引擎的地址必须能穿过完整的
+	// 中间件链（mux → securityHeaders → candidatesGuard）。口令拼错一个参数名，
+	// 上面那些直接调 candidatesGuard 的用例全都还是绿的，只有引擎会在运行时
+	// 拉回一个 403、然后这一轮「0 节点」。
+	t.Run("candidatesURL 拼出的地址能通过完整处理链", func(t *testing.T) {
+		s := newSrv(t)
+		token := s.stageCandidates("1.2.3.4:443#US\n")
+		defer s.unstageCandidates()
+		target := s.candidatesURL("/api/candidates", token)
+		if target == "" {
+			t.Fatal("有候选时必须给出地址，否则引擎会以为这一轮没有本地来源")
+		}
+
+		r := mkReq("GET", target, "127.0.0.1:5000", nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("引擎拿到的地址被拒了：%d %s（地址 %s）", w.Code, w.Body.String(), target)
+		}
+		if !strings.Contains(w.Body.String(), "1.2.3.4:443#US") {
+			t.Errorf("响应里没有候选：%q", w.Body.String())
+		}
+	})
+
+	t.Run("已登录用户不带口令也放行", func(t *testing.T) {
+		s := newSrv(t)
+		s.stageCandidates("1.2.3.4:443#US\n")
+		w := get(t, s, "/api/candidates", "192.168.1.5:5000",
+			map[string]string{"Authorization": "Bearer " + s.signToken()})
+		if w.Code != http.StatusOK {
+			t.Fatalf("期望 200，实际 %d %s", w.Code, w.Body.String())
+		}
+	})
 }

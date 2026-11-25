@@ -130,6 +130,11 @@ type Server struct {
 	// 标志：空文本也是合法结果（用户填的来源一个地址都没有），不能靠长度判断。
 	candText   string
 	candStaged bool
+	// candToken / v6CandToken 是「这一轮测速」的候选接口口令，见 candidatesGuard。
+	// 每轮现生成、随 unstage 失效：cfnb 会把数据源地址原样打进日志，做成进程级
+	// 固定值等于把口令写进 app.log 和界面上那份运行日志。
+	candToken   string
+	v6CandToken string
 
 	// IPv6 探测（阶段①：只测不写）。与主测速完全隔离：结果不进 res.IPs，永远不会被
 	// 写进 AdGuard 或 DDNS。存 config.NodeStat 而不是 engine.Node：v6 也要显示真实
@@ -253,22 +258,69 @@ func (s *Server) Handler() http.Handler {
 	return securityHeaders(mux)
 }
 
-// candidatesGuard 只放行真正的进程内调用（测速引擎拉候选）和已登录用户。
+// candidatesGuard 只放行两类调用：已登录用户，以及「本机 + 这一轮的口令」都对得上的
+// 测速引擎。
 //
-// 注意这里用的是 isLocalRequest 而不是「RemoteAddr 是不是 127.0.0.1」：
-// 加了反代或 Cloudflare Tunnel 之后，所有公网请求的 RemoteAddr 也会是
-// 127.0.0.1，只判 IP 等于把这个接口对全网敞开。见 guard.go 的说明。
+// 为什么光判来源不够：这里用 isLocalRequest 而不是「RemoteAddr 是不是 127.0.0.1」
+// （加了反代或 Cloudflare Tunnel 之后，所有公网请求的 RemoteAddr 也会是 127.0.0.1，
+// 只判 IP 等于把接口对全网敞开，见 guard.go）。但在 network_mode: host 下，NAS 上
+// **任何本地进程**直连 127.0.0.1 同样满足 isLocalRequest，那就等于没有认证。所以
+// 再加一个只有本进程知道的口令。
+//
+// 口令每轮测速现生成（stageCandidates / stageIPv6Candidates），跑完随 unstage 一起
+// 失效。不能做成进程级固定值：cfnb 的 fetch_additional_source 会把数据源地址原样
+// 打进日志，固定口令会跟着日志进 app.log 和界面。
 func (s *Server) candidatesGuard(w http.ResponseWriter, r *http.Request) {
-	if isLocalRequest(r) || s.hasValidSession(r) {
-		// IPv6 探测的候选入口返回 CF v6 段采样，和主测速的 v4 候选完全隔离。
-		if r.URL.Path == "/api/ipv6/candidates" {
-			s.handleIPv6Candidates(w, r)
+	ipv6 := r.URL.Path == "/api/ipv6/candidates"
+	if !s.hasValidSession(r) {
+		if !isLocalRequest(r) || !s.validCandidateToken(r, ipv6) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		s.handleCandidates(w, r)
+	}
+	// IPv6 探测的候选入口返回 CF v6 段采样，和主测速的 v4 候选完全隔离。
+	if ipv6 {
+		s.handleIPv6Candidates(w, r)
 		return
 	}
-	http.Error(w, "forbidden", http.StatusForbidden)
+	s.handleCandidates(w, r)
+}
+
+// validCandidateToken 校验引擎带来的口令。没有正在进行的测速（口令为空）时一律拒绝：
+// 那时本来也没有候选可给。
+func (s *Server) validCandidateToken(r *http.Request, ipv6 bool) bool {
+	s.mu.Lock()
+	want := s.candToken
+	if ipv6 {
+		want = s.v6CandToken
+	}
+	s.mu.Unlock()
+
+	got := r.URL.Query().Get("token")
+	if want == "" || got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// candidatesURL 拼出交给测速引擎的候选地址（带这一轮的口令）。token 为空时返回空串，
+// 让调用方干脆不把这个来源交给引擎，而不是交一个注定 403 的地址。
+func (s *Server) candidatesURL(path, token string) string {
+	if token == "" {
+		return ""
+	}
+	return s.selfURL + path + "?token=" + url.QueryEscape(token)
+}
+
+// newCandidateToken 生成一轮测速用的口令。
+func newCandidateToken() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// 随机数拿不到就不发口令：宁可这一轮引擎拉不到候选（日志里是「0 节点」），
+		// 也不能退回「本机谁都能拿」的状态。
+		return ""
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // handleCandidates 返回候选 IP 列表（每行 ip:port#国家）。
@@ -301,15 +353,17 @@ func (s *Server) handleCandidates(w http.ResponseWriter, r *http.Request) {
 const candidateCount = 600
 
 // stageCandidates 暂存这一轮算好的候选列表（含链接解析结果），供 /api/candidates 用。
-func (s *Server) stageCandidates(text string) {
+func (s *Server) stageCandidates(text string) string {
+	token := newCandidateToken()
 	s.mu.Lock()
-	s.candText, s.candStaged = text, true
+	s.candText, s.candStaged, s.candToken = text, true, token
 	s.mu.Unlock()
+	return token
 }
 
 func (s *Server) unstageCandidates() {
 	s.mu.Lock()
-	s.candText, s.candStaged = "", false
+	s.candText, s.candStaged, s.candToken = "", false, ""
 	s.mu.Unlock()
 }
 
@@ -1012,6 +1066,22 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		v6Mode = m
 	}
 
+	// 域名：先规范化，再逐个确认是不是真走 Cloudflare 边缘（判据见 cfcheck.go）。拦的
+	// 理由：域名压根没接 CF 的话，改完指向的是一个不认识它的边缘节点，页面直接打不开，
+	// 而用户几乎想不到是这个原因。三类结果分开处理：确认走 CF 的保存，确认不走的**不
+	// 保存**，查不了的（DNS 超时）照样保存只标出来。没传 domains 就整段跳过：域名已由
+	// 增量接口管着，保存别的设置时不该顺手再验一遍。
+	//
+	// 必须在取锁之前做完：这里要发 DNS / HTTP 请求，最坏等满 domainBatchTimeout（8 秒）。
+	// 持着 s.mu 等它，/api/status 的轮询、调度器、历史接口全被堵在门外，界面上就是
+	// 「点一下保存，整页卡住」。校验只依赖请求体，不读 s.cfg，搬出来不影响语义。
+	var keptDomains []string
+	var rejectedDomains, unknownDomains []DomainCheck
+	domainsSubmitted := body.Domains != nil
+	if domainsSubmitted {
+		keptDomains, rejectedDomains, unknownDomains = screenDomains(r.Context(), normalizeDomains(*body.Domains))
+	}
+
 	s.mu.Lock()
 	cfg := s.cfg.Clone()
 	cfg.AdGuard.URL = strings.TrimSpace(body.AdGuardURL)
@@ -1020,16 +1090,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if body.AdGuardPassword != "" {
 		cfg.AdGuard.Password = body.AdGuardPassword
 	}
-	// 域名：先规范化，再逐个确认是不是真走 Cloudflare 边缘（判据见 cfcheck.go）。拦的
-	// 理由：域名压根没接 CF 的话，改完指向的是一个不认识它的边缘节点，页面直接打不开，
-	// 而用户几乎想不到是这个原因。三类结果分开处理：确认走 CF 的保存，确认不走的**不
-	// 保存**，查不了的（DNS 超时）照样保存只标出来。没传 domains 就整段跳过：域名已由
-	// 增量接口管着，保存别的设置时不该顺手再验一遍。
-	var keptDomains []string
-	var rejectedDomains, unknownDomains []DomainCheck
-	if body.Domains != nil {
-		submitted := normalizeDomains(*body.Domains)
-		keptDomains, rejectedDomains, unknownDomains = screenDomains(r.Context(), submitted)
+	if domainsSubmitted {
 		cfg.Domains = keptDomains
 		// 列表被整体替换了（界面上可能删过行），元信息要跟着对齐，否则删掉的
 		// 域名会把「包含子域」和添加时间留给下次同名域名。
@@ -1500,7 +1561,6 @@ func (s *Server) runIPv4Round(ctx context.Context, cfg config.Config) (*engine.R
 	// IP 列表），但日志得说清这一轮用的是哪几条来源。
 	configuredURLs := append([]string(nil), extra.urls...)
 
-	localCandidates := s.selfURL + "/api/candidates"
 	var fallbackURLs []string
 
 	s.appendLog("开始测速…")
@@ -1541,9 +1601,7 @@ func (s *Server) runIPv4Round(ctx context.Context, cfg config.Config) (*engine.R
 	}
 	// 本地一条候选都没有时不要把这个地址交给引擎：它会去拉一个空列表，
 	// 日志里留一行「0 节点」，而这一次纯粹是我们没东西给它。
-	if extra.isEmpty() {
-		localCandidates = ""
-	}
+	hasLocalCandidates := !extra.isEmpty()
 
 	// 第二句：解析成了什么。前半句用「候选来源：」还是「解析结果：」
 	// 取决于上一句在不在，避免出现「解析结果」却不知道解析的是什么的怪句子。
@@ -1575,8 +1633,13 @@ func (s *Server) runIPv4Round(ctx context.Context, cfg config.Config) (*engine.R
 	// 带宽测试就是白跑，最终还会把一个用户根本打不开的 IP 写进 AdGuard。
 	rawStaged := staged
 	staged = s.screenCandidates(ctx, &cfg, staged)
-	s.stageCandidates(staged)
+	// 暂存候选，同时拿到这一轮的口令；口令随 unstage 失效。
+	token := s.stageCandidates(staged)
 	defer s.unstageCandidates()
+	localCandidates := ""
+	if hasLocalCandidates {
+		localCandidates = s.candidatesURL("/api/candidates", token)
+	}
 	if staged == "" && strings.TrimSpace(rawStaged) != "" {
 		return nil, nil, fmt.Errorf("候选 IP 全被筛掉了：都不在 Cloudflare 官方段内，或对你的域名返回 1034。" +
 			"这一轮没有写入任何结果——换一批来源，或把「优选 IP 段」放宽些")

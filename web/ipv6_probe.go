@@ -74,7 +74,12 @@ func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	mode := s.cfg.EffectiveIPv6SourceMode()
 	s.mu.Unlock()
 	if len(urls) == 0 {
-		s.unstageIPv6Candidates() // 清掉上一次的暂存，避免"删了链接还在用旧段"
+		// 清掉上一次的暂存，避免「删了链接还在用旧段」；但这一轮的口令照发：
+		// 引擎接下来拉的是内置段（handleIPv6Candidates 的兜底），没口令一样会被拒。
+		s.mu.Lock()
+		s.v6CandText, s.v6CandStaged = "", false
+		s.v6CandToken = newCandidateToken()
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -109,6 +114,7 @@ func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 	s.mu.Lock()
 	s.v6CandText = strings.Join(nodes, "\n") + "\n"
 	s.v6CandStaged = true
+	s.v6CandToken = newCandidateToken()
 	s.mu.Unlock()
 	s.appendLog(fmt.Sprintf(
 		"v6 测速来源解析完成：%d 个链接 → 认出 %d 个 IPv6 段 → 生成 %d 个候选地址",
@@ -123,8 +129,17 @@ func (s *Server) stageIPv6Candidates(ctx context.Context) error {
 
 func (s *Server) unstageIPv6Candidates() {
 	s.mu.Lock()
-	s.v6CandText, s.v6CandStaged = "", false
+	s.v6CandText, s.v6CandStaged, s.v6CandToken = "", false, ""
 	s.mu.Unlock()
+}
+
+// v6CandidatesURL 返回带口令的 v6 候选地址（口令由 stageIPv6Candidates 发）。
+// 口令拿不到时返回空串，引擎就不会去拉一个注定 403 的地址。
+func (s *Server) v6CandidatesURL() string {
+	s.mu.Lock()
+	token := s.v6CandToken
+	s.mu.Unlock()
+	return s.candidatesURL("/api/ipv6/candidates", token)
 }
 
 // claimIPv6Probe 占住「v6 探测」这个坑，返回 false 表示别人正在跑。
@@ -226,7 +241,7 @@ func (s *Server) runIPv6Probe() ([]string, error) {
 	res, err := engine.Run(ctx, s.enginePath, probeDir, engine.Options{
 		TopN:                s.v6TopN(),
 		BandwidthCandidates: s.v6BandwidthCandidates(),
-		CandidatesURL:       s.selfURL + "/api/ipv6/candidates",
+		CandidatesURL:       s.v6CandidatesURL(),
 		UseBuiltinSources:   false, // 只用我们喂的 v6 候选，不叠加 v4 聚合源
 		// 用户的高级设置照传，但国家那几项除外，v6 候选没有真实国家标签，
 		// 交给引擎只会误杀或空转，改由测完按机房位置筛（见 v6_settings.go）。

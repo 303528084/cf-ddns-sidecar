@@ -1,0 +1,47 @@
+name: CI
+
+# 每次推送和 PR 都跑：格式、静态检查、单元测试。
+#
+# 为什么单独一个工作流：release.yml 只在打 tag 时跑，等它发现问题时镜像已经在
+# 构建了，回滚成本比在这里挡一下高得多。这个仓库没有第三方依赖（go.mod 里没有
+# require），所以三个检查都是秒级，没必要省。
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: gofmt / vet / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 跟着 go.mod 的 go 指令走，避免两处版本各写一遍、升级时漏掉一处。
+          go-version-file: go.mod
+          cache: true
+
+      # 格式检查必须是「有输出就算失败」：gofmt -l 的退出码永远是 0，
+      # 直接 `run: gofmt -l .` 等于什么都没检查。
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件没有格式化，本地跑一次 gofmt -w 即可："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # -race 不是可选项：这个程序里「测速线程写、状态接口读」的共享配置很多，
+      # 数据竞争不会报错，只会偶发地读出半个状态。跑一遍全套只要一两秒。
+      - name: go test
+        run: go test -race ./...
